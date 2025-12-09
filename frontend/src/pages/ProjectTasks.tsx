@@ -53,6 +53,7 @@ import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { useHotkeysContext } from 'react-hotkeys-hook';
 import { TasksLayout, type LayoutMode } from '@/components/layout/TasksLayout';
 import { PreviewPanel } from '@/components/panels/PreviewPanel';
+import { VSCodeEmbed } from '@/components/VSCodeEmbed';
 import { DiffsPanel } from '@/components/panels/DiffsPanel';
 import TaskAttemptPanel from '@/components/panels/TaskAttemptPanel';
 import TaskPanel from '@/components/panels/TaskPanel';
@@ -288,7 +289,9 @@ export function ProjectTasks() {
 
   const rawMode = searchParams.get('view') as LayoutMode;
   const mode: LayoutMode =
-    rawMode === 'preview' || rawMode === 'diffs' ? rawMode : null;
+    rawMode === 'preview' || rawMode === 'diffs' || rawMode === 'editor'
+      ? rawMode
+      : null;
 
   // TODO: Remove this redirect after v0.1.0 (legacy URL support for bookmarked links)
   // Migrates old `view=logs` to `view=diffs`
@@ -531,7 +534,7 @@ export function ProjectTasks() {
    */
   const cycleView = useCallback(
     (direction: 'forward' | 'backward' = 'forward') => {
-      const order: LayoutMode[] = [null, 'preview', 'diffs'];
+      const order: LayoutMode[] = [null, 'preview', 'diffs', 'editor'];
       const idx = order.indexOf(mode);
       const next =
         direction === 'forward'
@@ -555,7 +558,7 @@ export function ProjectTasks() {
     () => {
       if (isPanelOpen) {
         // Track keyboard shortcut before cycling view
-        const order: LayoutMode[] = [null, 'preview', 'diffs'];
+        const order: LayoutMode[] = [null, 'preview', 'diffs', 'editor'];
         const idx = order.indexOf(mode);
         const next = order[(idx + 1) % order.length];
 
@@ -568,6 +571,13 @@ export function ProjectTasks() {
           });
         } else if (next === 'diffs') {
           posthog?.capture('diffs_navigated', {
+            trigger: 'keyboard',
+            direction: 'forward',
+            timestamp: new Date().toISOString(),
+            source: 'frontend',
+          });
+        } else if (next === 'editor') {
+          posthog?.capture('editor_navigated', {
             trigger: 'keyboard',
             direction: 'forward',
             timestamp: new Date().toISOString(),
@@ -588,7 +598,7 @@ export function ProjectTasks() {
     () => {
       if (isPanelOpen) {
         // Track keyboard shortcut before cycling view
-        const order: LayoutMode[] = [null, 'preview', 'diffs'];
+        const order: LayoutMode[] = [null, 'preview', 'diffs', 'editor'];
         const idx = order.indexOf(mode);
         const next = order[(idx - 1 + order.length) % order.length];
 
@@ -601,6 +611,13 @@ export function ProjectTasks() {
           });
         } else if (next === 'diffs') {
           posthog?.capture('diffs_navigated', {
+            trigger: 'keyboard',
+            direction: 'backward',
+            timestamp: new Date().toISOString(),
+            source: 'frontend',
+          });
+        } else if (next === 'editor') {
+          posthog?.capture('editor_navigated', {
             trigger: 'keyboard',
             direction: 'backward',
             timestamp: new Date().toISOString(),
@@ -825,43 +842,53 @@ export function ProjectTasks() {
       : `${truncated}...`;
   };
 
-  const kanbanContent =
-    tasks.length === 0 && !hasSharedTasks ? (
-      <div className="max-w-7xl mx-auto mt-8">
-        <Card>
-          <CardContent className="text-center py-8">
-            <p className="text-muted-foreground">{t('empty.noTasks')}</p>
-            <Button className="mt-4" onClick={handleCreateNewTask}>
-              <Plus className="h-4 w-4 mr-2" />
-              {t('empty.createFirst')}
-            </Button>
-          </CardContent>
-        </Card>
+  const kanbanContent = (
+    <div className="h-full flex flex-col">
+      {/* Kanban Board Content */}
+      <div className="flex-1 min-h-0">
+        {isLoading ? (
+          <div className="max-w-7xl mx-auto mt-8 flex items-center justify-center">
+            <Loader />
+          </div>
+        ) : tasks.length === 0 && !hasSharedTasks ? (
+          <div className="max-w-7xl mx-auto mt-8">
+            <Card>
+              <CardContent className="text-center py-8">
+                <p className="text-muted-foreground">{t('empty.noTasks')}</p>
+                <Button className="mt-4" onClick={handleCreateNewTask}>
+                  <Plus className="h-4 w-4 mr-2" />
+                  {t('empty.createFirst')}
+                </Button>
+              </CardContent>
+            </Card>
+          </div>
+        ) : !hasVisibleLocalTasks && !hasVisibleSharedTasks ? (
+          <div className="max-w-7xl mx-auto mt-8">
+            <Card>
+              <CardContent className="text-center py-8">
+                <p className="text-muted-foreground">
+                  {t('empty.noSearchResults')}
+                </p>
+              </CardContent>
+            </Card>
+          </div>
+        ) : (
+          <div className="w-full h-full overflow-x-auto overflow-y-auto overscroll-x-contain">
+            <TaskKanbanBoard
+              columns={kanbanColumns}
+              onDragEnd={handleDragEnd}
+              onViewTaskDetails={handleViewTaskDetails}
+              onViewSharedTask={handleViewSharedTask}
+              selectedTaskId={selectedTask?.id}
+              selectedSharedTaskId={selectedSharedTaskId}
+              onCreateTask={handleCreateNewTask}
+              projectId={projectId!}
+            />
+          </div>
+        )}
       </div>
-    ) : !hasVisibleLocalTasks && !hasVisibleSharedTasks ? (
-      <div className="max-w-7xl mx-auto mt-8">
-        <Card>
-          <CardContent className="text-center py-8">
-            <p className="text-muted-foreground">
-              {t('empty.noSearchResults')}
-            </p>
-          </CardContent>
-        </Card>
-      </div>
-    ) : (
-      <div className="w-full h-full overflow-x-auto overflow-y-auto overscroll-x-contain">
-        <TaskKanbanBoard
-          columns={kanbanColumns}
-          onDragEnd={handleDragEnd}
-          onViewTaskDetails={handleViewTaskDetails}
-          onViewSharedTask={handleViewSharedTask}
-          selectedTaskId={selectedTask?.id}
-          selectedSharedTaskId={selectedSharedTaskId}
-          onCreateTask={handleCreateNewTask}
-          projectId={projectId!}
-        />
-      </div>
-    );
+    </div>
+  );
 
   const rightHeader = selectedTask ? (
     <NewCardHeader
@@ -1002,6 +1029,7 @@ export function ProjectTasks() {
             branchStatus={branchStatus ?? null}
           />
         )}
+        {mode === 'editor' && <VSCodeEmbed attemptId={attempt.id} />}
       </div>
     ) : (
       <div className="relative h-full w-full" />

@@ -1,0 +1,93 @@
+services:
+  # Original app service - commented out
+  # app:
+  #   build: .
+  #   ports:
+  #     - "1340:1337"
+  #   volumes:
+  #     - ./data:/app/data
+  #     - ${WORKSPACE_PATH:-/config/workspace}:/config/workspace
+  #     - ${CLAUDE_PATH:-/home/abc/.claude}:/config/.claude
+  #   environment:
+  #     - NODE_ENV=production
+  #   networks:
+  #     - app-network
+  #   restart: unless-stopped
+
+  # Vibe Kanban development service
+  vibe-kanban:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev.alpine
+    ports:
+      - "3000:3000"  # Frontend
+      - "8080:8080"  # Backend
+    volumes:
+      - .:/app
+      - /app/node_modules
+      - /app/frontend/node_modules
+      - /app/npx-cli/node_modules
+      - /app/target
+      - /private/var/folders/1j/j9tl30f930d27ck98gv5jpg80000gn:/private/var/folders/1j/j9tl30f930d27ck98gv5jpg80000gn  # Mount parent directory with matching path (for worktrees)
+      - /Users/mickmister/code:/Users/mickmister/code  # Mount code directory with matching path
+      - vibe-kanban-worktrees:/var/tmp/vibe-kanban-dev/worktrees  # Named volume for worktrees (shared with code-server)
+    working_dir: /app
+    environment:
+      - NODE_ENV=development
+      - RUST_LOG=debug
+      - FRONTEND_PORT=3000
+      - BACKEND_PORT=8080
+      - DISABLE_WORKTREE_ORPHAN_CLEANUP=1
+    networks:
+      - app-network
+    restart: unless-stopped
+
+  # VSCode Server (code-server)
+  code-server:
+    platform: ${CODE_SERVER_PLATFORM:-linux/arm64}
+    image: lscr.io/linuxserver/code-server:4.105.1
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=UTC
+      - PASSWORD=${CODE_PASSWORD}
+      - SUDO_PASSWORD=${SUDO_PASSWORD}
+    volumes:
+      - ./lets-merge-it/config:/config
+      - /private/var/folders/1j/j9tl30f930d27ck98gv5jpg80000gn:/private/var/folders/1j/j9tl30f930d27ck98gv5jpg80000gn  # Mount parent directory with matching path
+      - /Users/mickmister/code:/Users/mickmister/code  # Mount code directory with matching path
+      - vibe-kanban-worktrees:/var/tmp/vibe-kanban-dev/worktrees  # Named volume for worktrees (shared with vibe-kanban)
+      - ${SSH_KEY_PATH:-~/.ssh}:/config/.ssh:ro  # Mount SSH keys (read-only) for host access
+    networks:
+      - app-network
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+    expose:
+      - "8443"
+
+  # Caddy reverse proxy
+  caddy:
+    image: caddy:2-alpine
+    ports:
+      - "3001:3001"
+    volumes:
+      - ./lets-merge-it/caddy_config:/etc/caddy
+      - caddy-data:/data
+      - caddy-config:/config
+    networks:
+      - app-network
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      - code-server
+    restart: unless-stopped
+
+networks:
+  app-network:
+    driver: bridge
+
+volumes:
+  caddy-data:
+  caddy-config:
+  vibe-kanban-worktrees:

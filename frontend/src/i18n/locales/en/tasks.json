@@ -311,6 +311,7 @@
   "attemptHeaderActions": {
     "preview": "Preview",
     "diffs": "Diffs",
+    "editor": "Editor",
     "relatedTasks": "Related tasks"
   },
   "actionsMenu": {

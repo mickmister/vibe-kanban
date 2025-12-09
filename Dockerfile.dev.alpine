@@ -1,0 +1,51 @@
+# syntax=docker/dockerfile:1
+
+FROM node:20-alpine
+
+# Install system dependencies and Rust
+RUN --mount=type=cache,target=/var/cache/apk,sharing=locked \
+    apk add --no-cache \
+        ca-certificates \
+        curl \
+        build-base \
+        pkgconfig \
+        openssl-dev \
+        sqlite \
+        sqlite-dev \
+        git \
+        perl \
+        bash \
+        clang-dev \
+        llvm-dev && \
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain nightly-2025-05-18
+
+# Install pnpm and cargo-watch
+RUN npm install -g pnpm && \
+    /root/.cargo/bin/cargo install cargo-watch
+
+ENV PATH="/root/.cargo/bin:/root/.local/share/pnpm:${PATH}"
+ENV PNPM_HOME="/root/.local/share/pnpm"
+ENV RUSTFLAGS="-C target-feature=-crt-static"
+
+WORKDIR /app
+
+# Copy dependency manifests and install with cache mounts
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY frontend/package.json frontend/
+COPY npx-cli/package.json npx-cli/
+COPY Cargo.toml Cargo.lock ./
+COPY crates/*/Cargo.toml crates/
+
+RUN --mount=type=cache,target=/root/.local/share/pnpm/store,sharing=locked \
+    --mount=type=cache,target=/root/.cargo/registry,sharing=locked \
+    --mount=type=cache,target=/root/.cargo/git,sharing=locked \
+    pnpm install --frozen-lockfile
+
+# Copy the rest of the source code
+COPY . .
+
+# Expose ports for frontend and backend
+EXPOSE 3000 8080
+
+# Start dev server
+CMD ["pnpm", "run", "dev"]

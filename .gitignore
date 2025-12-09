@@ -83,5 +83,14 @@ dev_assets
 .ssh
 
 vibe-kanban-cloud/
-
 .jj
+
+remote-frontend/dist
+
+# Docker volumes and configs
+lets-merge-it/config/*
+!lets-merge-it/config/.gitkeep
+
+# Caddy data
+caddy-data/
+caddy-config/

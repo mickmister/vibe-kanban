@@ -1,5 +1,5 @@
 import { Link, useLocation, useSearchParams } from 'react-router-dom';
-import { useCallback } from 'react';
+import { useCallback, useState, useEffect } from 'react';
 import { siDiscord } from 'simple-icons';
 import { Button } from '@/components/ui/button';
 import {
@@ -39,7 +39,9 @@ import {
 } from '@/components/ui/tooltip';
 import { OAuthDialog } from '@/components/dialogs/global/OAuthDialog';
 import { useUserSystem } from '@/components/ConfigProvider';
-import { oauthApi } from '@/lib/api';
+import { oauthApi, projectsApi } from '@/lib/api';
+import { ProjectSelector } from '@/components/projects/ProjectSelector';
+import type { Project } from 'shared/types';
 
 const INTERNAL_NAV = [{ label: 'Projects', icon: FolderOpen, to: '/projects' }];
 
@@ -79,6 +81,20 @@ export function Navbar() {
   const handleOpenInEditor = useOpenProjectInEditor(project || null);
   const { data: onlineCount } = useDiscordOnlineCount();
   const { loginStatus, reloadSystem } = useUserSystem();
+  const [allProjects, setAllProjects] = useState<Project[]>([]);
+
+  // Fetch all projects for the selector
+  useEffect(() => {
+    const fetchProjects = async () => {
+      try {
+        const projects = await projectsApi.getAll();
+        setAllProjects(projects);
+      } catch (error) {
+        console.error('Failed to fetch projects:', error);
+      }
+    };
+    fetchProjects();
+  }, []);
 
   const { data: repos } = useProjectRepos(projectId);
   const isSingleRepoProject = repos?.length === 1;
@@ -174,6 +190,12 @@ export function Navbar() {
           </div>
 
           <div className="hidden sm:flex items-center gap-2">
+            {isTasksRoute && allProjects.length > 0 && projectId && (
+              <ProjectSelector
+                projects={allProjects}
+                currentProjectId={projectId}
+              />
+            )}
             <SearchBar
               ref={setSearchBarRef}
               className="shrink-0"
