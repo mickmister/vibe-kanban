@@ -3,7 +3,7 @@ services:
   vibe-kanban:
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: Dockerfile.coolify
       args:
         - POSTHOG_API_KEY=${POSTHOG_API_KEY:-}
         - POSTHOG_API_ENDPOINT=${POSTHOG_API_ENDPOINT:-}

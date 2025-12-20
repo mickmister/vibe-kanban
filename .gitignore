@@ -94,3 +94,6 @@ lets-merge-it/config/*
 # Caddy data
 caddy-data/
 caddy-config/
+
+# Docker compose persistent data
+data/
