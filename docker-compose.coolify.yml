@@ -1,0 +1,75 @@
+services:
+  # Main Vibe Kanban application
+  vibe-kanban:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        - POSTHOG_API_KEY=${POSTHOG_API_KEY:-}
+        - POSTHOG_API_ENDPOINT=${POSTHOG_API_ENDPOINT:-}
+    ports:
+      - "${VIBE_KANBAN_PORT:-3000}:3000"
+    volumes:
+      # Persist application data including SQLite database
+      - ./data/db:/home/appuser/.local/share/vibe-kanban
+      # Persist repositories created by the application
+      - ./data/repos:/repos
+    environment:
+      - NODE_ENV=${NODE_ENV:-production}
+      - RUST_LOG=${RUST_LOG:-info}
+      - HOST=0.0.0.0
+      - PORT=3000
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:3000"]
+      interval: 30s
+      timeout: 3s
+      start_period: 10s
+      retries: 3
+
+  # VSCode Server for remote development/debugging
+  code-server:
+    platform: linux/amd64
+    image: lscr.io/linuxserver/code-server:4.105.1
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=${TZ:-UTC}
+      - PASSWORD=${CODE_PASSWORD}
+      - SUDO_PASSWORD=${SUDO_PASSWORD:-}
+    volumes:
+      # Persist VSCode configuration and extensions
+      - ./data/code-server-config:/config
+      # Share access to repos for editing/debugging
+      - ./data/repos:/repos
+    restart: unless-stopped
+    expose:
+      - "8443"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8443/healthz"]
+      interval: 30s
+      timeout: 3s
+      start_period: 10s
+      retries: 3
+
+  # Caddy reverse proxy - routes to appropriate service
+  caddy:
+    image: caddy:2-alpine
+    ports:
+      - "${CADDY_PORT:-3001}:3001"
+    volumes:
+      - ${CADDY_CONFIG_PATH:-./lets-merge-it/caddy_config}:/etc/caddy:ro
+      - ./data/caddy-data:/data
+      - ./data/caddy-config:/config
+    depends_on:
+      vibe-kanban:
+        condition: service_healthy
+      code-server:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:3001"]
+      interval: 30s
+      timeout: 3s
+      start_period: 5s
+      retries: 3
