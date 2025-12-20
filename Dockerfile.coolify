@@ -10,7 +10,10 @@ RUN --mount=type=cache,target=/var/cache/apk,sharing=locked \
     build-base \
     perl \
     llvm-dev \
-    clang-dev
+    clang-dev \
+    pkgconfig \
+    openssl-dev \
+    sqlite-dev
 
 # Allow linking libclang on musl
 ENV RUSTFLAGS="-C target-feature=-crt-static"
