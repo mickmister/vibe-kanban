@@ -7,6 +7,7 @@ services:
       args:
         - POSTHOG_API_KEY=${POSTHOG_API_KEY:-}
         - POSTHOG_API_ENDPOINT=${POSTHOG_API_ENDPOINT:-}
+    user: "1001:1001"
     ports:
       - "${VIBE_KANBAN_PORT:-3000}:3000"
     volumes:
