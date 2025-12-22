@@ -15,6 +15,8 @@ services:
       - ./data/db:/home/appuser/.local/share/vibe-kanban
       # Persist repositories created by the application
       - ./data/repos:/repos
+      # Persist Claude Code conversations
+      - ./data/claude-conversations:/home/appuser/.claude
     environment:
       - NODE_ENV=${NODE_ENV:-production}
       - RUST_LOG=${RUST_LOG:-info}

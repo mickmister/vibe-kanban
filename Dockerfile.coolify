@@ -68,7 +68,14 @@ RUN --mount=type=cache,target=/var/cache/apk,sharing=locked \
     ca-certificates \
     tini \
     libgcc \
-    wget
+    wget \
+    git \
+    curl \
+    nodejs \
+    npm
+
+# Install Claude Code CLI globally
+RUN npm install -g @anthropic-ai/claude-code
 
 # Create app user for security
 RUN addgroup -g 1001 -S appgroup && \
