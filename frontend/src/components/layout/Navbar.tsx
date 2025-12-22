@@ -1,5 +1,5 @@
 import { Link, useLocation, useSearchParams } from 'react-router-dom';
-import { useCallback, useState, useEffect } from 'react';
+import { useCallback } from 'react';
 import { siDiscord } from 'simple-icons';
 import { Button } from '@/components/ui/button';
 import {
@@ -39,9 +39,9 @@ import {
 } from '@/components/ui/tooltip';
 import { OAuthDialog } from '@/components/dialogs/global/OAuthDialog';
 import { useUserSystem } from '@/components/ConfigProvider';
-import { oauthApi, projectsApi } from '@/lib/api';
+import { oauthApi } from '@/lib/api';
 import { ProjectSelector } from '@/components/projects/ProjectSelector';
-import type { Project } from 'shared/types';
+import { useProjects } from '@/hooks/useProjects';
 
 const INTERNAL_NAV = [{ label: 'Projects', icon: FolderOpen, to: '/projects' }];
 
@@ -81,20 +81,7 @@ export function Navbar() {
   const handleOpenInEditor = useOpenProjectInEditor(project || null);
   const { data: onlineCount } = useDiscordOnlineCount();
   const { loginStatus, reloadSystem } = useUserSystem();
-  const [allProjects, setAllProjects] = useState<Project[]>([]);
-
-  // Fetch all projects for the selector
-  useEffect(() => {
-    const fetchProjects = async () => {
-      try {
-        const projects = await projectsApi.getAll();
-        setAllProjects(projects);
-      } catch (error) {
-        console.error('Failed to fetch projects:', error);
-      }
-    };
-    fetchProjects();
-  }, []);
+  const { projects: allProjects } = useProjects();
 
   const { data: repos } = useProjectRepos(projectId);
   const isSingleRepoProject = repos?.length === 1;
