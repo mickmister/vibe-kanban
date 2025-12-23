@@ -51,7 +51,7 @@ COPY . .
 # Build application with cache mounts
 RUN npm run generate-types
 
-RUN cd frontend && pnpm run build
+RUN cd frontend && NODE_ENV=development pnpm run build
 
 RUN --mount=type=cache,target=/root/.cargo/registry,sharing=locked \
     --mount=type=cache,target=/root/.cargo/git,sharing=locked \

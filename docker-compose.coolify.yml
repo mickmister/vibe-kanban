@@ -32,7 +32,6 @@ services:
 
   # VSCode Server for remote development/debugging
   code-server:
-    platform: linux/amd64
     image: lscr.io/linuxserver/code-server:4.105.1
     environment:
       - PUID=1000
