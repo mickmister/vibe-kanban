@@ -85,3 +85,6 @@ dev_assets
 vibe-kanban-cloud/
 
 .jj
+
+# Docker compose persistent data
+data/

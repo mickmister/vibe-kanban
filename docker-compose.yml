@@ -1,0 +1,19 @@
+services:
+  vibe-kanban:
+    build:
+      context: .
+      dockerfile: Dockerfile.coolify
+      args:
+        - POSTHOG_API_KEY=${POSTHOG_API_KEY:-}
+        - POSTHOG_API_ENDPOINT=${POSTHOG_API_ENDPOINT:-}
+    ports:
+      - "${VIBE_KANBAN_PORT:-3000}:3000"
+    volumes:
+      - ./data/db:/home/appuser/.local/share/vibe-kanban
+      - ./data/repos:/repos
+    environment:
+      - NODE_ENV=${NODE_ENV:-development}
+      - RUST_LOG=${RUST_LOG:-info}
+      - HOST=0.0.0.0
+      - PORT=3000
+    restart: unless-stopped
