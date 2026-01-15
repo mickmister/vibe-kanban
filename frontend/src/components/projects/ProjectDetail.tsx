@@ -70,10 +70,9 @@ export function ProjectDetail({ projectId, onBack }: ProjectDetailProps) {
     );
   }
 
-  if ((!project && !isLoading) || projectsError) {
-    const errorMsg = projectsError
-      ? projectsError.message
-      : t('projectNotFound');
+  // Only show a full-page error if we have no project data at all.
+  if (!project) {
+    const errorMsg = projectsError?.message ?? t('projectNotFound');
     return (
       <div className="space-y-4 py-12 px-4">
         <Button variant="outline" onClick={onBack}>
@@ -98,6 +97,12 @@ export function ProjectDetail({ projectId, onBack }: ProjectDetailProps) {
 
   return (
     <div className="space-y-6 py-12 px-4">
+      {projectsError && (
+        <Alert variant="destructive">
+          <AlertCircle className="h-4 w-4" />
+          <AlertDescription>{projectsError.message}</AlertDescription>
+        </Alert>
+      )}
       <div className="flex justify-between items-start">
         <div className="flex items-center space-x-4">
           <Button variant="outline" onClick={onBack}>

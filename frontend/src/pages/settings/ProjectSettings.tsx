@@ -326,9 +326,9 @@ export function ProjectSettings() {
     );
   }
 
-  if (projectsError) {
-    return (
-      <div className="py-8">
+  return (
+    <div className="space-y-6">
+      {projectsError && (
         <Alert variant="destructive">
           <AlertDescription>
             {projectsError instanceof Error
@@ -336,12 +336,7 @@ export function ProjectSettings() {
               : t('settings.projects.loadError')}
           </AlertDescription>
         </Alert>
-      </div>
-    );
-  }
-
-  return (
-    <div className="space-y-6">
+      )}
       {error && (
         <Alert variant="destructive">
           <AlertDescription>{error}</AlertDescription>

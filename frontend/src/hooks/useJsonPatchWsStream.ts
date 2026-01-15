@@ -45,6 +45,7 @@ export const useJsonPatchWsStream = <T extends object>(
   const retryAttemptsRef = useRef<number>(0);
   const [retryNonce, setRetryNonce] = useState(0);
   const finishedRef = useRef<boolean>(false);
+  const activeEndpointRef = useRef<string | undefined>(undefined);
 
   const injectInitialEntry = options?.injectInitialEntry;
   const deduplicatePatches = options?.deduplicatePatches;
@@ -78,8 +79,19 @@ export const useJsonPatchWsStream = <T extends object>(
       setIsInitialized(false);
       setError(null);
       dataRef.current = undefined;
+      activeEndpointRef.current = endpoint;
       return;
     }
+
+    // If the endpoint changes (e.g., switching projects), clear data immediately.
+    // Reconnects keep the same endpoint and should preserve the last good data.
+    if (activeEndpointRef.current && activeEndpointRef.current !== endpoint) {
+      dataRef.current = undefined;
+      setData(undefined);
+      setIsInitialized(false);
+      setError(null);
+    }
+    activeEndpointRef.current = endpoint;
 
     // Initialize data
     if (!dataRef.current) {
@@ -165,6 +177,9 @@ export const useJsonPatchWsStream = <T extends object>(
         if (finishedRef.current || (evt?.code === 1000 && evt?.wasClean)) {
           return;
         }
+
+        // Ensure callers can surface a reconnecting state even when onerror doesn't fire.
+        setError((prev) => prev ?? 'Connection failed');
 
         // Otherwise, reconnect on unexpected/error closures
         retryAttemptsRef.current += 1;
