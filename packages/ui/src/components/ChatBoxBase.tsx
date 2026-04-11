@@ -72,6 +72,7 @@ export function ChatBoxBase({
   const { t } = useTranslation(['common', 'tasks']);
 
   const isDragActive = dropzone?.isDragActive ?? false;
+  const hasHeaderContent = Boolean(headerLeft || headerRight);
 
   return (
     <div
@@ -113,7 +114,7 @@ export function ChatBoxBase({
       {banner}
 
       {/* Header - Stats and selector */}
-      {visualVariant === VisualVariant.NORMAL && (
+      {visualVariant === VisualVariant.NORMAL && hasHeaderContent && (
         <div className="flex items-center gap-base border-b px-base py-base">
           <div className="flex flex-1 items-center gap-base text-sm min-w-0 overflow-hidden">
             {headerLeft}

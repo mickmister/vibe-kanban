@@ -90,6 +90,8 @@ function computeExecutionStatus(params: {
 interface SharedProps {
   /** Available sessions for this workspace */
   sessions: Session[];
+  /** Whether the chat should render in distraction-free zen mode */
+  isZenMode?: boolean;
   /** Number of files changed in current session */
   filesChanged: number;
   /** Number of lines added */
@@ -144,6 +146,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
   const {
     mode,
     sessions,
+    isZenMode = false,
     filesChanged,
     linesAdded,
     linesRemoved,
@@ -994,6 +997,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
           linesRemoved: 0,
         }}
         onViewCode={disableViewCode ? undefined : handleViewCode}
+        isZenMode={isZenMode}
       />
     );
   }
@@ -1002,6 +1006,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     <SessionChatBox<BaseCodingAgent>
       status={status}
       onViewCode={disableViewCode ? undefined : handleViewCode}
+      isZenMode={isZenMode}
       onOpenWorkspace={
         showOpenWorkspaceButton && workspaceId ? handleOpenWorkspace : undefined
       }

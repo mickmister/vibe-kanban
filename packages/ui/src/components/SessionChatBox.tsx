@@ -155,6 +155,7 @@ export interface SessionChatBoxEditorRenderProps<
 
 interface SessionChatBoxProps<TExecutor extends string = string> {
   status: ExecutionStatus;
+  isZenMode?: boolean;
   editor: EditorProps;
   renderEditor: (
     props: SessionChatBoxEditorRenderProps<TExecutor>
@@ -222,6 +223,7 @@ function defaultFormatSessionDate(createdAt: string | Date) {
  */
 export function SessionChatBox<TExecutor extends string = string>({
   status,
+  isZenMode = false,
   editor,
   renderEditor,
   actions,
@@ -375,6 +377,7 @@ export function SessionChatBox<TExecutor extends string = string>({
   const filesChanged = stats?.filesChanged ?? 0;
   const linesAdded = stats?.linesAdded;
   const linesRemoved = stats?.linesRemoved;
+  const shouldHideZenHeader = isZenMode && !isNewSessionMode;
 
   // Render action buttons based on status
   const renderActionButtons = () => {
@@ -671,8 +674,9 @@ export function SessionChatBox<TExecutor extends string = string>({
       visualVariant={getVisualVariant()}
       isRunning={showRunningAnimation}
       dropzone={dropzone}
-      modelSelector={modelSelector}
+      modelSelector={isZenMode ? undefined : modelSelector}
       headerLeft={
+        shouldHideZenHeader ? undefined : (
         <>
           {/* New session mode: agent icon + executor dropdown */}
           {isNewSessionMode && executor && (
@@ -783,8 +787,10 @@ export function SessionChatBox<TExecutor extends string = string>({
             </>
           )}
         </>
+        )
       }
       headerRight={
+        shouldHideZenHeader ? undefined : (
         <>
           {/* Turn navigation + Agent icon for existing session mode */}
           {!isNewSessionMode && (
@@ -880,8 +886,10 @@ export function SessionChatBox<TExecutor extends string = string>({
             )}
           </ToolbarDropdown>
         </>
+        )
       }
       footerLeft={
+        isZenMode ? undefined : (
         <>
           <ToolbarIconButton
             icon={PaperclipIcon}
@@ -917,6 +925,7 @@ export function SessionChatBox<TExecutor extends string = string>({
             />
           ))}
         </>
+        )
       }
       footerRight={renderActionButtons()}
     />

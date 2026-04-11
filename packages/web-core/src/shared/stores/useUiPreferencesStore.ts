@@ -320,6 +320,7 @@ type State = {
   isLeftSidebarVisible: boolean;
   isRightSidebarVisible: boolean;
   isTerminalVisible: boolean;
+  isZenMode: boolean;
   previewRefreshKey: number;
   // Note: Kanban issue panel state (selectedKanbanIssueId, createMode, etc.)
   // is derived from URL via app navigation route state
@@ -373,6 +374,8 @@ type State = {
   toggleRightSidebar: () => void;
   toggleTerminal: () => void;
   setTerminalVisible: (value: boolean) => void;
+  setZenMode: (value: boolean) => void;
+  toggleZenMode: () => void;
   // Note: Kanban panel actions (openKanbanIssuePanel, closeKanbanIssuePanel, etc.)
   // are handled by app navigation
   toggleRightMainPanelMode: (
@@ -459,6 +462,7 @@ export const useUiPreferencesStore = create<State>()((set, get) => ({
   isLeftSidebarVisible: true,
   isRightSidebarVisible: true,
   isTerminalVisible: true,
+  isZenMode: false,
   previewRefreshKey: 0,
 
   // Workspace-specific panel state
@@ -547,6 +551,8 @@ export const useUiPreferencesStore = create<State>()((set, get) => ({
     set((s) => ({ isTerminalVisible: !s.isTerminalVisible })),
 
   setTerminalVisible: (value) => set({ isTerminalVisible: value }),
+  setZenMode: (value) => set({ isZenMode: value }),
+  toggleZenMode: () => set((s) => ({ isZenMode: !s.isZenMode })),
 
   toggleRightMainPanelMode: (mode, workspaceId) => {
     if (!workspaceId) return;

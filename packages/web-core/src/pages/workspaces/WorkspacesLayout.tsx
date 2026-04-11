@@ -6,6 +6,7 @@ import {
   useSyncExternalStore,
 } from 'react';
 import { useTranslation } from 'react-i18next';
+import { ArrowsInSimpleIcon, ArrowsOutSimpleIcon } from '@phosphor-icons/react';
 import { Group, Layout, Panel, Separator } from 'react-resizable-panels';
 import type { CreateModeInitialState } from '@/shared/types/createMode';
 import { useWorkspaceContext } from '@/shared/hooks/useWorkspaceContext';
@@ -37,6 +38,7 @@ import { useUserSystem } from '@/shared/hooks/useUserSystem';
 import {
   PERSIST_KEYS,
   usePaneSize,
+  useUiPreferencesStore,
   useWorkspacePanelState,
   RIGHT_MAIN_PANEL_MODES,
 } from '@/shared/stores/useUiPreferencesStore';
@@ -109,7 +111,11 @@ export function WorkspacesLayout() {
 
   const isMobile = useIsMobile();
   const [mobileTab] = useMobileActiveTab();
+  const isZenMode = useUiPreferencesStore((s) => s.isZenMode);
+  const toggleZenMode = useUiPreferencesStore((s) => s.toggleZenMode);
   const mainContainerRef = useRef<WorkspacesMainContainerHandle>(null);
+  const hasZenContext = isCreateMode || !!selectedWorkspace;
+  const isDesktopZenMode = !isMobile && isZenMode && hasZenContext;
 
   const handleScrollToBottom = useCallback(
     (behavior: 'auto' | 'smooth' = 'smooth') => {
@@ -194,14 +200,23 @@ export function WorkspacesLayout() {
 
   const onLayoutChange = useCallback(
     (layout: Layout) => {
-      if (isLeftMainPanelVisible && rightMainPanelMode !== null) {
+      if (
+        !isDesktopZenMode &&
+        isLeftMainPanelVisible &&
+        rightMainPanelMode !== null
+      ) {
         if (layoutTimerRef.current) clearTimeout(layoutTimerRef.current);
         layoutTimerRef.current = setTimeout(() => {
           setRightMainPanelSize(layout['right-main']);
         }, 150);
       }
     },
-    [isLeftMainPanelVisible, rightMainPanelMode, setRightMainPanelSize]
+    [
+      isDesktopZenMode,
+      isLeftMainPanelVisible,
+      rightMainPanelMode,
+      setRightMainPanelSize,
+    ]
   );
 
   // ── Mobile layout ──────────────────────────────────────────────────
@@ -330,6 +345,12 @@ export function WorkspacesLayout() {
     );
   }
 
+  const shouldShowLeftMainPanel = isDesktopZenMode || isLeftMainPanelVisible;
+  const shouldShowRightMainPanel =
+    !isDesktopZenMode && rightMainPanelMode !== null;
+  const canToggleZenMode =
+    !isMobile && (isDesktopZenMode || isCreateMode || !!selectedWorkspace);
+
   const mainContent = (
     <ReviewProvider workspaceId={selectedWorkspace?.id}>
       <ChangesViewProvider>
@@ -340,7 +361,7 @@ export function WorkspacesLayout() {
             defaultLayout={defaultLayout}
             onLayoutChange={onLayoutChange}
           >
-            {isLeftMainPanelVisible && (
+            {shouldShowLeftMainPanel && (
               <Panel
                 id="left-main"
                 minSize="20%"
@@ -363,19 +384,20 @@ export function WorkspacesLayout() {
                     isSessionsLoading={isSessionsLoading}
                     isNewSessionMode={isNewSessionMode}
                     onStartNewSession={startNewSession}
+                    isZenMode={isDesktopZenMode}
                   />
                 )}
               </Panel>
             )}
 
-            {isLeftMainPanelVisible && rightMainPanelMode !== null && (
+            {shouldShowLeftMainPanel && shouldShowRightMainPanel && (
               <Separator
                 id="main-separator"
                 className="w-1 bg-transparent hover:bg-brand/50 transition-colors cursor-col-resize"
               />
             )}
 
-            {rightMainPanelMode !== null && (
+            {shouldShowRightMainPanel && (
               <Panel
                 id="right-main"
                 minSize="20%"
@@ -402,7 +424,7 @@ export function WorkspacesLayout() {
             )}
           </Group>
 
-          {isRightSidebarVisible && !isCreateMode && (
+          {isRightSidebarVisible && !isCreateMode && !isDesktopZenMode && (
             <div className="w-[300px] shrink-0 h-full overflow-hidden">
               <RightSidebar
                 rightMainPanelMode={rightMainPanelMode}
@@ -418,13 +440,32 @@ export function WorkspacesLayout() {
 
   return (
     <div className="flex flex-1 min-h-0 h-full">
-      {isLeftSidebarVisible && (
+      {!isDesktopZenMode && isLeftSidebarVisible && (
         <div className="w-[300px] shrink-0 h-full overflow-hidden">
           <WorkspacesSidebarContainer onScrollToBottom={handleScrollToBottom} />
         </div>
       )}
 
-      <div className="flex-1 min-w-0 h-full">
+      <div className="relative flex-1 min-w-0 h-full">
+        {canToggleZenMode && (
+          <button
+            type="button"
+            onClick={toggleZenMode}
+            className="absolute right-3 top-3 z-20 inline-flex items-center gap-2 rounded-sm border border-border bg-secondary/90 px-3 py-2 text-sm text-normal shadow-sm backdrop-blur-sm transition-colors hover:bg-secondary"
+            aria-pressed={isDesktopZenMode}
+          >
+            {isDesktopZenMode ? (
+              <ArrowsInSimpleIcon className="size-icon-sm" weight="bold" />
+            ) : (
+              <ArrowsOutSimpleIcon className="size-icon-sm" weight="bold" />
+            )}
+            <span>
+              {isDesktopZenMode
+                ? t('workspaces.zenMode.exit', { defaultValue: 'Exit Zen' })
+                : t('workspaces.zenMode.enter', { defaultValue: 'Zen Mode' })}
+            </span>
+          </button>
+        )}
         {isCreateMode ? (
           <CreateModeProvider
             key={createModeProviderKey}

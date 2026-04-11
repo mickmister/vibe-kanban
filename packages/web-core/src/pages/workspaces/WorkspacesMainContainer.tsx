@@ -33,6 +33,7 @@ function ChatBoxWithDiffStats({
   session,
   workspaceId,
   isNewSessionMode,
+  isZenMode,
   sessions,
   onSelectSession,
   onStartNewSession,
@@ -44,6 +45,7 @@ function ChatBoxWithDiffStats({
   session: Session | undefined;
   workspaceId: string | undefined;
   isNewSessionMode: boolean;
+  isZenMode: boolean;
   sessions: Session[];
   onSelectSession: (sessionId: string) => void;
   onStartNewSession: () => void;
@@ -76,6 +78,7 @@ function ChatBoxWithDiffStats({
       filesChanged={diffStats.files_changed}
       linesAdded={diffStats.lines_added}
       linesRemoved={diffStats.lines_removed}
+      isZenMode={isZenMode}
       disableViewCode={false}
       showOpenWorkspaceButton={false}
       onScrollToPreviousMessage={onScrollToPreviousMessage}
@@ -101,6 +104,7 @@ interface WorkspacesMainContainerProps {
   isSessionsLoading?: boolean;
   isNewSessionMode: boolean;
   onStartNewSession: () => void;
+  isZenMode?: boolean;
 }
 
 export const WorkspacesMainContainer = forwardRef<
@@ -118,6 +122,7 @@ export const WorkspacesMainContainer = forwardRef<
     isSessionsLoading: _isSessionsLoading,
     isNewSessionMode,
     onStartNewSession,
+    isZenMode = false,
   },
   ref
 ) {
@@ -225,6 +230,7 @@ export const WorkspacesMainContainer = forwardRef<
       session={session}
       workspaceId={workspaceWithSession?.id}
       isNewSessionMode={isNewSessionMode}
+      isZenMode={isZenMode}
       sessions={sessions}
       onSelectSession={onSelectSession}
       onStartNewSession={onStartNewSession}
@@ -235,9 +241,10 @@ export const WorkspacesMainContainer = forwardRef<
     />
   );
 
-  const contextBarContent = workspaceWithSession ? (
-    <ContextBarContainer containerRef={containerRef} />
-  ) : null;
+  const contextBarContent =
+    workspaceWithSession && !isZenMode ? (
+      <ContextBarContainer containerRef={containerRef} />
+    ) : null;
 
   useImperativeHandle(
     ref,
