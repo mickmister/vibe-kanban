@@ -1,0 +1,38 @@
+---
+title: Pi Agent Support Plan
+description: High-level plan for adding Pi coding agent support to Vibe Kanban.
+---
+
+# Pi Agent Support Plan
+
+## Goal
+
+Add Pi as a supported coding agent in VK, with basic runtime support, model selection, and prompt configuration through the existing agent configuration UI.
+
+## High-Level Plan
+
+1. Add Pi to VK's executor model.
+   This includes the Rust executor enum, default profiles, generated schemas, shared types, and agent icon metadata.
+
+2. Implement a Pi executor around Pi's RPC mode.
+   VK should spawn `pi --mode rpc`, send prompts over stdio, and treat Pi as a protocol-backed agent rather than a one-shot CLI tool.
+
+3. Map Pi events into VK's existing execution and chat model.
+   Pi's streamed assistant messages, tool calls, and session state should be normalised into VK's log and conversation pipeline.
+
+4. Add follow-up support using Pi session state.
+   VK should persist Pi's session reference and reuse it for later follow-up runs in the same workspace.
+
+5. Expose Pi models and commands through VK discovery.
+   VK should use Pi's RPC APIs to discover available models and command metadata for the selector UI.
+
+6. Expose Pi prompt settings through the existing agent configuration form.
+   The first pass should use schema-backed fields such as appended prompt text and Pi system-prompt options, rather than building a separate Pi-specific UI.
+
+7. Ship MVP first, then add deeper parity if needed.
+   The initial version should focus on initial runs, follow-ups, model selection, and prompt configuration. More advanced features such as session forking can follow later.
+
+## Notes
+
+- Pi should follow VK's existing executor-profile architecture instead of introducing a separate integration path.
+- Pi does not need MCP or setup-helper support in the first pass.
