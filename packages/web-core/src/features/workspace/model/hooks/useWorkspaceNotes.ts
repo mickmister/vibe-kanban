@@ -30,9 +30,11 @@ export function useWorkspaceNotes(
 
   // Local state for immediate UI feedback
   const [localContent, setLocalContent] = useState('');
+  const localContentRef = useRef('');
 
-  // Track if user is actively editing to prevent server overwrites
-  const isEditingRef = useRef(false);
+  // Ignore websocket echoes while we still have newer local edits that have not
+  // been observed coming back from the server.
+  const hasPendingLocalChangesRef = useRef(false);
 
   // Extract content from scratch payload
   const scratchData: WorkspaceNotesData | undefined =
@@ -40,11 +42,27 @@ export function useWorkspaceNotes(
       ? scratch.payload.data
       : undefined;
 
-  // Sync from server when scratch loads (but not while editing)
+  useEffect(() => {
+    localContentRef.current = '';
+    hasPendingLocalChangesRef.current = false;
+    setLocalContent('');
+  }, [workspaceId]);
+
+  // Sync from server when scratch loads, but never let an older websocket echo
+  // overwrite newer local text while the editor is dirty.
   useEffect(() => {
     if (isScratchLoading) return;
-    if (isEditingRef.current) return;
-    setLocalContent(scratchData?.content ?? '');
+
+    const serverContent = scratchData?.content ?? '';
+    if (serverContent === localContentRef.current) {
+      hasPendingLocalChangesRef.current = false;
+      return;
+    }
+
+    if (hasPendingLocalChangesRef.current) return;
+
+    localContentRef.current = serverContent;
+    setLocalContent(serverContent);
   }, [isScratchLoading, scratchData?.content]);
 
   // Debounced save to server
@@ -62,7 +80,6 @@ export function useWorkspaceNotes(
         } catch (e) {
           console.error('Failed to save workspace notes', e);
         }
-        isEditingRef.current = false;
       },
       [workspaceId, updateScratch]
     ),
@@ -71,7 +88,8 @@ export function useWorkspaceNotes(
 
   const setContent = useCallback(
     (content: string) => {
-      isEditingRef.current = true;
+      hasPendingLocalChangesRef.current = true;
+      localContentRef.current = content;
       setLocalContent(content);
       saveContent(content);
     },
