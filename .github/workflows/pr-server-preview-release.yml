@@ -1,0 +1,290 @@
+name: PR Server Preview Release
+
+on:
+  pull_request:
+    branches:
+      - main
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - ready_for_review
+    paths:
+      - 'crates/api-types/**'
+      - 'crates/client-info/**'
+      - 'crates/db/**'
+      - 'crates/deployment/**'
+      - 'crates/desktop-bridge/**'
+      - 'crates/embedded-ssh/**'
+      - 'crates/executors/**'
+      - 'crates/git/**'
+      - 'crates/git-host/**'
+      - 'crates/local-deployment/**'
+      - 'crates/mcp/**'
+      - 'crates/preview-proxy/**'
+      - 'crates/relay-client/**'
+      - 'crates/relay-control/**'
+      - 'crates/relay-hosts/**'
+      - 'crates/relay-protocol/**'
+      - 'crates/relay-tunnel-core/**'
+      - 'crates/relay-types/**'
+      - 'crates/relay-webrtc/**'
+      - 'crates/relay-ws/**'
+      - 'crates/remote-info/**'
+      - 'crates/review/**'
+      - 'crates/server/**'
+      - 'crates/services/**'
+      - 'crates/trusted-key-auth/**'
+      - 'crates/utils/**'
+      - 'crates/workspace-manager/**'
+      - 'crates/worktree-manager/**'
+      - 'crates/ws-bridge/**'
+      - 'packages/local-web/**'
+      - 'packages/web-core/**'
+      - 'packages/ui/**'
+      - 'shared/**'
+      - 'scripts/build-bippy-bundle.mjs'
+      - 'scripts/check-i18n.sh'
+      - 'scripts/check-legacy-frontend-paths.sh'
+      - 'scripts/check-unused-i18n-keys.mjs'
+      - 'scripts/legacy-frontend-paths-allowlist.txt'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - 'pnpm-workspace.yaml'
+      - '.npmrc'
+      - '.cargo/**'
+      - '.github/actions/**'
+      - '.github/workflows/pr-server-preview-release.yml'
+
+concurrency:
+  group: pr-server-preview-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  NODE_VERSION: 22
+  PNPM_VERSION: 10.13.1
+  RUST_TOOLCHAIN: nightly-2025-12-04
+  TARGET: x86_64-unknown-linux-musl
+  PREVIEW_TAG: pr-${{ github.event.pull_request.number }}-server-preview
+
+jobs:
+  build-frontend:
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository
+      && !github.event.pull_request.draft
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      VITE_PUBLIC_REACT_VIRTUOSO_LICENSE_KEY: ${{ secrets.PUBLIC_REACT_VIRTUOSO_LICENSE_KEY }}
+      VITE_VK_SHARED_API_BASE: ${{ secrets.VK_SHARED_API_BASE }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Setup Node
+        uses: ./.github/actions/setup-node
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build frontend
+        run: cd packages/local-web && npm run build
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          VITE_POSTHOG_API_KEY: ${{ secrets.POSTHOG_API_KEY }}
+          VITE_POSTHOG_API_ENDPOINT: ${{ secrets.POSTHOG_API_ENDPOINT }}
+          VITE_SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+
+      - name: Upload frontend artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: frontend-dist
+          path: packages/local-web/dist/
+          retention-days: 1
+
+  build-server:
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository
+      && !github.event.pull_request.draft
+    needs: build-frontend
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      CARGO_INCREMENTAL: '0'
+      SCCACHE_GHA_ENABLED: 'true'
+      RUSTC_WRAPPER: sccache
+      SCCACHE_CACHE_SIZE: 10G
+      CARGO_HOME: ${{ github.workspace }}/.cargo
+      RUSTUP_HOME: ${{ github.workspace }}/.rustup
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Setup sccache
+        uses: BloopAI/sccache-action@main
+
+      - name: Cache Rust toolchain
+        uses: actions/cache@v5
+        with:
+          path: .rustup/toolchains
+          key: rust-toolchain-${{ runner.os }}-${{ env.TARGET }}-${{ env.RUST_TOOLCHAIN }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: ${{ env.TARGET }}
+
+      - name: Restore Rust caches
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          workspaces: '.'
+          shared-key: pr-server-preview-${{ runner.os }}-${{ env.TARGET }}
+          cache-provider: github
+          cache-all-crates: 'true'
+          cache-on-failure: 'true'
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          DEBIAN_FRONTEND=noninteractive sudo apt-get install -y \
+            clang libclang-dev lld llvm nasm cmake ninja-build
+
+      - name: Install Zig
+        uses: BloopAI/setup-zig@main
+        with:
+          version: 0.15.2
+
+      - name: Install cargo zigbuild
+        uses: taiki-e/cache-cargo-install-action@34ce5120836e5f9f1508d8713d7fdea0e8facd6f # v3.0.1
+        with:
+          tool: cargo-zigbuild
+          git: https://github.com/rust-cross/cargo-zigbuild
+          rev: bbb57ac6a5eb90f53617a5c218fda03080599e4a # v0.20.1
+
+      - name: Download frontend artifact
+        uses: actions/download-artifact@v7
+        with:
+          name: frontend-dist
+          path: packages/local-web/dist/
+
+      - name: Build server binary
+        run: |
+          cargo zigbuild --locked --release --target ${{ env.TARGET }} \
+            -p server --bin server
+        env:
+          POSTHOG_API_KEY: ${{ secrets.POSTHOG_API_KEY }}
+          POSTHOG_API_ENDPOINT: ${{ secrets.POSTHOG_API_ENDPOINT }}
+          VK_SHARED_API_BASE: ${{ secrets.VK_SHARED_API_BASE }}
+          VK_SHARED_RELAY_API_BASE: ${{ secrets.VK_SHARED_RELAY_API_BASE }}
+          SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+
+      - name: Package server preview
+        run: |
+          mkdir -p dist
+          cp target/${{ env.TARGET }}/release/server dist/vibe-kanban
+          chmod 755 dist/vibe-kanban
+          tar -C dist -czf dist/vibe-kanban-linux-x64.tar.gz vibe-kanban
+          sha256sum dist/vibe-kanban-linux-x64.tar.gz \
+            > dist/vibe-kanban-linux-x64.tar.gz.sha256
+
+      - name: Upload preview artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: server-preview-linux-x64
+          path: |
+            dist/vibe-kanban-linux-x64.tar.gz
+            dist/vibe-kanban-linux-x64.tar.gz.sha256
+          retention-days: 1
+          compression-level: 0
+
+  publish-release:
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository
+      && !github.event.pull_request.draft
+    needs: build-server
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Download preview artifact
+        uses: actions/download-artifact@v7
+        with:
+          name: server-preview-linux-x64
+          path: release-assets/
+
+      - name: Delete previous preview release
+        uses: actions/github-script@v8
+        env:
+          TAG_NAME: ${{ env.PREVIEW_TAG }}
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const tag = process.env.TAG_NAME;
+
+            try {
+              const existing = await github.rest.repos.getReleaseByTag({
+                owner,
+                repo,
+                tag,
+              });
+              await github.rest.repos.deleteRelease({
+                owner,
+                repo,
+                release_id: existing.data.id,
+              });
+              core.info(`Deleted existing release ${existing.data.id} for ${tag}`);
+            } catch (error) {
+              if (error.status !== 404) {
+                throw error;
+              }
+              core.info(`No existing release found for ${tag}`);
+            }
+
+            try {
+              await github.rest.git.deleteRef({
+                owner,
+                repo,
+                ref: `tags/${tag}`,
+              });
+              core.info(`Deleted existing tag ${tag}`);
+            } catch (error) {
+              if (error.status !== 404) {
+                throw error;
+              }
+              core.info(`No existing tag found for ${tag}`);
+            }
+
+      - name: Create preview release
+        uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe # v2
+        with:
+          tag_name: ${{ env.PREVIEW_TAG }}
+          target_commitish: ${{ github.event.pull_request.head.sha }}
+          name: PR #${{ github.event.pull_request.number }} Server Preview
+          prerelease: true
+          generate_release_notes: false
+          body: |
+            Automated rolling preview release for PR #${{ github.event.pull_request.number }}.
+
+            Commit: ${{ github.event.pull_request.head.sha }}
+            Branch: `${{ github.event.pull_request.head.ref }}`
+
+            Included assets:
+            - `vibe-kanban-linux-x64.tar.gz`
+            - `vibe-kanban-linux-x64.tar.gz.sha256`
+
+            Notes:
+            - Built from the local `server` binary with the embedded local web frontend.
+            - Linux x64 only for now.
+            - Replaced on each PR update.
+          files: |
+            release-assets/vibe-kanban-linux-x64.tar.gz
+            release-assets/vibe-kanban-linux-x64.tar.gz.sha256
