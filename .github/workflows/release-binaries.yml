@@ -1,0 +1,582 @@
+name: Release Binaries
+
+on:
+  pull_request:
+    branches:
+      - main
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - ready_for_review
+    paths:
+      - 'crates/api-types/**'
+      - 'crates/client-info/**'
+      - 'crates/db/**'
+      - 'crates/deployment/**'
+      - 'crates/desktop-bridge/**'
+      - 'crates/embedded-ssh/**'
+      - 'crates/executors/**'
+      - 'crates/git/**'
+      - 'crates/git-host/**'
+      - 'crates/local-deployment/**'
+      - 'crates/mcp/**'
+      - 'crates/preview-proxy/**'
+      - 'crates/relay-client/**'
+      - 'crates/relay-control/**'
+      - 'crates/relay-hosts/**'
+      - 'crates/relay-protocol/**'
+      - 'crates/relay-tunnel-core/**'
+      - 'crates/relay-types/**'
+      - 'crates/relay-webrtc/**'
+      - 'crates/relay-ws/**'
+      - 'crates/remote-info/**'
+      - 'crates/server/**'
+      - 'crates/services/**'
+      - 'crates/trusted-key-auth/**'
+      - 'crates/utils/**'
+      - 'crates/workspace-manager/**'
+      - 'crates/worktree-manager/**'
+      - 'crates/ws-bridge/**'
+      - 'packages/local-web/**'
+      - 'packages/web-core/**'
+      - 'packages/ui/**'
+      - 'shared/**'
+      - 'scripts/build-bippy-bundle.mjs'
+      - 'scripts/check-i18n.sh'
+      - 'scripts/check-legacy-frontend-paths.sh'
+      - 'scripts/check-unused-i18n-keys.mjs'
+      - 'scripts/legacy-frontend-paths-allowlist.txt'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - 'pnpm-workspace.yaml'
+      - '.npmrc'
+      - '.cargo/**'
+      - '.github/actions/**'
+      - '.github/workflows/release-binaries.yml'
+  push:
+    tags:
+      - 'v*'
+
+concurrency:
+  group: release-binaries-${{ github.event.pull_request.number || github.ref_name }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  NODE_VERSION: 22
+  PNPM_VERSION: 10.13.1
+  RUST_TOOLCHAIN: nightly-2025-12-04
+  CARGO_XWIN_VERSION: 0.20.2
+
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    outputs:
+      should_run: ${{ steps.prepare.outputs.should_run }}
+      checkout_ref: ${{ steps.prepare.outputs.checkout_ref }}
+      target_commitish: ${{ steps.prepare.outputs.target_commitish }}
+      release_tag: ${{ steps.prepare.outputs.release_tag }}
+      release_name: ${{ steps.prepare.outputs.release_name }}
+      release_body: ${{ steps.prepare.outputs.release_body }}
+      release_draft: ${{ steps.prepare.outputs.release_draft }}
+      release_prerelease: ${{ steps.prepare.outputs.release_prerelease }}
+      generate_release_notes: ${{ steps.prepare.outputs.generate_release_notes }}
+      matrix: ${{ steps.prepare.outputs.matrix }}
+    steps:
+      - name: Prepare release metadata
+        id: prepare
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_IS_DRAFT: ${{ github.event.pull_request.draft }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          REPOSITORY: ${{ github.repository }}
+          TAG_NAME: ${{ github.ref_name }}
+          GITHUB_SHA: ${{ github.sha }}
+        run: |
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            if [[ "$PR_HEAD_REPO" != "$REPOSITORY" || "$PR_IS_DRAFT" == "true" ]]; then
+              echo "should_run=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+
+            short_sha="${PR_HEAD_SHA:0:7}"
+            release_tag="pr-${PR_NUMBER}-${short_sha}"
+            release_name="PR #${PR_NUMBER} Binary Artifacts (${short_sha})"
+
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+            echo "checkout_ref=$PR_HEAD_SHA" >> "$GITHUB_OUTPUT"
+            echo "target_commitish=$PR_HEAD_SHA" >> "$GITHUB_OUTPUT"
+            echo "release_tag=$release_tag" >> "$GITHUB_OUTPUT"
+            echo "release_name=$release_name" >> "$GITHUB_OUTPUT"
+            echo "release_draft=true" >> "$GITHUB_OUTPUT"
+            echo "release_prerelease=true" >> "$GITHUB_OUTPUT"
+            echo "generate_release_notes=false" >> "$GITHUB_OUTPUT"
+            echo 'matrix<<EOF' >> "$GITHUB_OUTPUT"
+            cat <<'JSON' >> "$GITHUB_OUTPUT"
+            {"include":[{"target":"x86_64-unknown-linux-musl","os":"ubuntu-24.04","name":"linux-x64","archive_ext":"tar.gz","package_format":"tar.gz"}]}
+            JSON
+            echo 'EOF' >> "$GITHUB_OUTPUT"
+            echo 'release_body<<EOF' >> "$GITHUB_OUTPUT"
+            cat <<EOF >> "$GITHUB_OUTPUT"
+            Draft binary release for PR #${PR_NUMBER}.
+
+            Commit: ${PR_HEAD_SHA}
+            Branch: \`${PR_HEAD_REF}\`
+
+            Included binaries:
+            - \`vibe-kanban\`
+            - \`vibe-kanban-mcp\`
+
+            Included platforms:
+            - \`linux-x64\`
+
+            Release assets include archives, checksum files, and a machine-readable \`manifest.json\`.
+            EOF
+            echo 'EOF' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "should_run=true" >> "$GITHUB_OUTPUT"
+          echo "checkout_ref=$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+          echo "target_commitish=$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+          echo "release_tag=$TAG_NAME" >> "$GITHUB_OUTPUT"
+          echo "release_name=$TAG_NAME" >> "$GITHUB_OUTPUT"
+          echo "release_draft=false" >> "$GITHUB_OUTPUT"
+          echo "release_prerelease=false" >> "$GITHUB_OUTPUT"
+          echo "generate_release_notes=false" >> "$GITHUB_OUTPUT"
+          echo 'matrix<<EOF' >> "$GITHUB_OUTPUT"
+          cat <<'JSON' >> "$GITHUB_OUTPUT"
+          {"include":[
+            {"target":"x86_64-unknown-linux-musl","os":"ubuntu-24.04","name":"linux-x64","archive_ext":"tar.gz","package_format":"tar.gz"},
+            {"target":"aarch64-unknown-linux-musl","os":"ubuntu-24.04-arm","name":"linux-arm64","archive_ext":"tar.gz","package_format":"tar.gz"},
+            {"target":"x86_64-pc-windows-msvc","os":"ubuntu-24.04","name":"windows-x64","archive_ext":"zip","package_format":"zip"},
+            {"target":"aarch64-pc-windows-msvc","os":"ubuntu-24.04","name":"windows-arm64","archive_ext":"zip","package_format":"zip"},
+            {"target":"x86_64-apple-darwin","os":"macos-15-xlarge","name":"macos-x64","archive_ext":"zip","package_format":"zip"},
+            {"target":"aarch64-apple-darwin","os":"macos-15-xlarge","name":"macos-arm64","archive_ext":"zip","package_format":"zip"}
+          ]}
+          JSON
+          echo 'EOF' >> "$GITHUB_OUTPUT"
+          echo 'release_body<<EOF' >> "$GITHUB_OUTPUT"
+          cat <<EOF >> "$GITHUB_OUTPUT"
+          Production binary release for ${TAG_NAME}.
+
+          Included binaries:
+          - \`vibe-kanban\`
+          - \`vibe-kanban-mcp\`
+
+          Included platforms:
+          - \`linux-x64\`
+          - \`linux-arm64\`
+          - \`windows-x64\`
+          - \`windows-arm64\`
+          - \`macos-x64\`
+          - \`macos-arm64\`
+
+          Release assets include archives, checksum files, and a machine-readable \`manifest.json\`.
+          EOF
+          echo 'EOF' >> "$GITHUB_OUTPUT"
+
+  build-frontend:
+    needs: prepare
+    if: needs.prepare.outputs.should_run == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      VITE_PUBLIC_REACT_VIRTUOSO_LICENSE_KEY: ${{ secrets.PUBLIC_REACT_VIRTUOSO_LICENSE_KEY }}
+      VITE_VK_SHARED_API_BASE: ${{ secrets.VK_SHARED_API_BASE }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.prepare.outputs.checkout_ref }}
+
+      - name: Setup Node
+        uses: ./.github/actions/setup-node
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build frontend
+        run: cd packages/local-web && npm run build
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          VITE_POSTHOG_API_KEY: ${{ secrets.POSTHOG_API_KEY }}
+          VITE_POSTHOG_API_ENDPOINT: ${{ secrets.POSTHOG_API_ENDPOINT }}
+          VITE_SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+
+      - name: Upload frontend artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: frontend-dist
+          path: packages/local-web/dist/
+          retention-days: 1
+
+  build-binaries:
+    needs: [prepare, build-frontend]
+    if: needs.prepare.outputs.should_run == 'true'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.prepare.outputs.matrix) }}
+    defaults:
+      run:
+        shell: bash
+    env:
+      CARGO_INCREMENTAL: '0'
+      SCCACHE_GHA_ENABLED: 'true'
+      RUSTC_WRAPPER: sccache
+      SCCACHE_CACHE_SIZE: 10G
+      CARGO_HOME: ${{ github.workspace }}/.cargo
+      RUSTUP_HOME: ${{ github.workspace }}/.rustup
+      XWIN_CACHE_DIR: ${{ github.workspace }}/.xwin-cache
+      HAS_APPLE_SIGNING: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 != '' && secrets.APPLE_CERTIFICATE_PASSWORD != '' }}
+      HAS_APPLE_NOTARIZATION: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 != '' && secrets.APPLE_CERTIFICATE_PASSWORD != '' && secrets.APP_STORE_API_KEY != '' }}
+      HAS_WINDOWS_SIGNING: ${{ secrets.AZURE_ENDPOINT != '' && secrets.AZURE_CLIENT_ID != '' && secrets.AZURE_CLIENT_SECRET != '' && secrets.AZURE_TENANT_ID != '' && secrets.AZURE_CODE_SIGNING_NAME != '' && secrets.AZURE_CERT_PROFILE_NAME != '' }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.prepare.outputs.checkout_ref }}
+
+      - name: Setup sccache
+        uses: BloopAI/sccache-action@main
+
+      - name: Cache Rust toolchain
+        uses: actions/cache@v5
+        with:
+          path: .rustup/toolchains
+          key: rust-toolchain-${{ runner.os }}-${{ matrix.target }}-${{ env.RUST_TOOLCHAIN }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: ${{ matrix.target }}
+
+      - name: Restore Rust caches
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          workspaces: '.'
+          shared-key: release-binaries-${{ runner.os }}-${{ matrix.target }}
+          cache-provider: github
+          cache-all-crates: 'true'
+          cache-on-failure: 'true'
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          DEBIAN_FRONTEND=noninteractive sudo apt-get install -y \
+            clang libclang-dev lld llvm nasm cmake ninja-build
+
+          if [[ "${{ matrix.target }}" == *"windows"* ]]; then
+            DEBIAN_FRONTEND=noninteractive sudo apt-get install -y \
+              clang-19 clang-tools-19 llvm-19 lld-19 default-jre-headless
+            echo "/usr/lib/llvm-19/bin" >> "$GITHUB_PATH"
+          fi
+
+      - name: Install Zig
+        if: runner.os == 'Linux' && !contains(matrix.target, 'windows')
+        uses: BloopAI/setup-zig@main
+        with:
+          version: 0.15.2
+
+      - name: Install cargo zigbuild
+        if: runner.os == 'Linux' && !contains(matrix.target, 'windows')
+        uses: taiki-e/cache-cargo-install-action@34ce5120836e5f9f1508d8713d7fdea0e8facd6f # v3.0.1
+        with:
+          tool: cargo-zigbuild
+          git: https://github.com/rust-cross/cargo-zigbuild
+          rev: bbb57ac6a5eb90f53617a5c218fda03080599e4a # v0.20.1
+
+      - name: Install cargo xwin
+        if: runner.os == 'Linux' && contains(matrix.target, 'windows')
+        uses: taiki-e/cache-cargo-install-action@34ce5120836e5f9f1508d8713d7fdea0e8facd6f # v3.0.1
+        with:
+          tool: cargo-xwin
+          git: https://github.com/rust-cross/cargo-xwin
+          rev: 635a9559d49d719e79e0f60d92eb44447faf3212 # v0.20.2
+
+      - name: Cache xwin downloads
+        if: runner.os == 'Linux' && contains(matrix.target, 'windows')
+        uses: actions/cache@v5
+        with:
+          path: ${{ github.workspace }}/.xwin-cache
+          key: xwin-${{ runner.os }}-${{ matrix.target }}-cargo-xwin-${{ env.CARGO_XWIN_VERSION }}
+
+      - name: Download frontend artifact
+        uses: actions/download-artifact@v7
+        with:
+          name: frontend-dist
+          path: packages/local-web/dist/
+
+      - name: Build binaries (Linux)
+        if: runner.os == 'Linux' && !contains(matrix.target, 'windows')
+        run: |
+          cargo zigbuild --locked --release --target ${{ matrix.target }} \
+            -p server -p mcp --bin server --bin vibe-kanban-mcp
+        env:
+          POSTHOG_API_KEY: ${{ secrets.POSTHOG_API_KEY }}
+          POSTHOG_API_ENDPOINT: ${{ secrets.POSTHOG_API_ENDPOINT }}
+          VK_SHARED_API_BASE: ${{ secrets.VK_SHARED_API_BASE }}
+          VK_SHARED_RELAY_API_BASE: ${{ secrets.VK_SHARED_RELAY_API_BASE }}
+          SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+
+      - name: Build binaries (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          if [[ "${{ matrix.target }}" == "x86_64-apple-darwin" ]]; then
+            export MACOSX_DEPLOYMENT_TARGET=10.12
+          elif [[ "${{ matrix.target }}" == "aarch64-apple-darwin" ]]; then
+            export MACOSX_DEPLOYMENT_TARGET=11.0
+          fi
+
+          cargo build --locked --release --target ${{ matrix.target }} \
+            -p server -p mcp --bin server --bin vibe-kanban-mcp
+        env:
+          POSTHOG_API_KEY: ${{ secrets.POSTHOG_API_KEY }}
+          POSTHOG_API_ENDPOINT: ${{ secrets.POSTHOG_API_ENDPOINT }}
+          VK_SHARED_API_BASE: ${{ secrets.VK_SHARED_API_BASE }}
+          VK_SHARED_RELAY_API_BASE: ${{ secrets.VK_SHARED_RELAY_API_BASE }}
+          SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+
+      - name: Build binaries (Windows)
+        if: runner.os == 'Linux' && contains(matrix.target, 'windows')
+        run: |
+          if [[ "${{ matrix.target }}" == "aarch64-pc-windows-msvc" ]]; then
+            # ring requires clang on arm64 windows. See https://github.com/briansmith/ring/issues/2117
+            chmod +x scripts/ring-cc-wrapper.sh scripts/clang
+            export PATH="${{ github.workspace }}/scripts:$PATH"
+            export RING_CC=/usr/lib/llvm-19/bin/clang
+            export DEFAULT_CC=clang-cl
+            export CC_aarch64_pc_windows_msvc="${{ github.workspace }}/scripts/ring-cc-wrapper.sh"
+          fi
+
+          cargo xwin build --locked --cross-compiler clang-cl --release \
+            --target ${{ matrix.target }} -p server -p mcp \
+            --bin server --bin vibe-kanban-mcp
+        env:
+          POSTHOG_API_KEY: ${{ secrets.POSTHOG_API_KEY }}
+          POSTHOG_API_ENDPOINT: ${{ secrets.POSTHOG_API_ENDPOINT }}
+          VK_SHARED_API_BASE: ${{ secrets.VK_SHARED_API_BASE }}
+          VK_SHARED_RELAY_API_BASE: ${{ secrets.VK_SHARED_RELAY_API_BASE }}
+          SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+          CARGO_PROFILE_RELEASE_DEBUG: 0
+
+      - name: Prepare package directory
+        run: |
+          mkdir -p package dist
+
+          if [[ "${{ matrix.target }}" == *"windows"* ]]; then
+            cp target/${{ matrix.target }}/release/server.exe package/vibe-kanban.exe
+            cp target/${{ matrix.target }}/release/vibe-kanban-mcp.exe package/vibe-kanban-mcp.exe
+          else
+            cp target/${{ matrix.target }}/release/server package/vibe-kanban
+            cp target/${{ matrix.target }}/release/vibe-kanban-mcp package/vibe-kanban-mcp
+            chmod 755 package/vibe-kanban package/vibe-kanban-mcp
+          fi
+
+      - name: Setup Jsign
+        if: contains(matrix.target, 'windows') && env.HAS_WINDOWS_SIGNING == 'true'
+        id: jsign
+        uses: ./.github/actions/setup-jsign
+
+      - name: Azure CLI login
+        if: contains(matrix.target, 'windows') && env.HAS_WINDOWS_SIGNING == 'true'
+        uses: azure/login@a457da9ea143d694b1b9c7c869ebb04ebe844ef5 # v2
+        with:
+          creds: '{"clientId":"${{ secrets.AZURE_CLIENT_ID }}","clientSecret":"${{ secrets.AZURE_CLIENT_SECRET }}","tenantId":"${{ secrets.AZURE_TENANT_ID }}"}'
+          allow-no-subscriptions: true
+
+      - name: Sign Windows binaries
+        if: contains(matrix.target, 'windows') && env.HAS_WINDOWS_SIGNING == 'true'
+        env:
+          AZURE_ENDPOINT: ${{ secrets.AZURE_ENDPOINT }}
+          AZURE_CODE_SIGNING_NAME: ${{ secrets.AZURE_CODE_SIGNING_NAME }}
+          AZURE_CERT_PROFILE_NAME: ${{ secrets.AZURE_CERT_PROFILE_NAME }}
+        run: |
+          TOKEN=$(az account get-access-token --resource https://codesigning.azure.net --query accessToken -o tsv)
+          KEYSTORE=$(echo "$AZURE_ENDPOINT" | sed 's|https\?://||;s|/.*||')
+
+          for file in package/vibe-kanban.exe package/vibe-kanban-mcp.exe; do
+            echo "Signing $file"
+            java -jar "${{ steps.jsign.outputs.jar-path }}" \
+              --storetype TRUSTEDSIGNING \
+              --keystore "$KEYSTORE" \
+              --storepass "$TOKEN" \
+              --alias "${AZURE_CODE_SIGNING_NAME}/${AZURE_CERT_PROFILE_NAME}" \
+              --tsaurl http://timestamp.acs.microsoft.com \
+              --tsmode RFC3161 \
+              "$file"
+          done
+
+      - name: Prepare Apple certificate
+        if: runner.os == 'macOS' && env.HAS_APPLE_SIGNING == 'true'
+        run: |
+          echo "${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}" | base64 --decode > certificate.p12
+
+      - name: Sign main binary (macOS)
+        if: runner.os == 'macOS' && env.HAS_APPLE_SIGNING == 'true'
+        uses: BloopAI/apple-code-sign-action@v1
+        with:
+          input_path: target/${{ matrix.target }}/release/server
+          output_path: package/vibe-kanban
+          p12_file: certificate.p12
+          p12_password: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          sign: true
+          sign_args: "--code-signature-flags=runtime"
+
+      - name: Sign MCP binary (macOS)
+        if: runner.os == 'macOS' && env.HAS_APPLE_SIGNING == 'true'
+        uses: BloopAI/apple-code-sign-action@v1
+        with:
+          input_path: target/${{ matrix.target }}/release/vibe-kanban-mcp
+          output_path: package/vibe-kanban-mcp
+          p12_file: certificate.p12
+          p12_password: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          sign: true
+          sign_args: "--code-signature-flags=runtime"
+
+      - name: Package Linux artifacts
+        if: matrix.package_format == 'tar.gz'
+        run: |
+          tar -C package -czf dist/vibe-kanban-${{ matrix.name }}.tar.gz vibe-kanban
+          tar -C package -czf dist/vibe-kanban-mcp-${{ matrix.name }}.tar.gz vibe-kanban-mcp
+
+      - name: Package ZIP artifacts
+        if: matrix.package_format == 'zip'
+        run: |
+          if [[ "${{ matrix.target }}" == *"windows"* ]]; then
+            zip -j dist/vibe-kanban-${{ matrix.name }}.zip package/vibe-kanban.exe
+            zip -j dist/vibe-kanban-mcp-${{ matrix.name }}.zip package/vibe-kanban-mcp.exe
+          else
+            zip -j dist/vibe-kanban-${{ matrix.name }}.zip package/vibe-kanban
+            zip -j dist/vibe-kanban-mcp-${{ matrix.name }}.zip package/vibe-kanban-mcp
+          fi
+
+      - name: Write App Store API key
+        if: runner.os == 'macOS' && env.HAS_APPLE_NOTARIZATION == 'true'
+        env:
+          API_KEY: ${{ secrets.APP_STORE_API_KEY }}
+        run: echo "$API_KEY" > app_store_key.json
+
+      - name: Notarize signed binaries (macOS)
+        if: runner.os == 'macOS' && env.HAS_APPLE_NOTARIZATION == 'true'
+        uses: BloopAI/apple-code-sign-action@main
+        continue-on-error: true
+        with:
+          input_path: |
+            dist/vibe-kanban-${{ matrix.name }}.zip
+            dist/vibe-kanban-mcp-${{ matrix.name }}.zip
+          sign: false
+          notarize: true
+          app_store_connect_api_key_json_file: app_store_key.json
+
+      - name: Generate checksums
+        run: |
+          for file in dist/*; do
+            if command -v sha256sum >/dev/null 2>&1; then
+              sha256sum "$file" > "$file.sha256"
+            else
+              shasum -a 256 "$file" > "$file.sha256"
+            fi
+          done
+
+      - name: Clean up signing files
+        if: runner.os == 'macOS'
+        run: |
+          rm -f certificate.p12 app_store_key.json
+          rm -rf private_keys/
+
+      - name: Upload packaged artifacts
+        uses: actions/upload-artifact@v6
+        with:
+          name: release-assets-${{ matrix.name }}
+          path: dist/
+          retention-days: 1
+          compression-level: 0
+
+  publish-release:
+    needs: [prepare, build-binaries]
+    if: needs.prepare.outputs.should_run == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Download packaged artifacts
+        uses: actions/download-artifact@v7
+        with:
+          pattern: release-assets-*
+          path: release-assets/
+          merge-multiple: true
+
+      - name: Generate manifest
+        env:
+          RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
+          TARGET_COMMITISH: ${{ needs.prepare.outputs.target_commitish }}
+        run: |
+          node <<'EOF'
+          const fs = require('fs');
+          const path = require('path');
+
+          const dir = 'release-assets';
+          const releaseTag = process.env.RELEASE_TAG;
+          const targetCommitish = process.env.TARGET_COMMITISH;
+          const manifest = {
+            version: releaseTag,
+            commit: targetCommitish,
+            generated_at: new Date().toISOString(),
+            platforms: {},
+          };
+
+          const entries = fs.readdirSync(dir).sort();
+          for (const file of entries) {
+            if (file.endsWith('.sha256')) continue;
+
+            const match = file.match(/^(vibe-kanban(?:-mcp)?)-((?:linux|windows|macos)-(?:x64|arm64))\.(tar\.gz|zip)$/);
+            if (!match) continue;
+
+            const [, binaryName, platform] = match;
+            const fullPath = path.join(dir, file);
+            const shaPath = `${fullPath}.sha256`;
+            const shaLine = fs.readFileSync(shaPath, 'utf8').trim();
+            const sha256 = shaLine.split(/\s+/)[0];
+            const size = fs.statSync(fullPath).size;
+
+            if (!manifest.platforms[platform]) {
+              manifest.platforms[platform] = {};
+            }
+
+            manifest.platforms[platform][binaryName] = {
+              file,
+              sha256,
+              size,
+            };
+          }
+
+          fs.writeFileSync(
+            path.join(dir, 'manifest.json'),
+            JSON.stringify(manifest, null, 2) + '\n'
+          );
+          EOF
+
+      - name: Create or update GitHub Release
+        uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe # v2
+        with:
+          tag_name: ${{ needs.prepare.outputs.release_tag }}
+          target_commitish: ${{ needs.prepare.outputs.target_commitish }}
+          name: ${{ needs.prepare.outputs.release_name }}
+          body: ${{ needs.prepare.outputs.release_body }}
+          draft: ${{ needs.prepare.outputs.release_draft == 'true' }}
+          prerelease: ${{ needs.prepare.outputs.release_prerelease == 'true' }}
+          generate_release_notes: ${{ needs.prepare.outputs.generate_release_notes == 'true' }}
+          overwrite_files: true
+          files: |
+            release-assets/*
