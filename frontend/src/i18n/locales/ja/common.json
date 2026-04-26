@@ -393,6 +393,7 @@
     "unknownFile": "不明なファイル",
     "unknownUser": "不明なユーザー",
     "deletedUser": "削除済みユーザー",
+    "replyingTo": "{{name}} に返信中",
     "replyQuotePrefix": "が書きました:",
     "moreActions": "その他の操作",
     "closePanel": "パネルを閉じる",

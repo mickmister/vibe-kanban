@@ -1,3 +1,7 @@
+use api_types::{
+    CreateIssueCommentRequest, DeleteResponse, IssueComment, ListIssueCommentsQuery,
+    ListIssueCommentsResponse, MemberRole, MutationResponse, UpdateIssueCommentRequest,
+};
 use axum::{
     Json,
     extract::{Extension, Path, Query, State},
@@ -10,11 +14,6 @@ use super::{
     error::{ErrorResponse, db_error},
     organization_members::ensure_issue_access,
 };
-use api_types::{
-    CreateIssueCommentRequest, IssueComment, ListIssueCommentsQuery, ListIssueCommentsResponse,
-    MemberRole, UpdateIssueCommentRequest,
-};
-use api_types::{DeleteResponse, MutationResponse};
 use crate::{
     AppState,
     auth::RequestContext,
@@ -23,7 +22,8 @@ use crate::{
 };
 
 /// Mutation definition for IssueComment - provides both router and TypeScript metadata.
-pub fn mutation() -> MutationBuilder<IssueComment, CreateIssueCommentRequest, UpdateIssueCommentRequest> {
+pub fn mutation()
+-> MutationBuilder<IssueComment, CreateIssueCommentRequest, UpdateIssueCommentRequest> {
     MutationBuilder::new("issue_comments")
         .list(list_issue_comments)
         .get(get_issue_comment)
@@ -98,6 +98,29 @@ async fn create_issue_comment(
     Json(payload): Json<CreateIssueCommentRequest>,
 ) -> Result<Json<MutationResponse<IssueComment>>, ErrorResponse> {
     let organization_id = ensure_issue_access(state.pool(), ctx.user.id, payload.issue_id).await?;
+
+    if let Some(parent_id) = payload.parent_id {
+        let parent_comment = IssueCommentRepository::find_by_id(state.pool(), parent_id)
+            .await
+            .map_err(|error| {
+                tracing::error!(?error, %parent_id, "failed to load parent issue comment");
+                ErrorResponse::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "failed to create issue comment",
+                )
+            })?;
+
+        let is_valid_parent = parent_comment
+            .map(|comment| comment.issue_id == payload.issue_id)
+            .unwrap_or(false);
+
+        if !is_valid_parent {
+            return Err(ErrorResponse::new(
+                StatusCode::BAD_REQUEST,
+                "parent comment must belong to the same issue",
+            ));
+        }
+    }
 
     let is_reply = payload.parent_id.is_some();
 

@@ -393,6 +393,7 @@
     "unknownFile": "Fichier inconnu",
     "unknownUser": "Utilisateur inconnu",
     "deletedUser": "Utilisateur supprimé",
+    "replyingTo": "Réponse à {{name}}",
     "replyQuotePrefix": "a écrit :",
     "moreActions": "Plus d'actions",
     "closePanel": "Fermer le panneau",

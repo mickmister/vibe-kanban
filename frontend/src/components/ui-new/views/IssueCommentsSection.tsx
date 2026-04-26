@@ -1,3 +1,4 @@
+import { useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/utils';
 import {
@@ -33,6 +34,7 @@ import type { PersistKey } from '@/stores/useUiPreferencesStore';
 export interface IssueCommentData {
   id: string;
   authorId: string | null;
+  parentId: string | null;
   authorName: string;
   message: string;
   createdAt: string;
@@ -68,7 +70,9 @@ interface IssueCommentsSectionProps {
   onDeleteComment: (id: string) => void;
   reactionsByCommentId: Map<string, ReactionGroup[]>;
   onToggleReaction: (commentId: string, emoji: string) => void;
-  onReply: (authorName: string, message: string) => void;
+  onReply: (comment: IssueCommentData) => void;
+  replyTargetComment: IssueCommentData | null;
+  onCancelReply: () => void;
   isLoading?: boolean;
   commentEditorRef?: React.Ref<WYSIWYGEditorRef>;
   onPasteFiles?: (files: File[]) => void;
@@ -94,6 +98,8 @@ export function IssueCommentsSection({
   reactionsByCommentId,
   onToggleReaction,
   onReply,
+  replyTargetComment,
+  onCancelReply,
   isLoading,
   commentEditorRef,
   onPasteFiles,
@@ -104,6 +110,33 @@ export function IssueCommentsSection({
   onDismissAttachmentError,
 }: IssueCommentsSectionProps) {
   const { t } = useTranslation('common');
+  const commentIds = useMemo(
+    () => new Set(comments.map((comment) => comment.id)),
+    [comments]
+  );
+  const rootComments = useMemo(
+    () =>
+      comments.filter(
+        (comment) =>
+          !comment.parentId || !commentIds.has(comment.parentId)
+      ),
+    [commentIds, comments]
+  );
+  const repliesByParentId = useMemo(() => {
+    const map = new Map<string, IssueCommentData[]>();
+
+    for (const comment of comments) {
+      if (!comment.parentId || !commentIds.has(comment.parentId)) {
+        continue;
+      }
+
+      const replies = map.get(comment.parentId) ?? [];
+      replies.push(comment);
+      map.set(comment.parentId, replies);
+    }
+
+    return map;
+  }, [commentIds, comments]);
 
   return (
     <CollapsibleSectionHeader
@@ -113,39 +146,52 @@ export function IssueCommentsSection({
       actions={[]}
     >
       <div className="p-base flex flex-col gap-base border-t">
-        {/* Comments list */}
         {isLoading ? (
           <div className="flex flex-col gap-double animate-pulse">
             <div className="h-4 bg-secondary rounded w-3/4" />
             <div className="h-4 bg-secondary rounded w-1/2" />
           </div>
-        ) : comments.length === 0 ? (
+        ) : rootComments.length === 0 ? (
           <p className="text-low">{t('kanban.noCommentsYet')}</p>
         ) : (
-          comments.map((comment) => (
-            <CommentItem
+          rootComments.map((comment) => (
+            <CommentThread
               key={comment.id}
               comment={comment}
-              isEditing={editingCommentId === comment.id}
-              editValue={editingCommentId === comment.id ? editingValue : ''}
-              onEditValueChange={onEditingValueChange}
-              onStartEdit={() => onStartEdit(comment.id)}
+              repliesByParentId={repliesByParentId}
+              editingCommentId={editingCommentId}
+              editingValue={editingValue}
+              onEditingValueChange={onEditingValueChange}
+              onStartEdit={onStartEdit}
               onSaveEdit={onSaveEdit}
               onCancelEdit={onCancelEdit}
-              onDelete={() => onDeleteComment(comment.id)}
-              reactions={reactionsByCommentId.get(comment.id) ?? []}
-              onToggleReaction={(emoji) => onToggleReaction(comment.id, emoji)}
-              onReply={() => onReply(comment.authorName, comment.message)}
+              onDeleteComment={onDeleteComment}
+              reactionsByCommentId={reactionsByCommentId}
+              onToggleReaction={onToggleReaction}
+              onReply={onReply}
             />
           ))
         )}
 
-        {/* Comment Input with WYSIWYG + dropzone */}
         <div
           {...dropzoneProps?.getRootProps()}
           className="relative flex flex-col gap-double bg-secondary border border-border rounded-sm p-double"
         >
           <input {...dropzoneProps?.getInputProps()} />
+          {replyTargetComment && (
+            <div className="flex items-center justify-between gap-base rounded-sm border border-border bg-panel px-base py-half">
+              <span className="text-sm text-low">
+                {t('kanban.replyingTo', { name: replyTargetComment.authorName })}
+              </span>
+              <button
+                type="button"
+                onClick={onCancelReply}
+                className="text-sm text-low hover:text-normal transition-colors"
+              >
+                {t('buttons.cancel')}
+              </button>
+            </div>
+          )}
           <WYSIWYGEditor
             ref={commentEditorRef}
             value={commentInput}
@@ -215,6 +261,85 @@ export function IssueCommentsSection({
   );
 }
 
+interface CommentThreadProps {
+  comment: IssueCommentData;
+  repliesByParentId: Map<string, IssueCommentData[]>;
+  editingCommentId: string | null;
+  editingValue: string;
+  onEditingValueChange: (value: string) => void;
+  onStartEdit: (commentId: string) => void;
+  onSaveEdit: () => void;
+  onCancelEdit: () => void;
+  onDeleteComment: (id: string) => void;
+  reactionsByCommentId: Map<string, ReactionGroup[]>;
+  onToggleReaction: (commentId: string, emoji: string) => void;
+  onReply: (comment: IssueCommentData) => void;
+  depth?: number;
+}
+
+function CommentThread({
+  comment,
+  repliesByParentId,
+  editingCommentId,
+  editingValue,
+  onEditingValueChange,
+  onStartEdit,
+  onSaveEdit,
+  onCancelEdit,
+  onDeleteComment,
+  reactionsByCommentId,
+  onToggleReaction,
+  onReply,
+  depth = 0,
+}: CommentThreadProps) {
+  const replies = repliesByParentId.get(comment.id) ?? [];
+
+  return (
+    <div className="flex flex-col gap-base">
+      <CommentItem
+        comment={comment}
+        isEditing={editingCommentId === comment.id}
+        editValue={editingCommentId === comment.id ? editingValue : ''}
+        onEditValueChange={onEditingValueChange}
+        onStartEdit={() => onStartEdit(comment.id)}
+        onSaveEdit={onSaveEdit}
+        onCancelEdit={onCancelEdit}
+        onDelete={() => onDeleteComment(comment.id)}
+        reactions={reactionsByCommentId.get(comment.id) ?? []}
+        onToggleReaction={(emoji) => onToggleReaction(comment.id, emoji)}
+        onReply={() => onReply(comment)}
+      />
+      {replies.length > 0 && (
+        <div
+          className={cn(
+            'flex flex-col gap-base border-l border-border pl-double',
+            depth > 0 ? 'ml-base' : 'ml-double'
+          )}
+        >
+          {replies.map((reply) => (
+            <CommentThread
+              key={reply.id}
+              comment={reply}
+              repliesByParentId={repliesByParentId}
+              editingCommentId={editingCommentId}
+              editingValue={editingValue}
+              onEditingValueChange={onEditingValueChange}
+              onStartEdit={onStartEdit}
+              onSaveEdit={onSaveEdit}
+              onCancelEdit={onCancelEdit}
+              onDeleteComment={onDeleteComment}
+              reactionsByCommentId={reactionsByCommentId}
+              onToggleReaction={onToggleReaction}
+              onReply={onReply}
+              depth={depth + 1}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 interface CommentItemProps {
   comment: IssueCommentData;
   isEditing: boolean;
@@ -247,7 +372,6 @@ function CommentItem({
 
   return (
     <div className="flex flex-col gap-base">
-      {/* Header row */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-base">
           {comment.author ? (
@@ -261,7 +385,6 @@ function CommentItem({
           <span className="font-medium text-low">·</span>
           <span className="font-light text-low">{timeAgo}</span>
         </div>
-        {/* Menu dropdown - only shown if user can modify */}
         {comment.canModify && (
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
@@ -285,7 +408,6 @@ function CommentItem({
         )}
       </div>
 
-      {/* Message - editable or read-only */}
       {isEditing ? (
         <div className="flex flex-col gap-half bg-primary border border-border rounded-sm p-double">
           <WYSIWYGEditor
@@ -324,9 +446,7 @@ function CommentItem({
         />
       )}
 
-      {/* Reactions row */}
       <div className="flex items-center gap-base flex-wrap">
-        {/* Existing reactions */}
         <TooltipProvider>
           {reactions.map((reaction) => (
             <Tooltip key={reaction.emoji}>
@@ -353,7 +473,6 @@ function CommentItem({
           ))}
         </TooltipProvider>
 
-        {/* Add reaction button */}
         <EmojiPicker onSelect={onToggleReaction}>
           <button
             type="button"
@@ -363,7 +482,6 @@ function CommentItem({
           </button>
         </EmojiPicker>
 
-        {/* Reply button */}
         <button
           type="button"
           onClick={onReply}

@@ -393,6 +393,7 @@
     "unknownFile": "알 수 없는 파일",
     "unknownUser": "알 수 없는 사용자",
     "deletedUser": "삭제된 사용자",
+    "replyingTo": "{{name}}님에게 답장하는 중",
     "replyQuotePrefix": "님이 작성:",
     "moreActions": "추가 작업",
     "closePanel": "패널 닫기",

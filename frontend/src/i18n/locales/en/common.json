@@ -403,6 +403,7 @@
     "unknownFile": "Unknown file",
     "unknownUser": "Unknown User",
     "deletedUser": "Deleted User",
+    "replyingTo": "Replying to {{name}}",
     "replyQuotePrefix": "wrote:",
     "moreActions": "More actions",
     "closePanel": "Close panel",

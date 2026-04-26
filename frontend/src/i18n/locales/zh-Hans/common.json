@@ -393,6 +393,7 @@
     "unknownFile": "未知文件",
     "unknownUser": "未知用户",
     "deletedUser": "已删除用户",
+    "replyingTo": "正在回复 {{name}}",
     "replyQuotePrefix": "写道：",
     "moreActions": "更多操作",
     "closePanel": "关闭面板",

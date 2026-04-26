@@ -20,6 +20,18 @@ interface IssueCommentsSectionContainerProps {
   issueId: string;
 }
 
+function buildReplyQuote(
+  authorName: string,
+  message: string,
+  quotePrefix: string
+) {
+  const firstLine = message.split('\n')[0].trim();
+  const truncatedLine =
+    firstLine.length > 100 ? `${firstLine.slice(0, 100)}...` : firstLine;
+
+  return `> ${authorName} ${quotePrefix}\n> ${truncatedLine}`;
+}
+
 /**
  * Container that wraps IssueCommentsSection with IssueProvider.
  * Manages comment data transformation, mutations, and UI state.
@@ -42,17 +54,17 @@ function IssueCommentsSectionContent() {
   const { data: currentUser } = useCurrentUser();
   const currentUserId = currentUser?.user_id ?? '';
 
-  // Check if current user is admin
   const currentUserMember = currentUserId
     ? membersWithProfilesById.get(currentUserId)
     : undefined;
   const isCurrentUserAdmin = currentUserMember?.role === MemberRole.ADMIN;
 
-  // Ref to comment editor for programmatic focus
   const commentEditorRef = useRef<WYSIWYGEditorRef>(null);
 
-  // UI state for comment input
   const [commentInput, setCommentInput] = useState('');
+  const [replyTargetCommentId, setReplyTargetCommentId] = useState<
+    string | null
+  >(null);
 
   const handleCommentMarkdownInsert = useCallback((markdown: string) => {
     setCommentInput((prev) =>
@@ -87,11 +99,9 @@ function IssueCommentsSectionContent() {
     [uploadFiles]
   );
 
-  // UI state for editing
   const [editingCommentId, setEditingCommentId] = useState<string | null>(null);
   const [editingValue, setEditingValue] = useState('');
 
-  // Transform IssueComment to IssueCommentData
   const commentsData = useMemo<IssueCommentData[]>(() => {
     return issueContext.comments
       .map((comment) => {
@@ -101,9 +111,11 @@ function IssueCommentsSectionContent() {
         const isAuthor =
           comment.author_id !== null && comment.author_id === currentUserId;
         const canModify = isAuthor || isCurrentUserAdmin;
+
         return {
           id: comment.id,
           authorId: comment.author_id,
+          parentId: comment.parent_id,
           authorName: comment.author_id
             ? author
               ? `${author.first_name ?? ''} ${author.last_name ?? ''}`.trim() ||
@@ -129,7 +141,18 @@ function IssueCommentsSectionContent() {
     t,
   ]);
 
-  // Group reactions by comment, then by emoji
+  const commentsDataById = useMemo(
+    () => new Map(commentsData.map((comment) => [comment.id, comment])),
+    [commentsData]
+  );
+  const replyTargetComment = useMemo(
+    () =>
+      replyTargetCommentId
+        ? commentsDataById.get(replyTargetCommentId) ?? null
+        : null,
+    [commentsDataById, replyTargetCommentId]
+  );
+
   const reactionsByCommentId = useMemo(() => {
     const result = new Map<string, ReactionGroup[]>();
 
@@ -191,13 +214,15 @@ function IssueCommentsSectionContent() {
 
   const handleSubmitComment = useCallback(async () => {
     if (!commentInput.trim()) return;
+
     const message = commentInput.trim();
     const { persisted } = issueContext.insertComment({
       issue_id: issueContext.issueId,
       message,
-      parent_id: null,
+      parent_id: replyTargetComment?.id ?? null,
     });
     setCommentInput('');
+    setReplyTargetCommentId(null);
 
     const allUploadedIds = getAttachmentIds();
     if (allUploadedIds.length > 0) {
@@ -215,28 +240,37 @@ function IssueCommentsSectionContent() {
           console.error('Failed to commit comment attachments:', err);
         }
       }
+
       for (const id of idsToDelete) {
         deleteAttachment(id).catch((err) =>
           console.error('Failed to delete abandoned attachment:', err)
         );
       }
     }
+
     clearAttachments();
-  }, [commentInput, issueContext, getAttachmentIds, clearAttachments]);
+  }, [
+    commentInput,
+    issueContext,
+    replyTargetComment,
+    getAttachmentIds,
+    clearAttachments,
+  ]);
 
   const handleStartEdit = useCallback(
     (commentId: string) => {
-      const comment = commentsData.find((c) => c.id === commentId);
+      const comment = commentsDataById.get(commentId);
       if (comment) {
         setEditingCommentId(commentId);
         setEditingValue(comment.message);
       }
     },
-    [commentsData]
+    [commentsDataById]
   );
 
   const handleSaveEdit = useCallback(() => {
     if (!editingCommentId || !editingValue.trim()) return;
+
     issueContext.updateComment(editingCommentId, {
       message: editingValue.trim(),
     });
@@ -258,17 +292,14 @@ function IssueCommentsSectionContent() {
 
   const handleToggleReaction = useCallback(
     (commentId: string, emoji: string) => {
-      // Check if user already has this reaction
       const reactions = issueContext.getReactionsForComment(commentId);
       const existingReaction = reactions.find(
-        (r) => r.user_id === currentUserId && r.emoji === emoji
+        (reaction) => reaction.user_id === currentUserId && reaction.emoji === emoji
       );
 
       if (existingReaction) {
-        // Remove the reaction
         issueContext.removeReaction(existingReaction.id);
       } else {
-        // Add the reaction
         issueContext.insertReaction({
           comment_id: commentId,
           emoji,
@@ -279,20 +310,80 @@ function IssueCommentsSectionContent() {
   );
 
   const handleReply = useCallback(
-    (authorName: string, message: string) => {
-      // Get first line of the message for the quote
-      const firstLine = message.split('\n')[0].trim();
-      const truncatedLine =
-        firstLine.length > 100 ? `${firstLine.slice(0, 100)}...` : firstLine;
-      const quote = `> ${authorName} ${t('kanban.replyQuotePrefix')}\n> ${truncatedLine}`;
-      setCommentInput(quote);
-      // Focus editor after setting value (setTimeout ensures value is set first)
+    (comment: IssueCommentData) => {
+      const quotePrefix = t('kanban.replyQuotePrefix');
+      const nextQuote = buildReplyQuote(
+        comment.authorName,
+        comment.message,
+        quotePrefix
+      );
+      const previousReplyTarget = replyTargetCommentId
+        ? commentsDataById.get(replyTargetCommentId)
+        : null;
+      const previousQuote = previousReplyTarget
+        ? buildReplyQuote(
+            previousReplyTarget.authorName,
+            previousReplyTarget.message,
+            quotePrefix
+          )
+        : null;
+
+      setReplyTargetCommentId(comment.id);
+      setCommentInput((current) => {
+        const trimmed = current.trim();
+        if (!trimmed) {
+          return `${nextQuote}\n\n`;
+        }
+
+        if (trimmed === nextQuote || trimmed.startsWith(`${nextQuote}\n`)) {
+          return current;
+        }
+
+        if (previousQuote && trimmed.startsWith(previousQuote)) {
+          const remainder = trimmed.slice(previousQuote.length).trimStart();
+          return remainder ? `${nextQuote}\n\n${remainder}` : `${nextQuote}\n\n`;
+        }
+
+        return current;
+      });
+
       setTimeout(() => {
         commentEditorRef.current?.focus();
       }, 0);
     },
-    [t]
+    [commentsDataById, replyTargetCommentId, t]
   );
+
+  const handleCancelReply = useCallback(() => {
+    if (!replyTargetComment) {
+      setReplyTargetCommentId(null);
+      return;
+    }
+
+    const replyQuote = buildReplyQuote(
+      replyTargetComment.authorName,
+      replyTargetComment.message,
+      t('kanban.replyQuotePrefix')
+    );
+
+    setReplyTargetCommentId(null);
+    setCommentInput((current) => {
+      const trimmed = current.trim();
+      if (!trimmed) {
+        return current;
+      }
+
+      if (trimmed === replyQuote) {
+        return '';
+      }
+
+      if (trimmed.startsWith(replyQuote)) {
+        return trimmed.slice(replyQuote.length).trimStart();
+      }
+
+      return current;
+    });
+  }, [replyTargetComment, t]);
 
   return (
     <IssueCommentsSection
@@ -310,6 +401,8 @@ function IssueCommentsSectionContent() {
       reactionsByCommentId={reactionsByCommentId}
       onToggleReaction={handleToggleReaction}
       onReply={handleReply}
+      replyTargetComment={replyTargetComment}
+      onCancelReply={handleCancelReply}
       isLoading={issueContext.isLoading}
       commentEditorRef={commentEditorRef}
       onPasteFiles={onPasteFiles}
