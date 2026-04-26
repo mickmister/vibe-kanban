@@ -82,8 +82,6 @@ async fn main() -> Result<(), VibeKanbanError> {
         }
     });
 
-    let app_router = routes::router(deployment.clone());
-
     let port = std::env::var("BACKEND_PORT")
         .or_else(|_| std::env::var("PORT"))
         .ok()
@@ -101,8 +99,17 @@ async fn main() -> Result<(), VibeKanbanError> {
     let host = std::env::var("HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
     let listener = tokio::net::TcpListener::bind(format!("{host}:{port}")).await?;
     let actual_port = listener.local_addr()?.port(); // get → 53427 (example)
+    let app_router = routes::router(
+        deployment.clone(),
+        &format!("http://127.0.0.1:{actual_port}"),
+    );
 
     tracing::info!("Server running on http://{host}:{actual_port}");
+    if routes::mcp::http_auth_token_enabled() {
+        tracing::info!(
+            "HTTP MCP endpoint enabled at http://{host}:{actual_port}/mcp (Authorization: Bearer)"
+        );
+    }
 
     // Production only: write port file for extension discovery and open browser
     if !cfg!(debug_assertions) {

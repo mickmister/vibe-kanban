@@ -357,6 +357,11 @@ impl TaskServer {
         }
     }
 
+    pub fn without_context(mut self) -> Self {
+        self.tool_router.map.remove("get_context");
+        self
+    }
+
     pub async fn init(mut self) -> Self {
         let context = self.fetch_context_at_startup().await;
 

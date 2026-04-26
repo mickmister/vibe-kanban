@@ -16,6 +16,7 @@ pub mod execution_processes;
 pub mod frontend;
 pub mod health;
 pub mod images;
+pub mod mcp;
 pub mod migration;
 pub mod oauth;
 pub mod organizations;
@@ -30,7 +31,7 @@ pub mod task_attempts;
 pub mod tasks;
 pub mod terminal;
 
-pub fn router(deployment: DeploymentImpl) -> IntoMakeService<Router> {
+pub fn router(deployment: DeploymentImpl, mcp_base_url: &str) -> IntoMakeService<Router> {
     // Create routers with different middleware layers
     let base_routes = Router::new()
         .route("/health", get(health::health_check))
@@ -61,6 +62,7 @@ pub fn router(deployment: DeploymentImpl) -> IntoMakeService<Router> {
 
     Router::new()
         .route("/", get(frontend::serve_frontend_root))
+        .merge(mcp::router(mcp_base_url))
         .route("/{*path}", get(frontend::serve_frontend))
         .nest("/api", base_routes)
         .into_make_service()

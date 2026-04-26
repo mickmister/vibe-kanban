@@ -10,8 +10,12 @@ This page covers connecting **external MCP clients** to Vibe Kanban's MCP server
 </Note>
 
 <Info>
-Vibe Kanban's MCP server is **local-only** - it runs on your computer and can only be accessed by applications installed locally. It cannot be accessed via publicly accessible URLs.
+By default, Vibe Kanban's MCP server is **local-only** over `stdio`, which works well for desktop clients such as Claude Desktop, Raycast, or coding agents running on the same machine.
 </Info>
+
+<Warning>
+If you need to connect a URL-based MCP client such as Mattermost, you must explicitly enable the HTTP MCP endpoint with `VK_MCP_HTTP_AUTH_TOKEN`. Without that env var, the `/mcp` endpoint is not exposed.
+</Warning>
 
 <video
   controls
@@ -49,6 +53,25 @@ Add the following configuration to your agent's MCP servers configuration:
   }
 }
 ```
+
+### Option 3: HTTP MCP for Mattermost Smoke Tests
+
+Mattermost connects to external MCP servers by URL, so it cannot use the default `stdio` setup directly. For a live Mattermost smoke test, start Vibe Kanban with an HTTP MCP token:
+
+```bash
+export HOST=0.0.0.0
+export VK_MCP_HTTP_AUTH_TOKEN=replace-this-with-a-long-random-token
+pnpm run backend:dev:watch
+```
+
+Then point Mattermost at:
+
+- Server URL: `https://your-host-or-tunnel/mcp`
+- Custom header: `Authorization: Bearer replace-this-with-a-long-random-token`
+
+<Note>
+The MCP server still uses your local Vibe Kanban backend for issue and workspace operations. If Mattermost cannot reach your machine directly, expose it through a secure HTTPS tunnel for the smoke test.
+</Note>
 
 ## Available MCP Tools
 
