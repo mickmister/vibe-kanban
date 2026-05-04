@@ -14,6 +14,10 @@ export interface StreamOptions<E = unknown> {
   onError?: (err: unknown) => void;
   /** called once when a "finished" event is received */
   onFinished?: (entries: E[]) => void;
+  /** replay-safe streams can retry after unexpected closes */
+  retryOnUnexpectedClose?: boolean;
+  maxRetries?: number;
+  retryDelayMs?: (attempt: number) => number;
 }
 
 interface StreamController<E = unknown> {
@@ -46,9 +50,14 @@ export function streamJsonPatchEntries<E = unknown>(
   let connected = false;
   let closed = false;
   let ws: WebSocket | null = null;
-  let snapshot: PatchContainer<E> = structuredClone(
+  const initialSnapshot = structuredClone(
     opts.initial ?? ({ entries: [] } as PatchContainer<E>)
   );
+  let snapshot: PatchContainer<E> = structuredClone(initialSnapshot);
+  let finished = false;
+  let retryCount = 0;
+  let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  let replaceSnapshotOnNextPatch = false;
 
   const subscribers = new Set<(entries: E[]) => void>();
   if (opts.onEntries) subscribers.add(opts.onEntries);
@@ -74,7 +83,12 @@ export function streamJsonPatchEntries<E = unknown>(
     const ops = dedupeOps(pendingOps);
     pendingOps = [];
 
-    snapshot = produce(snapshot, (draft) => {
+    const baseSnapshot = replaceSnapshotOnNextPatch
+      ? structuredClone(initialSnapshot)
+      : snapshot;
+    replaceSnapshotOnNextPatch = false;
+
+    snapshot = produce(baseSnapshot, (draft) => {
       applyUpsertPatch(draft, ops);
     });
     notify();
@@ -99,6 +113,7 @@ export function streamJsonPatchEntries<E = unknown>(
           cancelAnimationFrame(rafId);
         }
         flush();
+        finished = true;
         opts.onFinished?.(snapshot.entries);
         ws?.close();
       }
@@ -107,41 +122,96 @@ export function streamJsonPatchEntries<E = unknown>(
     }
   };
 
-  void (async () => {
-    try {
-      const opened = await openLocalApiWebSocket(url);
-
-      if (closed) {
-        opened.close();
-        return;
-      }
-
-      ws = opened;
-      ws.addEventListener('open', () => {
-        connected = true;
-        opts.onConnect?.();
-      });
-
-      ws.addEventListener('message', handleMessage);
-
-      ws.addEventListener('error', (err) => {
-        connected = false;
-        opts.onError?.(err);
-      });
-
-      ws.addEventListener('close', () => {
-        connected = false;
-        if (rafId !== null) {
-          cancelAnimationFrame(rafId);
-          rafId = null;
-        }
-      });
-    } catch (error) {
-      if (!closed) {
-        opts.onError?.(error);
-      }
+  const clearReconnectTimer = () => {
+    if (reconnectTimer !== null) {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = null;
     }
-  })();
+  };
+
+  const connect = () => {
+    clearReconnectTimer();
+
+    void (async () => {
+      try {
+        const opened = await openLocalApiWebSocket(url);
+
+        if (closed) {
+          opened.close();
+          return;
+        }
+
+        ws = opened;
+        const handleOpen = () => {
+          connected = true;
+          retryCount = 0;
+          opts.onConnect?.();
+        };
+
+        ws.addEventListener('open', handleOpen);
+
+        ws.addEventListener('message', handleMessage);
+
+        ws.addEventListener('error', () => {
+          connected = false;
+        });
+
+        ws.addEventListener('close', () => {
+          connected = false;
+          ws = null;
+          if (rafId !== null) {
+            cancelAnimationFrame(rafId);
+            rafId = null;
+          }
+
+          if (closed || finished) {
+            return;
+          }
+
+          const attempt = retryCount + 1;
+          const shouldRetry =
+            opts.retryOnUnexpectedClose === true &&
+            attempt <= (opts.maxRetries ?? 6);
+
+          if (shouldRetry) {
+            retryCount = attempt;
+            replaceSnapshotOnNextPatch = true;
+            const delay =
+              opts.retryDelayMs?.(attempt) ??
+              Math.min(1500, 250 * 2 ** (attempt - 1));
+            reconnectTimer = setTimeout(() => connect(), delay);
+            return;
+          }
+
+          opts.onError?.(new Error('WebSocket stream closed unexpectedly'));
+        });
+
+        if (ws.readyState === WebSocket.OPEN) {
+          handleOpen();
+        }
+      } catch (error) {
+        if (!closed) {
+          const attempt = retryCount + 1;
+          const shouldRetry =
+            opts.retryOnUnexpectedClose === true &&
+            attempt <= (opts.maxRetries ?? 6);
+
+          if (shouldRetry) {
+            retryCount = attempt;
+            const delay =
+              opts.retryDelayMs?.(attempt) ??
+              Math.min(1500, 250 * 2 ** (attempt - 1));
+            reconnectTimer = setTimeout(() => connect(), delay);
+            return;
+          }
+
+          opts.onError?.(error);
+        }
+      }
+    })();
+  };
+
+  connect();
 
   return {
     getEntries(): E[] {
@@ -161,6 +231,7 @@ export function streamJsonPatchEntries<E = unknown>(
     },
     close(): void {
       closed = true;
+      clearReconnectTimer();
       if (rafId !== null) {
         cancelAnimationFrame(rafId);
         rafId = null;

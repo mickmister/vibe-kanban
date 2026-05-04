@@ -36,6 +36,12 @@ import WYSIWYGEditor, {
 } from '@/shared/components/WYSIWYGEditor';
 import { MemberRole } from 'shared/remote-types';
 import { ScratchType } from 'shared/types';
+import {
+  areScratchDraftValuesEqual,
+  clearStoredScratchDraft,
+  readStoredScratchDraft,
+  writeStoredScratchDraft,
+} from '@/shared/lib/scratchDraftStore';
 
 interface IssueCommentsSectionContainerProps {
   issueId: string;
@@ -80,6 +86,7 @@ function IssueCommentsSectionContent() {
     updateScratch: updateCommentDraft,
     deleteScratch: deleteCommentDraft,
     isLoading: isCommentDraftLoading,
+    isConnected: isCommentDraftConnected,
   } = useScratch(ScratchType.DRAFT_TASK, commentDraftId);
   const commentDraft =
     commentDraftScratch?.payload?.type === 'DRAFT_TASK'
@@ -93,6 +100,7 @@ function IssueCommentsSectionContent() {
       try {
         if (!value.trim()) {
           await deleteCommentDraft();
+          clearStoredScratchDraft(ScratchType.DRAFT_TASK, commentDraftId);
           return;
         }
 
@@ -102,36 +110,84 @@ function IssueCommentsSectionContent() {
             data: value,
           },
         });
+        writeStoredScratchDraft(
+          ScratchType.DRAFT_TASK,
+          commentDraftId,
+          value,
+          false
+        );
       } catch (e) {
         console.error('[IssueCommentsSection] Failed to persist draft:', e);
       }
     },
-    [updateCommentDraft, deleteCommentDraft]
+    [commentDraftId, updateCommentDraft, deleteCommentDraft]
   );
 
   const {
     debounced: debouncedPersistCommentDraft,
     cancel: cancelDebouncedPersistCommentDraft,
+    flush: flushPersistCommentDraft,
   } = useDebouncedCallback(persistCommentDraft, 500);
 
   useEffect(() => {
     cancelDebouncedPersistCommentDraft();
     hydratedCommentDraftIdRef.current = null;
     skipNextPersistRef.current = false;
-    setCommentInput('');
+    const cachedDraft = readStoredScratchDraft<string>(
+      ScratchType.DRAFT_TASK,
+      commentDraftId
+    );
+    setCommentInput(cachedDraft?.value ?? '');
   }, [commentDraftId, cancelDebouncedPersistCommentDraft]);
 
   useEffect(() => {
     if (isCommentDraftLoading) return;
     if (hydratedCommentDraftIdRef.current === commentDraftId) return;
 
-    const nextCommentInput = commentDraft ?? '';
+    const cachedDraft = readStoredScratchDraft<string>(
+      ScratchType.DRAFT_TASK,
+      commentDraftId
+    );
+    if (
+      cachedDraft &&
+      areScratchDraftValuesEqual(cachedDraft.value, commentDraft ?? '')
+    ) {
+      writeStoredScratchDraft(
+        ScratchType.DRAFT_TASK,
+        commentDraftId,
+        commentDraft ?? '',
+        false
+      );
+    }
+
+    const nextCommentInput =
+      cachedDraft?.dirty === true
+        ? cachedDraft.value
+        : (cachedDraft?.value ?? commentDraft ?? '');
     const shouldSkipNextPersist = nextCommentInput !== commentInput;
 
     hydratedCommentDraftIdRef.current = commentDraftId;
     skipNextPersistRef.current = shouldSkipNextPersist;
     setCommentInput(nextCommentInput);
   }, [isCommentDraftLoading, commentDraft, commentDraftId, commentInput]);
+
+  useEffect(() => {
+    if (!isCommentDraftConnected) return;
+
+    const cachedDraft = readStoredScratchDraft<string>(
+      ScratchType.DRAFT_TASK,
+      commentDraftId
+    );
+    if (cachedDraft?.dirty) {
+      void persistCommentDraft(cachedDraft.value);
+    }
+  }, [commentDraftId, isCommentDraftConnected, persistCommentDraft]);
+
+  useEffect(() => {
+    return () => {
+      flushPersistCommentDraft();
+    };
+  }, [flushPersistCommentDraft]);
 
   const handleCommentMarkdownInsert = useCallback((markdown: string) => {
     setCommentInput((prev) =>
@@ -190,6 +246,16 @@ function IssueCommentsSectionContent() {
       return;
     }
 
+    if (!commentInput.trim()) {
+      clearStoredScratchDraft(ScratchType.DRAFT_TASK, commentDraftId);
+    } else {
+      writeStoredScratchDraft(
+        ScratchType.DRAFT_TASK,
+        commentDraftId,
+        commentInput,
+        true
+      );
+    }
     debouncedPersistCommentDraft(commentInput);
   }, [
     commentInput,
@@ -326,6 +392,7 @@ function IssueCommentsSectionContent() {
     });
     cancelDebouncedPersistCommentDraft();
     setCommentInput('');
+    clearStoredScratchDraft(ScratchType.DRAFT_TASK, commentDraftId);
     try {
       await deleteCommentDraft();
     } catch (e) {

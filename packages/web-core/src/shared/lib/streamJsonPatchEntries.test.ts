@@ -1,0 +1,102 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { setLocalApiTransport } from './localApiTransport';
+import { streamJsonPatchEntries } from './streamJsonPatchEntries';
+
+type Listener = (event?: any) => void;
+
+class FakeWebSocket {
+  static readonly OPEN = 1;
+  readyState = FakeWebSocket.OPEN;
+  private listeners = new Map<string, Listener[]>();
+
+  addEventListener(type: string, listener: Listener) {
+    const existing = this.listeners.get(type) ?? [];
+    existing.push(listener);
+    this.listeners.set(type, existing);
+  }
+
+  close() {
+    this.emit('close', { code: 1000, wasClean: true });
+  }
+
+  emit(type: string, event?: any) {
+    for (const listener of this.listeners.get(type) ?? []) {
+      listener(event);
+    }
+  }
+
+  emitMessage(data: unknown) {
+    this.emit('message', { data: JSON.stringify(data) });
+  }
+}
+
+describe('streamJsonPatchEntries', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {
+      return globalThis.setTimeout(() => cb(0), 0);
+    });
+    vi.stubGlobal('cancelAnimationFrame', (id: number) => {
+      clearTimeout(id);
+    });
+  });
+
+  afterEach(() => {
+    setLocalApiTransport(null);
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  it('surfaces an unexpected close to callers', async () => {
+    const ws = new FakeWebSocket();
+    const onError = vi.fn();
+
+    setLocalApiTransport({
+      request: vi.fn(),
+      openWebSocket: () => ws as unknown as WebSocket,
+    });
+
+    streamJsonPatchEntries('/test', { onError });
+    await vi.runAllTimersAsync();
+
+    ws.emit('close', { code: 1006, wasClean: false });
+
+    expect(onError).toHaveBeenCalled();
+  });
+
+  it('retries replay-safe streams and replaces the snapshot on replay', async () => {
+    const first = new FakeWebSocket();
+    const second = new FakeWebSocket();
+    const sockets = [first, second];
+    const onEntries = vi.fn();
+
+    setLocalApiTransport({
+      request: vi.fn(),
+      openWebSocket: () => sockets.shift()! as unknown as WebSocket,
+    });
+
+    const controller = streamJsonPatchEntries('/test', {
+      onEntries,
+      retryOnUnexpectedClose: true,
+    });
+
+    await vi.runAllTimersAsync();
+
+    first.emitMessage({
+      JsonPatch: [{ op: 'add', path: '/entries/0', value: 'first' }],
+    });
+    await vi.runAllTimersAsync();
+    expect(controller.getEntries()).toEqual(['first']);
+
+    first.emit('close', { code: 1006, wasClean: false });
+    await vi.runAllTimersAsync();
+
+    second.emitMessage({
+      JsonPatch: [{ op: 'add', path: '/entries/0', value: 'replayed' }],
+    });
+    await vi.runAllTimersAsync();
+
+    expect(controller.getEntries()).toEqual(['replayed']);
+    expect(onEntries).toHaveBeenLastCalledWith(['replayed']);
+  });
+});

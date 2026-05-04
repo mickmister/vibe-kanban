@@ -144,8 +144,9 @@ export const useLogStream = (processId: string): UseLogStreamResult => {
             ) {
               return;
             }
-            // Only retry if the close was not intentional and not a normal closure
-            if (!isIntentionallyClosed.current && event.code !== 1000) {
+            // Retry any unexpected closure, including clean 1000 closes caused by
+            // proxies, restarts, or intermediaries.
+            if (!isIntentionallyClosed.current && !finishedRef.current) {
               const next = retryCountRef.current + 1;
               retryCountRef.current = next;
               if (next <= 6) {
@@ -154,6 +155,8 @@ export const useLogStream = (processId: string): UseLogStreamResult => {
               } else {
                 setError('Connection failed');
               }
+            } else if (event.code === 1000) {
+              setError(null);
             }
           };
         } catch (error) {
