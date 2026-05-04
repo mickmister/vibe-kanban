@@ -47,7 +47,10 @@ function useExecutorDiscovery(
     useJsonPatchWsStream<ExecutorDiscoveryStreamState>(
       endpoint,
       !!endpoint,
-      initialData
+      initialData,
+      {
+        reconnectOnCleanClose: false,
+      }
     );
 
   // Prefer the backend-reported error from the data payload. Only fall back

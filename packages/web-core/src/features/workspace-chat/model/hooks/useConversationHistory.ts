@@ -93,33 +93,42 @@ export const useConversationHistory = ({
     );
   }, [executionProcessesRaw]);
 
-  const loadEntriesForHistoricExecutionProcess = (
-    executionProcess: ExecutionProcess
-  ) => {
-    let url = '';
-    if (executionProcess.executor_action.typ.type === 'ScriptRequest') {
-      url = `/api/execution-processes/${executionProcess.id}/raw-logs/ws`;
-    } else {
-      url = `/api/execution-processes/${executionProcess.id}/normalized-logs/ws`;
-    }
+  const loadEntriesForHistoricExecutionProcess = useCallback(
+    async (executionProcess: ExecutionProcess) => {
+      let url = '';
+      if (executionProcess.executor_action.typ.type === 'ScriptRequest') {
+        url = `/api/execution-processes/${executionProcess.id}/raw-logs/ws`;
+      } else {
+        url = `/api/execution-processes/${executionProcess.id}/normalized-logs/ws`;
+      }
 
-    return new Promise<PatchType[]>((resolve) => {
-      const controller = streamJsonPatchEntries<PatchType>(url, {
-        onFinished: (allEntries) => {
-          controller.close();
-          resolve(allEntries);
-        },
-        onError: (err) => {
+      for (let attempt = 0; attempt < 20; attempt += 1) {
+        try {
+          return await new Promise<PatchType[]>((resolve, reject) => {
+            const controller = streamJsonPatchEntries<PatchType>(url, {
+              onFinished: (allEntries) => {
+                controller.close();
+                resolve(allEntries);
+              },
+              onError: (err) => {
+                controller.close();
+                reject(err);
+              },
+            });
+          });
+        } catch (err) {
           console.warn(
             `Error loading entries for historic execution process ${executionProcess.id}`,
             err
           );
-          controller.close();
-          resolve([]);
-        },
-      });
-    });
-  };
+          await new Promise((resolve) => setTimeout(resolve, 500));
+        }
+      }
+
+      return [];
+    },
+    []
+  );
 
   const patchWithKey = (
     patch: PatchType,
@@ -215,6 +224,7 @@ export const useConversationHistory = ({
           url = `/api/execution-processes/${executionProcess.id}/normalized-logs/ws`;
         }
         const controller = streamJsonPatchEntries<PatchType>(url, {
+          retryOnUnexpectedClose: true,
           onEntries(entries) {
             const patchesWithKey = entries.map((entry, index) =>
               patchWithKey(entry, executionProcess.id, index)

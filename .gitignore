@@ -95,3 +95,7 @@ vibe-kanban-cloud/
 *.ts.net.key
 Caddyfile
 Caddyfile.dev
+
+# Python cache
+__pycache__/
+*.pyc

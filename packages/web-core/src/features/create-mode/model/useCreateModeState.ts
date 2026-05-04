@@ -22,6 +22,11 @@ import { useDebouncedCallback } from '@/shared/hooks/useDebouncedCallback';
 import { useUserSystem } from '@/shared/hooks/useUserSystem';
 import { useShape } from '@/shared/integrations/electric/hooks';
 import { repoApi } from '@/shared/lib/api';
+import {
+  clearStoredScratchDraft,
+  readStoredScratchDraft,
+  writeStoredScratchDraft,
+} from '@/shared/lib/scratchDraftStore';
 import { resolveCreateModeBootstrap } from '@/features/create-mode/model/createModeBootstrap';
 import { useWorkspaceCreateDefaults } from '@/shared/hooks/useWorkspaceCreateDefaults';
 import { getValidProjectRepoDefaults } from '@/shared/hooks/useProjectRepoDefaults';
@@ -262,6 +267,7 @@ export function useCreateModeState({
     updateScratch,
     deleteScratch,
     isLoading: scratchLoading,
+    isConnected: isScratchConnected,
   } = useScratch(ScratchType.DRAFT_WORKSPACE, scratchId);
 
   const [state, dispatch] = useReducer(draftReducer, draftInitialState);
@@ -295,10 +301,18 @@ export function useCreateModeState({
 
     hasInitialized.current = true;
     const seedState = seedStateRef.current;
-    const scratchData: DraftWorkspaceData | undefined =
+    const scratchDataFromServer: DraftWorkspaceData | undefined =
       scratch?.payload?.type === 'DRAFT_WORKSPACE'
         ? scratch.payload.data
         : undefined;
+    const cachedDraft = readStoredScratchDraft<DraftWorkspaceData>(
+      ScratchType.DRAFT_WORKSPACE,
+      scratchId
+    );
+    const scratchData =
+      cachedDraft?.dirty === true
+        ? cachedDraft.value
+        : (cachedDraft?.value ?? scratchDataFromServer);
 
     void resolveCreateModeBootstrap({
       seedState,
@@ -495,8 +509,8 @@ export function useCreateModeState({
   // ============================================================================
   // Persistence to scratch (debounced)
   // ============================================================================
-  const { debounced: debouncedSave } = useDebouncedCallback(
-    async (data: DraftWorkspaceData) => {
+  const { debounced: debouncedSave, flush: flushDebouncedSave } =
+    useDebouncedCallback(async (data: DraftWorkspaceData) => {
       const isEmpty =
         !data.message.trim() &&
         data.repos.length === 0 &&
@@ -509,17 +523,21 @@ export function useCreateModeState({
         await updateScratch({
           payload: { type: 'DRAFT_WORKSPACE', data },
         });
+        writeStoredScratchDraft(
+          ScratchType.DRAFT_WORKSPACE,
+          scratchId,
+          data,
+          false
+        );
       } catch (e) {
         console.error('[useCreateModeState] Failed to save:', e);
       }
-    },
-    500
-  );
+    }, 500);
 
   useEffect(() => {
     if (state.phase !== 'ready') return;
 
-    debouncedSave({
+    const payload: DraftWorkspaceData = {
       message: state.message,
       repos: state.repos.map((r) => ({
         repo_id: r.repo.id,
@@ -535,7 +553,27 @@ export function useCreateModeState({
           }
         : null,
       attachments: state.attachments,
-    });
+    };
+
+    const isEmpty =
+      !payload.message.trim() &&
+      payload.repos.length === 0 &&
+      !payload.executor_config &&
+      payload.attachments.length === 0;
+
+    if (isEmpty && !scratch) {
+      clearStoredScratchDraft(ScratchType.DRAFT_WORKSPACE, scratchId);
+      return;
+    }
+
+    writeStoredScratchDraft(
+      ScratchType.DRAFT_WORKSPACE,
+      scratchId,
+      payload,
+      true
+    );
+
+    debouncedSave(payload);
   }, [
     state.phase,
     state.message,
@@ -543,8 +581,41 @@ export function useCreateModeState({
     state.linkedIssue,
     state.executorConfig,
     state.attachments,
+    scratch,
+    scratchId,
     debouncedSave,
   ]);
+
+  useEffect(() => {
+    if (!isScratchConnected) return;
+
+    const cachedDraft = readStoredScratchDraft<DraftWorkspaceData>(
+      ScratchType.DRAFT_WORKSPACE,
+      scratchId
+    );
+    if (!cachedDraft?.dirty) return;
+
+    void updateScratch({
+      payload: { type: 'DRAFT_WORKSPACE', data: cachedDraft.value },
+    })
+      .then(() => {
+        writeStoredScratchDraft(
+          ScratchType.DRAFT_WORKSPACE,
+          scratchId,
+          cachedDraft.value,
+          false
+        );
+      })
+      .catch((e) => {
+        console.error('[useCreateModeState] Failed to retry save:', e);
+      });
+  }, [isScratchConnected, scratchId, updateScratch]);
+
+  useEffect(() => {
+    return () => {
+      flushDebouncedSave();
+    };
+  }, [flushDebouncedSave]);
 
   // ============================================================================
   // Resolve linked issue details from Electric (when simpleId/title are missing)
@@ -617,11 +688,12 @@ export function useCreateModeState({
   const clearDraft = useCallback(async () => {
     try {
       await deleteScratch();
+      clearStoredScratchDraft(ScratchType.DRAFT_WORKSPACE, scratchId);
       dispatch({ type: 'CLEAR' });
     } catch (e) {
       console.error('[useCreateModeState] Failed to clear:', e);
     }
-  }, [deleteScratch]);
+  }, [deleteScratch, scratchId]);
 
   const clearLinkedIssue = useCallback(() => {
     dispatch({ type: 'CLEAR_LINKED_ISSUE' });

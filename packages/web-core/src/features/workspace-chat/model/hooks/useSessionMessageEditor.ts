@@ -6,6 +6,12 @@ import {
 } from 'shared/types';
 import { useScratch } from '@/shared/hooks/useScratch';
 import { useDebouncedCallback } from '@/shared/hooks/useDebouncedCallback';
+import {
+  areScratchDraftValuesEqual,
+  clearStoredScratchDraft,
+  readStoredScratchDraft,
+  writeStoredScratchDraft,
+} from '@/shared/lib/scratchDraftStore';
 
 interface UseSessionMessageEditorOptions {
   /** Scratch ID (workspaceId for new session, sessionId for existing) */
@@ -48,6 +54,7 @@ export function useSessionMessageEditor({
     updateScratch,
     deleteScratch,
     isLoading: isScratchLoading,
+    isConnected: isScratchConnected,
   } = useScratch(ScratchType.DRAFT_FOLLOW_UP, scratchId ?? '');
 
   const scratchData: DraftFollowUpData | undefined =
@@ -61,16 +68,23 @@ export function useSessionMessageEditor({
   const saveToScratch = useCallback(
     async (message: string, executorConfig: ExecutorConfig) => {
       if (!scratchId) return;
+      const payload: DraftFollowUpData = {
+        message,
+        executor_config: executorConfig,
+      };
       try {
         await updateScratch({
           payload: {
             type: 'DRAFT_FOLLOW_UP',
-            data: {
-              message,
-              executor_config: executorConfig,
-            },
+            data: payload,
           },
         });
+        writeStoredScratchDraft(
+          ScratchType.DRAFT_FOLLOW_UP,
+          scratchId,
+          payload,
+          false
+        );
       } catch (e) {
         console.error('Failed to save follow-up draft', e);
       }
@@ -78,8 +92,11 @@ export function useSessionMessageEditor({
     [scratchId, updateScratch]
   );
 
-  const { debounced: debouncedSave, cancel: cancelDebouncedSave } =
-    useDebouncedCallback(saveToScratch, 500);
+  const {
+    debounced: debouncedSave,
+    cancel: cancelDebouncedSave,
+    flush: flushDebouncedSave,
+  } = useDebouncedCallback(saveToScratch, 500);
 
   // Track whether initial load has happened to avoid re-syncing during typing
   const hasLoadedRef = useRef(false);
@@ -88,7 +105,13 @@ export function useSessionMessageEditor({
   useEffect(() => {
     hasLoadedRef.current = false;
     setHasInitialValue(false);
-    setLocalMessage('');
+    const cachedDraft = scratchId
+      ? readStoredScratchDraft<DraftFollowUpData>(
+          ScratchType.DRAFT_FOLLOW_UP,
+          scratchId
+        )
+      : null;
+    setLocalMessage(cachedDraft?.value.message ?? '');
   }, [scratchId]);
 
   // Sync local message from scratch only on initial load
@@ -96,18 +119,77 @@ export function useSessionMessageEditor({
     if (isScratchLoading) return;
     if (hasLoadedRef.current) return;
     hasLoadedRef.current = true;
-    setLocalMessage(scratchData?.message ?? '');
+    const cachedDraft = scratchId
+      ? readStoredScratchDraft<DraftFollowUpData>(
+          ScratchType.DRAFT_FOLLOW_UP,
+          scratchId
+        )
+      : null;
+    const serverData = scratchData ?? null;
+
+    if (
+      scratchId &&
+      cachedDraft &&
+      serverData &&
+      areScratchDraftValuesEqual(cachedDraft.value, serverData)
+    ) {
+      writeStoredScratchDraft(
+        ScratchType.DRAFT_FOLLOW_UP,
+        scratchId,
+        serverData,
+        false
+      );
+    }
+
+    const preferredDraft =
+      cachedDraft?.dirty === true
+        ? cachedDraft.value
+        : (cachedDraft?.value ?? serverData);
+
+    setLocalMessage(preferredDraft?.message ?? serverData?.message ?? '');
     setHasInitialValue(true);
-  }, [isScratchLoading, scratchData?.message]);
+  }, [isScratchLoading, scratchData, scratchId]);
+
+  useEffect(() => {
+    if (!scratchId || !isScratchConnected) return;
+
+    const cachedDraft = readStoredScratchDraft<DraftFollowUpData>(
+      ScratchType.DRAFT_FOLLOW_UP,
+      scratchId
+    );
+    if (!cachedDraft?.dirty) return;
+
+    void saveToScratch(
+      cachedDraft.value.message,
+      cachedDraft.value.executor_config
+    );
+  }, [isScratchConnected, saveToScratch, scratchId]);
+
+  useEffect(() => {
+    return () => {
+      flushDebouncedSave();
+    };
+  }, [flushDebouncedSave]);
 
   // Handle message change with debounced save
   // Pass executor profile at call-time to avoid stale closure
   const handleMessageChange = useCallback(
     (value: string, executorConfig: ExecutorConfig) => {
       setLocalMessage(value);
+      if (scratchId) {
+        writeStoredScratchDraft(
+          ScratchType.DRAFT_FOLLOW_UP,
+          scratchId,
+          {
+            message: value,
+            executor_config: executorConfig,
+          },
+          true
+        );
+      }
       debouncedSave(value, executorConfig);
     },
-    [debouncedSave]
+    [debouncedSave, scratchId]
   );
 
   return {
@@ -117,7 +199,13 @@ export function useSessionMessageEditor({
     isScratchLoading,
     hasInitialValue,
     saveToScratch,
-    clearDraft: deleteScratch,
+    clearDraft: async () => {
+      cancelDebouncedSave();
+      if (scratchId) {
+        clearStoredScratchDraft(ScratchType.DRAFT_FOLLOW_UP, scratchId);
+      }
+      await deleteScratch();
+    },
     cancelDebouncedSave,
     handleMessageChange,
   };
