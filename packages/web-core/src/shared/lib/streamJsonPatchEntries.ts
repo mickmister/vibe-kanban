@@ -50,14 +50,12 @@ export function streamJsonPatchEntries<E = unknown>(
   let connected = false;
   let closed = false;
   let ws: WebSocket | null = null;
-  const initialSnapshot = structuredClone(
+  let snapshot: PatchContainer<E> = structuredClone(
     opts.initial ?? ({ entries: [] } as PatchContainer<E>)
   );
-  let snapshot: PatchContainer<E> = structuredClone(initialSnapshot);
   let finished = false;
   let retryCount = 0;
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-  let replaceSnapshotOnNextPatch = false;
 
   const subscribers = new Set<(entries: E[]) => void>();
   if (opts.onEntries) subscribers.add(opts.onEntries);
@@ -83,13 +81,11 @@ export function streamJsonPatchEntries<E = unknown>(
     const ops = dedupeOps(pendingOps);
     pendingOps = [];
 
-    const baseSnapshot = replaceSnapshotOnNextPatch
-      ? structuredClone(initialSnapshot)
-      : snapshot;
-    replaceSnapshotOnNextPatch = false;
+    const filteredOps = filterReplayOps(snapshot.entries, ops);
+    if (filteredOps.length === 0) return;
 
-    snapshot = produce(baseSnapshot, (draft) => {
-      applyUpsertPatch(draft, ops);
+    snapshot = produce(snapshot, (draft) => {
+      applyUpsertPatch(draft, filteredOps);
     });
     notify();
   };
@@ -175,7 +171,6 @@ export function streamJsonPatchEntries<E = unknown>(
 
           if (shouldRetry) {
             retryCount = attempt;
-            replaceSnapshotOnNextPatch = true;
             const delay =
               opts.retryDelayMs?.(attempt) ??
               Math.min(1500, 250 * 2 ** (attempt - 1));
@@ -258,4 +253,55 @@ function dedupeOps(ops: Operation[]): Operation[] {
   // Keep only the last op for each path, in ascending order of their final index
   const keptIndices = [...lastIndexByPath.values()].sort((a, b) => a - b);
   return keptIndices.map((i) => ops[i]!);
+}
+
+function filterReplayOps<E>(
+  currentEntries: E[],
+  ops: Operation[]
+): Operation[] {
+  return ops.flatMap((op) => {
+    const entryIndex = getEntryIndex(op.path);
+    if (entryIndex === null || op.op === 'remove') {
+      return [op];
+    }
+
+    const nextValue = 'value' in op ? (op.value as E | undefined) : undefined;
+    if (nextValue === undefined) {
+      return [op];
+    }
+
+    const hasCurrentValue = entryIndex < currentEntries.length;
+    if (!hasCurrentValue) {
+      return [op];
+    }
+
+    const currentValue = currentEntries[entryIndex];
+    if (areEntryValuesEqual(currentValue, nextValue)) {
+      return [];
+    }
+
+    if (op.op === 'add') {
+      return [{ ...op, op: 'replace' as const }];
+    }
+
+    return [op];
+  });
+}
+
+function getEntryIndex(path: string): number | null {
+  const match = /^\/entries\/(\d+)$/.exec(path);
+  if (!match) return null;
+
+  const entryIndex = Number.parseInt(match[1]!, 10);
+  return Number.isNaN(entryIndex) ? null : entryIndex;
+}
+
+function areEntryValuesEqual(left: unknown, right: unknown): boolean {
+  if (left === right) return true;
+
+  try {
+    return JSON.stringify(left) === JSON.stringify(right);
+  } catch {
+    return false;
+  }
 }

@@ -64,7 +64,7 @@ describe('streamJsonPatchEntries', () => {
     expect(onError).toHaveBeenCalled();
   });
 
-  it('retries replay-safe streams and replaces the snapshot on replay', async () => {
+  it('retries replay-safe streams without clearing identical replayed entries', async () => {
     const first = new FakeWebSocket();
     const second = new FakeWebSocket();
     const sockets = [first, second];
@@ -92,11 +92,18 @@ describe('streamJsonPatchEntries', () => {
     await vi.runAllTimersAsync();
 
     second.emitMessage({
-      JsonPatch: [{ op: 'add', path: '/entries/0', value: 'replayed' }],
+      JsonPatch: [{ op: 'add', path: '/entries/0', value: 'first' }],
     });
     await vi.runAllTimersAsync();
 
-    expect(controller.getEntries()).toEqual(['replayed']);
-    expect(onEntries).toHaveBeenLastCalledWith(['replayed']);
+    expect(controller.getEntries()).toEqual(['first']);
+
+    second.emitMessage({
+      JsonPatch: [{ op: 'add', path: '/entries/1', value: 'second' }],
+    });
+    await vi.runAllTimersAsync();
+
+    expect(controller.getEntries()).toEqual(['first', 'second']);
+    expect(onEntries).toHaveBeenLastCalledWith(['first', 'second']);
   });
 });
