@@ -1,10 +1,7 @@
 use anyhow::{self, Error as AnyhowError};
 use axum::Router;
 use deployment::{Deployment, DeploymentError};
-use server::{
-    DeploymentImpl, middleware::origin::validate_origin, routes, runtime::relay_registration,
-};
-use services::services::container::ContainerService;
+use server::{middleware::origin::validate_origin, routes, runtime::relay_registration, startup};
 use sqlx::Error as SqlxError;
 use strip_ansi_escapes::strip;
 use thiserror::Error;
@@ -12,7 +9,6 @@ use tokio_util::sync::CancellationToken;
 use tower_http::validate_request::ValidateRequestHeaderLayer;
 use tracing_subscriber::{EnvFilter, prelude::*};
 use utils::{
-    assets::asset_dir,
     port_file::write_port_file_with_proxy,
     sentry::{self as sentry_utils, SentrySource, sentry_layer},
 };
@@ -48,51 +44,11 @@ async fn main() -> Result<(), VibeKanbanError> {
         .with(tracing_subscriber::fmt::layer().with_filter(env_filter))
         .with(sentry_layer())
         .init();
-
-    // Create asset directory if it doesn't exist
-    if !asset_dir().exists() {
-        std::fs::create_dir_all(asset_dir())?;
-    }
-
-    // Copy old database to new location for safe downgrades
-    let old_db = asset_dir().join("db.sqlite");
-    let new_db = asset_dir().join("db.v2.sqlite");
-    if !new_db.exists() && old_db.exists() {
-        tracing::info!(
-            "Copying database to new location: {:?} -> {:?}",
-            old_db,
-            new_db
-        );
-        std::fs::copy(&old_db, &new_db).expect("Failed to copy database file");
-        tracing::info!("Database copy complete");
-    }
+    startup::begin_startup_diagnostics();
 
     let shutdown_token = CancellationToken::new();
 
-    let deployment = DeploymentImpl::new(shutdown_token.clone()).await?;
-    deployment.update_sentry_scope().await?;
-    deployment
-        .container()
-        .cleanup_orphan_executions()
-        .await
-        .map_err(DeploymentError::from)?;
-    deployment
-        .container()
-        .backfill_before_head_commits()
-        .await
-        .map_err(DeploymentError::from)?;
-    deployment
-        .container()
-        .backfill_repo_names()
-        .await
-        .map_err(DeploymentError::from)?;
-    deployment
-        .track_if_analytics_allowed("session_start", serde_json::json!({}))
-        .await;
-    // Preload global executor options cache for all executors with DEFAULT presets
-    tokio::spawn(async move {
-        executors::executors::utils::preload_global_executor_options_cache().await;
-    });
+    let deployment = startup::initialize_deployment(shutdown_token.clone()).await?;
     let port = std::env::var("BACKEND_PORT")
         .or_else(|_| std::env::var("PORT"))
         .ok()
@@ -119,6 +75,7 @@ async fn main() -> Result<(), VibeKanbanError> {
 
     let proxy_listener = tokio::net::TcpListener::bind(format!("{host}:{proxy_port}")).await?;
     let actual_proxy_port = proxy_listener.local_addr()?.port();
+    startup::log_startup_phase("http_bind_complete");
 
     if let Err(e) = write_port_file_with_proxy(actual_main_port, Some(actual_proxy_port)).await {
         tracing::warn!("Failed to write port file: {}", e);
@@ -138,6 +95,7 @@ async fn main() -> Result<(), VibeKanbanError> {
         .client_info()
         .set_preview_proxy_port(actual_proxy_port)
         .expect("client preview proxy port already set");
+    startup::log_startup_phase("client_info_registered");
 
     let app_router = routes::router(deployment.clone());
 
@@ -179,8 +137,10 @@ async fn main() -> Result<(), VibeKanbanError> {
             tracing::error!("Preview proxy error: {}", e);
         }
     });
+    startup::log_startup_phase("server_ready");
 
     relay_registration::spawn_relay(&deployment).await;
+    startup::log_startup_phase("relay_startup_spawn_complete");
 
     tokio::select! {
         _ = shutdown_signal() => {
@@ -233,10 +193,6 @@ pub async fn shutdown_signal() {
     }
 }
 
-pub async fn perform_cleanup_actions(deployment: &DeploymentImpl) {
-    deployment
-        .container()
-        .kill_all_running_processes()
-        .await
-        .expect("Failed to cleanly kill running execution processes");
+pub async fn perform_cleanup_actions(deployment: &server::DeploymentImpl) {
+    startup::perform_cleanup_actions(deployment).await;
 }

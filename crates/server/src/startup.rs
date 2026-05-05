@@ -2,13 +2,19 @@ use std::{
     collections::HashSet,
     fs, io,
     path::{Path, PathBuf},
+    sync::OnceLock,
+    time::Duration,
 };
 
 use deployment::{Deployment, DeploymentError};
 use services::services::container::ContainerService;
+use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 use tower_http::validate_request::ValidateRequestHeaderLayer;
-use utils::assets::asset_dir;
+use utils::{
+    assets::asset_dir,
+    process_diag::{self, ProcessSnapshot},
+};
 
 use crate::{
     DeploymentImpl, middleware::origin::validate_origin, routes, runtime::relay_registration,
@@ -49,7 +55,9 @@ impl ServerHandle {
             .client_info()
             .set_preview_proxy_port(self.proxy_port)
             .expect("client preview proxy port already set");
+        log_startup_phase("client_info_registered");
         relay_registration::spawn_relay(&self.deployment).await;
+        log_startup_phase("relay_startup_spawn_complete");
 
         let app_router = routes::router(self.deployment.clone());
         let proxy_router: axum::Router = routes::preview::subdomain_router(self.deployment.clone())
@@ -73,6 +81,7 @@ impl ServerHandle {
                 tracing::error!("Preview proxy error: {}", e);
             }
         });
+        log_startup_phase("server_ready");
 
         tokio::select! {
             _ = main_handle => {}
@@ -107,6 +116,7 @@ pub async fn start_with_bind(
     proxy_addr: &str,
     shutdown_token: CancellationToken,
 ) -> anyhow::Result<ServerHandle> {
+    begin_startup_diagnostics();
     let deployment = initialize_deployment(shutdown_token.clone()).await?;
 
     let listener = tokio::net::TcpListener::bind(main_addr).await?;
@@ -114,6 +124,7 @@ pub async fn start_with_bind(
 
     let proxy_listener = tokio::net::TcpListener::bind(proxy_addr).await?;
     let proxy_port = proxy_listener.local_addr()?.port();
+    log_startup_phase("http_bind_complete");
 
     tracing::info!("Server on :{port}, Preview proxy on :{proxy_port}");
 
@@ -132,6 +143,8 @@ pub async fn start_with_bind(
 pub async fn initialize_deployment(
     shutdown: CancellationToken,
 ) -> Result<DeploymentImpl, DeploymentError> {
+    begin_startup_diagnostics();
+
     // Create asset directory if it doesn't exist
     if !asset_dir().exists() {
         std::fs::create_dir_all(asset_dir()).map_err(|e| {
@@ -151,33 +164,28 @@ pub async fn initialize_deployment(
         std::fs::copy(&old_db, &new_db).expect("Failed to copy database file");
         tracing::info!("Database copy complete");
     }
+    log_startup_phase("db_path_resolution_complete");
 
     let deployment = DeploymentImpl::new(shutdown).await?;
+    log_startup_phase("deployment_init_complete");
     migrate_legacy_attachment_directories(&deployment).await?;
+    log_startup_phase("legacy_attachment_migration_complete");
     deployment.update_sentry_scope().await?;
+    log_startup_phase("sentry_scope_update_complete");
     deployment
         .container()
         .cleanup_orphan_executions()
         .await
         .map_err(DeploymentError::from)?;
-    deployment
-        .container()
-        .backfill_before_head_commits()
-        .await
-        .map_err(DeploymentError::from)?;
-    deployment
-        .container()
-        .backfill_repo_names()
-        .await
-        .map_err(DeploymentError::from)?;
+    log_startup_phase("cleanup_orphan_executions_complete");
+    run_startup_backfills(&deployment).await?;
     deployment
         .track_if_analytics_allowed("session_start", serde_json::json!({}))
         .await;
+    log_startup_phase("session_start_analytics_complete");
 
     // Preload global executor options cache for all executors with DEFAULT presets
-    tokio::spawn(async move {
-        executors::executors::utils::preload_global_executor_options_cache().await;
-    });
+    spawn_executor_preload_task();
 
     Ok(deployment)
 }
@@ -189,6 +197,153 @@ pub async fn perform_cleanup_actions(deployment: &DeploymentImpl) {
         .kill_all_running_processes()
         .await
         .expect("Failed to cleanly kill running execution processes");
+}
+
+static STARTUP_DIAGNOSTICS_INIT: OnceLock<()> = OnceLock::new();
+static STARTUP_DIAGNOSTICS_SAMPLER: OnceLock<()> = OnceLock::new();
+
+pub fn begin_startup_diagnostics() {
+    process_diag::mark_process_start();
+
+    let initialized = STARTUP_DIAGNOSTICS_INIT.get().is_some();
+    STARTUP_DIAGNOSTICS_INIT.get_or_init(|| ());
+    if !initialized {
+        log_startup_phase("process_start");
+    }
+
+    STARTUP_DIAGNOSTICS_SAMPLER.get_or_init(|| {
+        if let Some((interval, duration)) = startup_sampling_config() {
+            tracing::info!(
+                interval_ms = interval.as_millis() as u64,
+                duration_secs = duration.as_secs(),
+                "startup_diag_sampler_started"
+            );
+            tokio::spawn(async move {
+                let started_at = Instant::now();
+                while started_at.elapsed() < duration {
+                    tokio::time::sleep(interval).await;
+                    log_startup_phase("periodic_sample");
+                }
+                tracing::info!("startup_diag_sampler_finished");
+            });
+        }
+    });
+}
+
+pub fn log_startup_phase(phase: &str) {
+    let snapshot = process_diag::sample_current_process();
+    emit_startup_diag_log("startup_diag", phase, &snapshot);
+}
+
+fn log_startup_skip(phase: &str, env_var: &str) {
+    let snapshot = process_diag::sample_current_process();
+    tracing::info!(
+        phase,
+        env_var,
+        rss_mb = process_diag::bytes_to_mb(snapshot.rss_bytes),
+        vm_size_mb = process_diag::bytes_to_mb(snapshot.virtual_bytes),
+        threads = snapshot.thread_count,
+        fds = snapshot.open_fd_count,
+        child_processes = snapshot.child_process_count,
+        elapsed_ms = process_diag::elapsed_since_start().as_millis() as u64,
+        "startup_diag_skipped"
+    );
+}
+
+fn emit_startup_diag_log(message: &str, phase: &str, snapshot: &ProcessSnapshot) {
+    tracing::info!(
+        phase,
+        rss_mb = process_diag::bytes_to_mb(snapshot.rss_bytes),
+        vm_size_mb = process_diag::bytes_to_mb(snapshot.virtual_bytes),
+        threads = snapshot.thread_count,
+        fds = snapshot.open_fd_count,
+        child_processes = snapshot.child_process_count,
+        elapsed_ms = process_diag::elapsed_since_start().as_millis() as u64,
+        "{message}"
+    );
+}
+
+fn spawn_executor_preload_task() {
+    if env_flag("VK_DISABLE_EXECUTOR_PRELOAD") {
+        log_startup_skip(
+            "executor_preload_spawn_skipped",
+            "VK_DISABLE_EXECUTOR_PRELOAD",
+        );
+        return;
+    }
+
+    log_startup_phase("executor_preload_spawned");
+    tokio::spawn(async move {
+        log_startup_phase("executor_preload_task_started");
+        executors::executors::utils::preload_global_executor_options_cache().await;
+        log_startup_phase("executor_preload_task_finished");
+    });
+}
+
+async fn run_startup_backfills(deployment: &DeploymentImpl) -> Result<(), DeploymentError> {
+    let disable_all_backfills = env_flag("VK_DISABLE_STARTUP_BACKFILLS");
+
+    if disable_all_backfills || env_flag("VK_DISABLE_BACKFILL_BEFORE_HEAD_COMMITS") {
+        let env_var = if disable_all_backfills {
+            "VK_DISABLE_STARTUP_BACKFILLS"
+        } else {
+            "VK_DISABLE_BACKFILL_BEFORE_HEAD_COMMITS"
+        };
+        log_startup_skip("backfill_before_head_commits_skipped", env_var);
+    } else {
+        deployment
+            .container()
+            .backfill_before_head_commits()
+            .await
+            .map_err(DeploymentError::from)?;
+        log_startup_phase("backfill_before_head_commits_complete");
+    }
+
+    if disable_all_backfills || env_flag("VK_DISABLE_BACKFILL_REPO_NAMES") {
+        let env_var = if disable_all_backfills {
+            "VK_DISABLE_STARTUP_BACKFILLS"
+        } else {
+            "VK_DISABLE_BACKFILL_REPO_NAMES"
+        };
+        log_startup_skip("backfill_repo_names_skipped", env_var);
+    } else {
+        deployment
+            .container()
+            .backfill_repo_names()
+            .await
+            .map_err(DeploymentError::from)?;
+        log_startup_phase("backfill_repo_names_complete");
+    }
+
+    Ok(())
+}
+
+fn startup_sampling_config() -> Option<(Duration, Duration)> {
+    let interval_ms = std::env::var("VK_STARTUP_DIAGNOSTICS_INTERVAL_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| *value > 0)?;
+    let duration_secs = std::env::var("VK_STARTUP_DIAGNOSTICS_DURATION_SECONDS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(600);
+
+    Some((
+        Duration::from_millis(interval_ms),
+        Duration::from_secs(duration_secs),
+    ))
+}
+
+fn env_flag(name: &str) -> bool {
+    std::env::var(name)
+        .ok()
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
 }
 
 const LEGACY_ATTACHMENT_MIGRATION_MARKER: &str = ".attachment-directories-migrated-v1";
