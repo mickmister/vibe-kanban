@@ -1,4 +1,8 @@
-use std::{collections::HashMap, time::Instant};
+use std::{
+    collections::HashMap,
+    sync::{Arc, OnceLock},
+    time::{Duration, Instant},
+};
 
 use axum::{Json, extract::State, response::Json as ResponseJson};
 use db::models::{
@@ -10,6 +14,7 @@ use db::models::{
 };
 use deployment::Deployment;
 use serde::{Deserialize, Serialize};
+use tokio::sync::{Mutex, Notify};
 use ts_rs::TS;
 use utils::response::ApiResponse;
 use uuid::Uuid;
@@ -17,13 +22,13 @@ use uuid::Uuid;
 use crate::{DeploymentImpl, error::ApiError};
 
 /// Request for fetching workspace summaries
-#[derive(Debug, Deserialize, Serialize, TS)]
+#[derive(Debug, Clone, Deserialize, Serialize, TS)]
 pub struct WorkspaceSummaryRequest {
     pub archived: bool,
 }
 
 /// Summary info for a single workspace
-#[derive(Debug, Serialize, TS)]
+#[derive(Debug, Clone, Serialize, TS)]
 pub struct WorkspaceSummary {
     pub workspace_id: Uuid,
     /// Session ID of the latest execution process
@@ -54,7 +59,7 @@ pub struct WorkspaceSummary {
 }
 
 /// Response containing summaries for requested workspaces
-#[derive(Debug, Serialize, TS)]
+#[derive(Debug, Clone, Serialize, TS)]
 pub struct WorkspaceSummaryResponse {
     pub summaries: Vec<WorkspaceSummary>,
 }
@@ -66,6 +71,39 @@ pub struct DiffStats {
     pub lines_removed: usize,
 }
 
+const WORKSPACE_SUMMARY_CACHE_TTL: Duration = Duration::from_secs(5);
+
+#[derive(Clone)]
+struct CachedWorkspaceSummaryResponse {
+    response: WorkspaceSummaryResponse,
+    computed_at: Instant,
+}
+
+enum WorkspaceSummaryCacheState {
+    Ready(Option<CachedWorkspaceSummaryResponse>),
+    Computing {
+        cached: Option<CachedWorkspaceSummaryResponse>,
+        notify: Arc<Notify>,
+    },
+}
+
+impl Default for WorkspaceSummaryCacheState {
+    fn default() -> Self {
+        Self::Ready(None)
+    }
+}
+
+type WorkspaceSummaryCache = Arc<Mutex<HashMap<bool, WorkspaceSummaryCacheState>>>;
+
+fn workspace_summary_cache() -> &'static WorkspaceSummaryCache {
+    static CACHE: OnceLock<WorkspaceSummaryCache> = OnceLock::new();
+    CACHE.get_or_init(|| Arc::new(Mutex::new(HashMap::new())))
+}
+
+fn is_cache_entry_fresh(entry: &CachedWorkspaceSummaryResponse) -> bool {
+    entry.computed_at.elapsed() < WORKSPACE_SUMMARY_CACHE_TTL
+}
+
 /// Fetch summary information for workspaces filtered by archived status.
 /// This endpoint returns data that cannot be efficiently included in the streaming endpoint.
 #[axum::debug_handler]
@@ -73,10 +111,98 @@ pub async fn get_workspace_summaries(
     State(deployment): State<DeploymentImpl>,
     Json(request): Json<WorkspaceSummaryRequest>,
 ) -> Result<ResponseJson<ApiResponse<WorkspaceSummaryResponse>>, ApiError> {
+    let response = get_cached_workspace_summaries(&deployment, request.archived).await?;
+    Ok(ResponseJson(ApiResponse::success(response)))
+}
+
+async fn get_cached_workspace_summaries(
+    deployment: &DeploymentImpl,
+    archived: bool,
+) -> Result<WorkspaceSummaryResponse, ApiError> {
+    let cache = workspace_summary_cache();
+
+    loop {
+        let mut cache_guard = cache.lock().await;
+        let state = cache_guard.entry(archived).or_default();
+
+        match state {
+            WorkspaceSummaryCacheState::Ready(Some(entry)) if is_cache_entry_fresh(entry) => {
+                if crate::startup::runtime_diagnostics_enabled() {
+                    tracing::info!(
+                        archived,
+                        age_ms = entry.computed_at.elapsed().as_millis() as u64,
+                        summary_count = entry.response.summaries.len(),
+                        "runtime_diag_workspace_summaries_cache_hit"
+                    );
+                }
+                return Ok(entry.response.clone());
+            }
+            WorkspaceSummaryCacheState::Ready(cached) => {
+                let cached = cached.clone();
+                let notify = Arc::new(Notify::new());
+                *state = WorkspaceSummaryCacheState::Computing {
+                    cached,
+                    notify: notify.clone(),
+                };
+                drop(cache_guard);
+
+                let compute_result = compute_workspace_summaries(deployment, archived).await;
+
+                let mut cache_guard = cache.lock().await;
+                let state = cache_guard.entry(archived).or_default();
+                match &compute_result {
+                    Ok(response) => {
+                        *state = WorkspaceSummaryCacheState::Ready(Some(
+                            CachedWorkspaceSummaryResponse {
+                                response: response.clone(),
+                                computed_at: Instant::now(),
+                            },
+                        ));
+                    }
+                    Err(_) => {
+                        let fallback = match state {
+                            WorkspaceSummaryCacheState::Computing { cached, .. } => cached.clone(),
+                            WorkspaceSummaryCacheState::Ready(cached) => cached.clone(),
+                        };
+                        *state = WorkspaceSummaryCacheState::Ready(fallback);
+                    }
+                }
+                drop(cache_guard);
+                notify.notify_waiters();
+                return compute_result;
+            }
+            WorkspaceSummaryCacheState::Computing { cached, notify } => {
+                if let Some(entry) = cached.as_ref().filter(|entry| is_cache_entry_fresh(entry)) {
+                    if crate::startup::runtime_diagnostics_enabled() {
+                        tracing::info!(
+                            archived,
+                            age_ms = entry.computed_at.elapsed().as_millis() as u64,
+                            summary_count = entry.response.summaries.len(),
+                            "runtime_diag_workspace_summaries_cache_stale_while_revalidate_hit"
+                        );
+                    }
+                    return Ok(entry.response.clone());
+                }
+
+                let notify = notify.clone();
+                drop(cache_guard);
+
+                if crate::startup::runtime_diagnostics_enabled() {
+                    tracing::info!(archived, "runtime_diag_workspace_summaries_cache_wait");
+                }
+                notify.notified().await;
+            }
+        }
+    }
+}
+
+async fn compute_workspace_summaries(
+    deployment: &DeploymentImpl,
+    archived: bool,
+) -> Result<WorkspaceSummaryResponse, ApiError> {
     let started_at = Instant::now();
     let before = utils::process_diag::sample_current_process();
     let pool = &deployment.db().pool;
-    let archived = request.archived;
 
     // 1. Fetch all workspaces with the given archived status
     let workspaces: Vec<Workspace> = Workspace::find_all_with_status(pool, Some(archived), None)
@@ -86,9 +212,7 @@ pub async fn get_workspace_summaries(
         .collect();
 
     if workspaces.is_empty() {
-        return Ok(ResponseJson(ApiResponse::success(
-            WorkspaceSummaryResponse { summaries: vec![] },
-        )));
+        return Ok(WorkspaceSummaryResponse { summaries: vec![] });
     }
 
     // 2. Fetch latest process info for workspaces with this archived status
@@ -205,9 +329,7 @@ pub async fn get_workspace_summaries(
         );
     }
 
-    Ok(ResponseJson(ApiResponse::success(
-        WorkspaceSummaryResponse { summaries },
-    )))
+    Ok(WorkspaceSummaryResponse { summaries })
 }
 
 /// Compute diff stats for a workspace.
