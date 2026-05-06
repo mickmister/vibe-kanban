@@ -235,6 +235,10 @@ pub fn log_startup_phase(phase: &str) {
     emit_startup_diag_log("startup_diag", phase, &snapshot);
 }
 
+pub fn runtime_diagnostics_enabled() -> bool {
+    env_flag("VK_RUNTIME_DIAGNOSTICS") || startup_sampling_config().is_some()
+}
+
 fn log_startup_skip(phase: &str, env_var: &str) {
     let snapshot = process_diag::sample_current_process();
     tracing::info!(

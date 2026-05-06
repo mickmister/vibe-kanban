@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, time::Instant};
 
 use axum::{Json, extract::State, response::Json as ResponseJson};
 use db::models::{
@@ -73,6 +73,8 @@ pub async fn get_workspace_summaries(
     State(deployment): State<DeploymentImpl>,
     Json(request): Json<WorkspaceSummaryRequest>,
 ) -> Result<ResponseJson<ApiResponse<WorkspaceSummaryResponse>>, ApiError> {
+    let started_at = Instant::now();
+    let before = utils::process_diag::sample_current_process();
     let pool = &deployment.db().pool;
     let archived = request.archived;
 
@@ -120,9 +122,9 @@ pub async fn get_workspace_summaries(
             let deployment = deployment.clone();
             async move {
                 if workspace.container_ref.is_some() {
-                    compute_workspace_diff_stats(&deployment, &workspace)
+                    compute_workspace_diff_report(&deployment, &workspace)
                         .await
-                        .map(|stats| (workspace.id, stats))
+                        .map(|report| (workspace.id, report))
                 } else {
                     None
                 }
@@ -130,9 +132,21 @@ pub async fn get_workspace_summaries(
         })
         .collect();
 
-    let diff_results: Vec<Option<(Uuid, DiffStats)>> =
+    let diff_results: Vec<Option<(Uuid, WorkspaceDiffComputationReport)>> =
         futures_util::future::join_all(diff_futures).await;
-    let diff_stats: HashMap<Uuid, DiffStats> = diff_results.into_iter().flatten().collect();
+    let mut total_repo_count = 0_usize;
+    let mut total_base_commit_failures = 0_usize;
+    let mut total_diff_fetch_failures = 0_usize;
+    let diff_stats: HashMap<Uuid, DiffStats> = diff_results
+        .into_iter()
+        .flatten()
+        .map(|(workspace_id, report)| {
+            total_repo_count += report.repo_count;
+            total_base_commit_failures += report.base_commit_failures;
+            total_diff_fetch_failures += report.diff_fetch_failures;
+            (workspace_id, report.stats)
+        })
+        .collect();
 
     // 8. Assemble response
     let summaries: Vec<WorkspaceSummary> = workspaces
@@ -163,6 +177,34 @@ pub async fn get_workspace_summaries(
         })
         .collect();
 
+    let after = utils::process_diag::sample_current_process();
+    if crate::startup::runtime_diagnostics_enabled() {
+        tracing::info!(
+            archived,
+            workspace_count = workspaces.len(),
+            workspaces_with_container_ref = workspaces
+                .iter()
+                .filter(|workspace| workspace.container_ref.is_some())
+                .count(),
+            diff_stats_workspace_count = diff_stats.len(),
+            total_repo_count,
+            total_base_commit_failures,
+            total_diff_fetch_failures,
+            elapsed_ms = started_at.elapsed().as_millis() as u64,
+            rss_mb_before = utils::process_diag::bytes_to_mb(before.rss_bytes),
+            rss_mb_after = utils::process_diag::bytes_to_mb(after.rss_bytes),
+            vm_size_mb_before = utils::process_diag::bytes_to_mb(before.virtual_bytes),
+            vm_size_mb_after = utils::process_diag::bytes_to_mb(after.virtual_bytes),
+            threads_before = before.thread_count,
+            threads_after = after.thread_count,
+            fds_before = before.open_fd_count,
+            fds_after = after.open_fd_count,
+            child_processes_before = before.child_process_count,
+            child_processes_after = after.child_process_count,
+            "runtime_diag_workspace_summaries"
+        );
+    }
+
     Ok(ResponseJson(ApiResponse::success(
         WorkspaceSummaryResponse { summaries },
     )))
@@ -173,16 +215,49 @@ pub async fn compute_workspace_diff_stats(
     deployment: &DeploymentImpl,
     workspace: &Workspace,
 ) -> Option<DiffStats> {
-    let stats = services::services::diff_stream::compute_diff_stats(
+    let report = services::services::diff_stream::compute_diff_stats_with_report(
         &deployment.db().pool,
         deployment.git(),
         workspace,
     )
     .await?;
 
+    let stats = report.stats;
+
     Some(DiffStats {
         files_changed: stats.files_changed,
         lines_added: stats.lines_added,
         lines_removed: stats.lines_removed,
+    })
+}
+
+#[derive(Debug, Clone)]
+struct WorkspaceDiffComputationReport {
+    stats: DiffStats,
+    repo_count: usize,
+    base_commit_failures: usize,
+    diff_fetch_failures: usize,
+}
+
+async fn compute_workspace_diff_report(
+    deployment: &DeploymentImpl,
+    workspace: &Workspace,
+) -> Option<WorkspaceDiffComputationReport> {
+    let report = services::services::diff_stream::compute_diff_stats_with_report(
+        &deployment.db().pool,
+        deployment.git(),
+        workspace,
+    )
+    .await?;
+
+    Some(WorkspaceDiffComputationReport {
+        stats: DiffStats {
+            files_changed: report.stats.files_changed,
+            lines_added: report.stats.lines_added,
+            lines_removed: report.stats.lines_removed,
+        },
+        repo_count: report.repo_count,
+        base_commit_failures: report.base_commit_failures,
+        diff_fetch_failures: report.diff_fetch_failures,
     })
 }
