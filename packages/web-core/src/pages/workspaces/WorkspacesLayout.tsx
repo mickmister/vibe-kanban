@@ -394,43 +394,45 @@ export function WorkspacesLayout() {
     !isDesktopZenMode && rightMainPanelMode !== null;
   const canSelectChatViewMode = !isMobile && hasZenContext;
   const chatViewModeSelector = canSelectChatViewMode ? (
-    <Select
-      value={effectiveChatViewMode}
-      onValueChange={(value) =>
-        setChatViewMode(value as 'full' | 'mostly-zen' | 'zen')
-      }
-    >
-      <SelectTrigger
-        className={cn(
-          'h-9 w-[112px] rounded-sm border-border bg-secondary text-sm text-normal',
-          effectiveChatViewMode === 'zen' &&
-            'opacity-0 transition-opacity duration-150 hover:opacity-100 focus:opacity-100 focus-within:opacity-100 data-[state=open]:opacity-100'
-        )}
+    <div className="shrink-0">
+      <Select
+        value={effectiveChatViewMode}
+        onValueChange={(value) =>
+          setChatViewMode(value as 'full' | 'mostly-zen' | 'zen')
+        }
       >
-        <SelectValue
-          placeholder={t('workspaces.chatViewMode.label', {
-            defaultValue: 'Chat View',
-          })}
-        />
-      </SelectTrigger>
-      <SelectContent>
-        <SelectItem value="full">
-          {t('workspaces.chatViewMode.full', {
-            defaultValue: 'Full',
-          })}
-        </SelectItem>
-        <SelectItem value="mostly-zen">
-          {t('workspaces.chatViewMode.mostlyZen', {
-            defaultValue: 'Chat',
-          })}
-        </SelectItem>
-        <SelectItem value="zen">
-          {t('workspaces.chatViewMode.zen', {
-            defaultValue: 'Zen',
-          })}
-        </SelectItem>
-      </SelectContent>
-    </Select>
+        <SelectTrigger
+          className={cn(
+            'inline-flex h-9 w-auto min-w-[112px] shrink-0 rounded-sm border-border bg-secondary text-sm text-normal',
+            effectiveChatViewMode === 'zen' &&
+              'opacity-0 transition-opacity duration-150 hover:opacity-100 focus:opacity-100 focus-within:opacity-100 data-[state=open]:opacity-100'
+          )}
+        >
+          <SelectValue
+            placeholder={t('workspaces.chatViewMode.label', {
+              defaultValue: 'Chat View',
+            })}
+          />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value="full">
+            {t('workspaces.chatViewMode.full', {
+              defaultValue: 'Full',
+            })}
+          </SelectItem>
+          <SelectItem value="mostly-zen">
+            {t('workspaces.chatViewMode.mostlyZen', {
+              defaultValue: 'Chat',
+            })}
+          </SelectItem>
+          <SelectItem value="zen">
+            {t('workspaces.chatViewMode.zen', {
+              defaultValue: 'Zen',
+            })}
+          </SelectItem>
+        </SelectContent>
+      </Select>
+    </div>
   ) : undefined;
 
   const mainContent = (
