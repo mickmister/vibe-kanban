@@ -153,21 +153,7 @@ export function CreateChatBox<TExecutor extends string = string>({
       {repoSummaryLabel}
     </button>
   );
-  const footerActionContent = isMinimalZen ? (
-    <>
-      {chatViewModeSelector}
-      <PrimaryButton
-        onClick={onSend}
-        disabled={!canSend}
-        actionIcon={isSending ? 'spinner' : undefined}
-        value={
-          isSending
-            ? t('tasks:conversation.workspace.creating')
-            : t('tasks:conversation.workspace.create')
-        }
-      />
-    </>
-  ) : (
+  const footerActionContent = (
     <PrimaryButton
       onClick={onSend}
       disabled={!canSend}
@@ -196,6 +182,7 @@ export function CreateChatBox<TExecutor extends string = string>({
       error={error}
       visualVariant={VisualVariant.NORMAL}
       dropzone={dropzone}
+      bottomLeftOverlay={isMinimalZen ? chatViewModeSelector : undefined}
       modelSelector={isMinimalZen ? undefined : modelSelector}
       headerLeft={
         isMinimalZen ? undefined : (

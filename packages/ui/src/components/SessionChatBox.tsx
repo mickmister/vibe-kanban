@@ -659,14 +659,7 @@ export function SessionChatBox<TExecutor extends string = string>({
     if (isInApprovalMode || isInAskQuestionMode) return VisualVariant.PLAN;
     return VisualVariant.NORMAL;
   };
-  const footerActionContent = isMinimalZen ? (
-    <>
-      {chatViewModeSelector}
-      {renderActionButtons()}
-    </>
-  ) : (
-    renderActionButtons()
-  );
+  const footerActionContent = renderActionButtons();
 
   return (
     <ChatBoxBase
@@ -687,6 +680,7 @@ export function SessionChatBox<TExecutor extends string = string>({
       visualVariant={getVisualVariant()}
       isRunning={showRunningAnimation}
       dropzone={dropzone}
+      bottomLeftOverlay={isMinimalZen ? chatViewModeSelector : undefined}
       modelSelector={isMinimalZen ? undefined : modelSelector}
       headerLeft={
         shouldHideZenHeader ? undefined : (

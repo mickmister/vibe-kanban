@@ -42,6 +42,9 @@ interface ChatBoxBaseProps {
   // Banner content (queued message indicator, feedback mode indicator)
   banner?: ReactNode;
 
+  // Optional overlay anchored to the bottom-left corner
+  bottomLeftOverlay?: ReactNode;
+
   // visualVariant
   visualVariant: VisualVariant;
 
@@ -65,6 +68,7 @@ export function ChatBoxBase({
   footerRight,
   modelSelector,
   banner,
+  bottomLeftOverlay,
   visualVariant,
   isRunning,
   dropzone,
@@ -136,6 +140,12 @@ export function ChatBoxBase({
           <div className="flex shrink-0 gap-base">{footerRight}</div>
         </div>
       </div>
+
+      {bottomLeftOverlay && (
+        <div className="absolute bottom-base left-base z-10">
+          {bottomLeftOverlay}
+        </div>
+      )}
     </div>
   );
 }
