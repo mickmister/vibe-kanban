@@ -172,18 +172,6 @@ async fn get_cached_workspace_summaries(
                 return compute_result;
             }
             WorkspaceSummaryCacheState::Computing { cached, notify } => {
-                if let Some(entry) = cached.as_ref().filter(|entry| is_cache_entry_fresh(entry)) {
-                    if crate::startup::runtime_diagnostics_enabled() {
-                        tracing::info!(
-                            archived,
-                            age_ms = entry.computed_at.elapsed().as_millis() as u64,
-                            summary_count = entry.response.summaries.len(),
-                            "runtime_diag_workspace_summaries_cache_stale_while_revalidate_hit"
-                        );
-                    }
-                    return Ok(entry.response.clone());
-                }
-
                 let notify = notify.clone();
                 drop(cache_guard);
 

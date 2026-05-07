@@ -1,3 +1,9 @@
+use std::{
+    collections::HashMap,
+    sync::{Arc, OnceLock},
+    time::{Duration, Instant},
+};
+
 use anyhow;
 use axum::{
     Extension, Router,
@@ -14,6 +20,7 @@ use deployment::Deployment;
 use futures_util::{StreamExt, TryStreamExt};
 use serde::Deserialize;
 use services::services::container::ContainerService;
+use tokio::sync::{Mutex, Notify};
 use utils::{log_msg::LogMsg, response::ApiResponse};
 use uuid::Uuid;
 
@@ -32,6 +39,36 @@ struct SessionExecutionProcessQuery {
     /// If true, include soft-deleted (dropped) processes in results/stream
     #[serde(default)]
     pub show_soft_deleted: Option<bool>,
+}
+
+const NORMALIZED_LOG_HISTORY_CACHE_TTL: Duration = Duration::from_secs(15);
+
+#[derive(Clone)]
+struct CachedNormalizedLogHistory {
+    messages: Arc<Vec<String>>,
+    computed_at: Instant,
+}
+
+enum NormalizedLogHistoryCacheState {
+    Ready(Option<CachedNormalizedLogHistory>),
+    Computing { notify: Arc<Notify> },
+}
+
+impl Default for NormalizedLogHistoryCacheState {
+    fn default() -> Self {
+        Self::Ready(None)
+    }
+}
+
+type NormalizedLogHistoryCache = Arc<Mutex<HashMap<Uuid, NormalizedLogHistoryCacheState>>>;
+
+fn normalized_log_history_cache() -> &'static NormalizedLogHistoryCache {
+    static CACHE: OnceLock<NormalizedLogHistoryCache> = OnceLock::new();
+    CACHE.get_or_init(|| Arc::new(Mutex::new(HashMap::new())))
+}
+
+fn normalized_log_history_fresh(entry: &CachedNormalizedLogHistory) -> bool {
+    entry.computed_at.elapsed() < NORMALIZED_LOG_HISTORY_CACHE_TTL
 }
 
 async fn get_execution_process_by_id(
@@ -141,20 +178,47 @@ async fn stream_normalized_logs_ws(
     Path(exec_id): Path<Uuid>,
 ) -> impl IntoResponse {
     ws.on_upgrade(move |socket| async move {
-        let stream = deployment
+        if deployment
             .container()
-            .stream_normalized_logs(&exec_id)
-            .await;
+            .get_msg_store_by_id(&exec_id)
+            .await
+            .is_some()
+        {
+            let stream = deployment
+                .container()
+                .stream_normalized_logs(&exec_id)
+                .await;
+            match stream {
+                Some(stream) => {
+                    let stream = stream.err_into::<anyhow::Error>().into_stream();
+                    if let Err(e) = handle_normalized_logs_ws(socket, stream).await {
+                        tracing::warn!("normalized logs WS closed: {}", e);
+                    }
+                }
+                None => {
+                    let mut socket = socket;
+                    let _ = socket
+                        .send(utils::log_msg::LogMsg::Finished.to_ws_message_unchecked())
+                        .await;
+                    let _ = socket.close().await;
+                }
+            }
+            return;
+        }
 
-        match stream {
-            Some(stream) => {
-                let stream = stream.err_into::<anyhow::Error>().into_stream();
+        match get_cached_historic_normalized_log_messages(&deployment, exec_id).await {
+            Some(messages) => {
+                let stream = futures_util::stream::iter(
+                    messages
+                        .iter()
+                        .cloned()
+                        .map(|payload| Ok::<_, anyhow::Error>(Message::Text(payload.into()))),
+                );
                 if let Err(e) = handle_normalized_logs_ws(socket, stream).await {
                     tracing::warn!("normalized logs WS closed: {}", e);
                 }
             }
             None => {
-                // No logs available: send finished and close cleanly
                 let mut socket = socket;
                 let _ = socket
                     .send(utils::log_msg::LogMsg::Finished.to_ws_message_unchecked())
@@ -165,11 +229,96 @@ async fn stream_normalized_logs_ws(
     })
 }
 
+async fn get_cached_historic_normalized_log_messages(
+    deployment: &DeploymentImpl,
+    exec_id: Uuid,
+) -> Option<Arc<Vec<String>>> {
+    let cache = normalized_log_history_cache();
+
+    loop {
+        let mut cache_guard = cache.lock().await;
+        let state = cache_guard.entry(exec_id).or_default();
+
+        match state {
+            NormalizedLogHistoryCacheState::Ready(Some(entry))
+                if normalized_log_history_fresh(entry) =>
+            {
+                return Some(entry.messages.clone());
+            }
+            NormalizedLogHistoryCacheState::Ready(_) => {
+                let notify = Arc::new(Notify::new());
+                *state = NormalizedLogHistoryCacheState::Computing {
+                    notify: notify.clone(),
+                };
+                drop(cache_guard);
+
+                let compute_result =
+                    collect_historic_normalized_log_messages(deployment, exec_id).await;
+
+                let mut cache_guard = cache.lock().await;
+                let state = cache_guard.entry(exec_id).or_default();
+                match &compute_result {
+                    Some(messages) => {
+                        *state = NormalizedLogHistoryCacheState::Ready(Some(
+                            CachedNormalizedLogHistory {
+                                messages: messages.clone(),
+                                computed_at: Instant::now(),
+                            },
+                        ));
+                    }
+                    None => {
+                        *state = NormalizedLogHistoryCacheState::Ready(None);
+                    }
+                }
+                drop(cache_guard);
+                notify.notify_waiters();
+                return compute_result;
+            }
+            NormalizedLogHistoryCacheState::Computing { notify } => {
+                let notify = notify.clone();
+                drop(cache_guard);
+                notify.notified().await;
+            }
+        }
+    }
+}
+
+async fn collect_historic_normalized_log_messages(
+    deployment: &DeploymentImpl,
+    exec_id: Uuid,
+) -> Option<Arc<Vec<String>>> {
+    let stream = deployment
+        .container()
+        .stream_normalized_logs(&exec_id)
+        .await?;
+    let mut stream = stream.err_into::<anyhow::Error>().into_stream();
+    let mut messages = Vec::new();
+
+    while let Some(item) = stream.next().await {
+        match item {
+            Ok(msg) => match msg.to_ws_message_unchecked() {
+                Message::Text(payload) => messages.push(payload.to_string()),
+                _ => continue,
+            },
+            Err(e) => {
+                tracing::warn!(
+                    execution_process_id = %exec_id,
+                    error = %e,
+                    "failed to collect historic normalized logs"
+                );
+                return None;
+            }
+        }
+    }
+
+    Some(Arc::new(messages))
+}
+
 async fn handle_normalized_logs_ws(
     mut socket: MaybeSignedWebSocket,
-    stream: impl futures_util::Stream<Item = anyhow::Result<LogMsg>> + Unpin + Send + 'static,
+    stream: impl futures_util::Stream<Item = anyhow::Result<Message>> + Unpin + Send + 'static,
 ) -> anyhow::Result<()> {
-    let mut stream = stream.map_ok(|msg| msg.to_ws_message_unchecked());
+    let mut stream = stream;
     loop {
         tokio::select! {
             item = stream.next() => {
