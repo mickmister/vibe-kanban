@@ -6,6 +6,7 @@ import {
 import { useExecutionProcessesContext } from '@/shared/hooks/useExecutionProcessesContext';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { streamJsonPatchEntries } from '@/shared/lib/streamJsonPatchEntries';
+import { loadFiniteJsonPatchEntries } from '@/shared/lib/loadFiniteJsonPatchEntries';
 import type {
   AddEntryType,
   ConversationTimelineSource,
@@ -13,6 +14,7 @@ import type {
   PatchTypeWithKey,
   UseConversationHistoryParams,
 } from '@/shared/hooks/useConversationHistory/types';
+import { updateHistoricReplayFailures } from './historyReplayState';
 
 // Result type for the new UI's conversation history hook
 export interface UseConversationHistoryResult {
@@ -27,6 +29,11 @@ import {
   MIN_INITIAL_ENTRIES,
   REMAINING_BATCH_SIZE,
 } from '@/shared/hooks/useConversationHistory/constants';
+
+const HISTORIC_REPLAY_TIMEOUT_MS = 5000;
+const HISTORIC_REPLAY_MAX_RETRIES = 3;
+const HISTORIC_REPLAY_ERROR =
+  'Failed to load some earlier conversation messages.';
 
 export const useConversationHistory = ({
   onTimelineUpdated,
@@ -49,7 +56,10 @@ export const useConversationHistory = ({
     new Map()
   );
   const [isLoadingHistoryState, setIsLoadingHistory] = useState(false);
-  const [historyError, setHistoryError] = useState<string | null>(null);
+  const scopeGenerationRef = useRef(0);
+  const [failedHistoricProcessIds, setFailedHistoricProcessIds] = useState<
+    Set<string>
+  >(new Set());
 
   // Derive whether this is the first turn (no follow-up processes exist)
   const isFirstTurn = useMemo(() => {
@@ -85,6 +95,19 @@ export const useConversationHistory = ({
     onTimelineUpdatedRef.current = onTimelineUpdated;
   }, [onTimelineUpdated]);
 
+  const setHistoricProcessFailure = useCallback(
+    (generation: number, processId: string, failed: boolean) => {
+      setFailedHistoricProcessIds((prev) => {
+        return updateHistoricReplayFailures(prev, {
+          isCurrentScope: scopeGenerationRef.current === generation,
+          processId,
+          failed,
+        });
+      });
+    },
+    []
+  );
+
   // Keep executionProcesses up to date
   useEffect(() => {
     executionProcesses.current = executionProcessesRaw.filter(
@@ -97,7 +120,7 @@ export const useConversationHistory = ({
   }, [executionProcessesRaw]);
 
   const loadEntriesForHistoricExecutionProcess = useCallback(
-    async (executionProcess: ExecutionProcess) => {
+    async (executionProcess: ExecutionProcess, generation: number) => {
       let url = '';
       if (executionProcess.executor_action.typ.type === 'ScriptRequest') {
         url = `/api/execution-processes/${executionProcess.id}/raw-logs/ws`;
@@ -105,29 +128,25 @@ export const useConversationHistory = ({
         url = `/api/execution-processes/${executionProcess.id}/normalized-logs/ws`;
       }
 
-      const maxRetries = 3;
-
-      for (let attempt = 1; attempt <= maxRetries; attempt += 1) {
+      for (
+        let attempt = 1;
+        attempt <= HISTORIC_REPLAY_MAX_RETRIES;
+        attempt += 1
+      ) {
         try {
-          return await new Promise<PatchType[]>((resolve, reject) => {
-            const controller = streamJsonPatchEntries<PatchType>(url, {
-              replaySafeAppendOnly: true,
-              onFinished: (allEntries) => {
-                controller.close();
-                resolve(allEntries);
-              },
-              onError: (err) => {
-                controller.close();
-                reject(err);
-              },
-            });
+          return await loadFiniteJsonPatchEntries<PatchType>(url, {
+            timeoutMs: HISTORIC_REPLAY_TIMEOUT_MS,
+            replaySafeAppendOnly: true,
           });
         } catch (err) {
+          if (scopeGenerationRef.current !== generation) {
+            return null;
+          }
           console.warn(
-            `Error loading entries for historic execution process ${executionProcess.id} (attempt ${attempt}/${maxRetries})`,
+            `Error loading entries for historic execution process ${executionProcess.id} (attempt ${attempt}/${HISTORIC_REPLAY_MAX_RETRIES})`,
             err
           );
-          if (attempt < maxRetries) {
+          if (attempt < HISTORIC_REPLAY_MAX_RETRIES) {
             await new Promise((resolve) => setTimeout(resolve, 500 * attempt));
           }
         }
@@ -279,6 +298,7 @@ export const useConversationHistory = ({
   const loadHistoricEntries = useCallback(
     async (maxEntries?: number): Promise<ExecutionProcessStateStore> => {
       const localDisplayedExecutionProcesses: ExecutionProcessStateStore = {};
+      const generation = scopeGenerationRef.current;
 
       if (!executionProcesses?.current) return localDisplayedExecutionProcesses;
 
@@ -288,12 +308,15 @@ export const useConversationHistory = ({
         if (executionProcess.status === ExecutionProcessStatus.running)
           continue;
 
-        const entries =
-          await loadEntriesForHistoricExecutionProcess(executionProcess);
+        const entries = await loadEntriesForHistoricExecutionProcess(
+          executionProcess,
+          generation
+        );
         if (entries === null) {
-          setHistoryError('Failed to load some earlier conversation messages.');
+          setHistoricProcessFailure(generation, executionProcess.id, true);
           continue;
         }
+        setHistoricProcessFailure(generation, executionProcess.id, false);
         const entriesWithKey = entries.map((e, idx) =>
           patchWithKey(e, executionProcess.id, idx)
         );
@@ -313,11 +336,16 @@ export const useConversationHistory = ({
 
       return localDisplayedExecutionProcesses;
     },
-    [executionProcesses]
+    [
+      executionProcesses,
+      loadEntriesForHistoricExecutionProcess,
+      setHistoricProcessFailure,
+    ]
   );
 
   const loadRemainingEntriesInBatches = useCallback(
     async (batchSize: number): Promise<boolean> => {
+      const generation = scopeGenerationRef.current;
       if (!executionProcesses?.current) return false;
 
       let anyUpdated = false;
@@ -331,12 +359,15 @@ export const useConversationHistory = ({
         )
           continue;
 
-        const entries =
-          await loadEntriesForHistoricExecutionProcess(executionProcess);
+        const entries = await loadEntriesForHistoricExecutionProcess(
+          executionProcess,
+          generation
+        );
         if (entries === null) {
-          setHistoryError('Failed to load some earlier conversation messages.');
+          setHistoricProcessFailure(generation, executionProcess.id, true);
           continue;
         }
+        setHistoricProcessFailure(generation, executionProcess.id, false);
         const entriesWithKey = entries.map((e, idx) =>
           patchWithKey(e, executionProcess.id, idx)
         );
@@ -358,7 +389,11 @@ export const useConversationHistory = ({
       }
       return anyUpdated;
     },
-    [executionProcesses]
+    [
+      executionProcesses,
+      loadEntriesForHistoricExecutionProcess,
+      setHistoricProcessFailure,
+    ]
   );
 
   const ensureProcessVisible = useCallback((p: ExecutionProcess) => {
@@ -407,12 +442,13 @@ export const useConversationHistory = ({
   }, [idListKey, executionProcessesRaw, emitEntries, isLoading, isConnected]);
 
   useEffect(() => {
+    scopeGenerationRef.current += 1;
     displayedExecutionProcesses.current = {};
     loadedInitialEntries.current = false;
     emittedEmptyInitialRef.current = false;
     streamingProcessIdsRef.current.clear();
     previousStatusMapRef.current.clear();
-    setHistoryError(null);
+    setFailedHistoricProcessIds(new Set());
     emitEntries(displayedExecutionProcesses.current, 'initial', true);
   }, [scopeKey, emitEntries]);
 
@@ -520,15 +556,20 @@ export const useConversationHistory = ({
 
     if (processesToReload.length === 0) return;
 
+    const generation = scopeGenerationRef.current;
     (async () => {
       let anyUpdated = false;
 
       for (const process of processesToReload) {
-        const entries = await loadEntriesForHistoricExecutionProcess(process);
+        const entries = await loadEntriesForHistoricExecutionProcess(
+          process,
+          generation
+        );
         if (entries === null) {
-          setHistoryError('Failed to load some earlier conversation messages.');
+          setHistoricProcessFailure(generation, process.id, true);
           continue;
         }
+        setHistoricProcessFailure(generation, process.id, false);
 
         const entriesWithKey = entries.map((e, idx) =>
           patchWithKey(e, process.id, idx)
@@ -547,7 +588,13 @@ export const useConversationHistory = ({
         emitEntries(displayedExecutionProcesses.current, 'running', false);
       }
     })();
-  }, [idStatusKey, executionProcessesRaw, emitEntries]);
+  }, [
+    idStatusKey,
+    executionProcessesRaw,
+    emitEntries,
+    loadEntriesForHistoricExecutionProcess,
+    setHistoricProcessFailure,
+  ]);
 
   // If an execution process is removed, remove it from the state
   useEffect(() => {
@@ -563,8 +610,21 @@ export const useConversationHistory = ({
           delete state[id];
         });
       });
+      setFailedHistoricProcessIds((prev) => {
+        const next = new Set(prev);
+        let changed = false;
+        removedProcessIds.forEach((id) => {
+          if (next.delete(id)) {
+            changed = true;
+          }
+        });
+        return changed ? next : prev;
+      });
     }
   }, [scopeKey, idListKey, executionProcessesRaw]);
+
+  const historyError =
+    failedHistoricProcessIds.size > 0 ? HISTORIC_REPLAY_ERROR : null;
 
   return {
     isFirstTurn,
