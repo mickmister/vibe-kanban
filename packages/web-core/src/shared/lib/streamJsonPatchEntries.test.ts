@@ -77,6 +77,7 @@ describe('streamJsonPatchEntries', () => {
 
     const controller = streamJsonPatchEntries('/test', {
       onEntries,
+      replaySafeAppendOnly: true,
       retryOnUnexpectedClose: true,
     });
 

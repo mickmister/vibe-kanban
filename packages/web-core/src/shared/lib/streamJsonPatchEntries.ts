@@ -16,6 +16,8 @@ export interface StreamOptions<E = unknown> {
   onFinished?: (entries: E[]) => void;
   /** replay-safe streams can retry after unexpected closes */
   retryOnUnexpectedClose?: boolean;
+  /** apply replay deduplication for append-only history replays */
+  replaySafeAppendOnly?: boolean;
   maxRetries?: number;
   retryDelayMs?: (attempt: number) => number;
 }
@@ -81,7 +83,9 @@ export function streamJsonPatchEntries<E = unknown>(
     const ops = dedupeOps(pendingOps);
     pendingOps = [];
 
-    const filteredOps = filterReplayOps(snapshot.entries, ops);
+    const filteredOps = opts.replaySafeAppendOnly
+      ? filterReplayOps(snapshot.entries, ops)
+      : ops;
     if (filteredOps.length === 0) return;
 
     snapshot = produce(snapshot, (draft) => {

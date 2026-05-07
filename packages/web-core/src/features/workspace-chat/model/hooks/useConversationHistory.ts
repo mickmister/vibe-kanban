@@ -20,6 +20,8 @@ export interface UseConversationHistoryResult {
   isFirstTurn: boolean;
   /** Whether background batches are still loading older history entries */
   isLoadingHistory: boolean;
+  /** Error state when earlier conversation history could not be fully replayed */
+  historyError: string | null;
 }
 import {
   MIN_INITIAL_ENTRIES,
@@ -47,6 +49,7 @@ export const useConversationHistory = ({
     new Map()
   );
   const [isLoadingHistoryState, setIsLoadingHistory] = useState(false);
+  const [historyError, setHistoryError] = useState<string | null>(null);
 
   // Derive whether this is the first turn (no follow-up processes exist)
   const isFirstTurn = useMemo(() => {
@@ -102,10 +105,13 @@ export const useConversationHistory = ({
         url = `/api/execution-processes/${executionProcess.id}/normalized-logs/ws`;
       }
 
-      for (let attempt = 0; attempt < 20; attempt += 1) {
+      const maxRetries = 3;
+
+      for (let attempt = 1; attempt <= maxRetries; attempt += 1) {
         try {
           return await new Promise<PatchType[]>((resolve, reject) => {
             const controller = streamJsonPatchEntries<PatchType>(url, {
+              replaySafeAppendOnly: true,
               onFinished: (allEntries) => {
                 controller.close();
                 resolve(allEntries);
@@ -118,14 +124,16 @@ export const useConversationHistory = ({
           });
         } catch (err) {
           console.warn(
-            `Error loading entries for historic execution process ${executionProcess.id}`,
+            `Error loading entries for historic execution process ${executionProcess.id} (attempt ${attempt}/${maxRetries})`,
             err
           );
-          await new Promise((resolve) => setTimeout(resolve, 500));
+          if (attempt < maxRetries) {
+            await new Promise((resolve) => setTimeout(resolve, 500 * attempt));
+          }
         }
       }
 
-      return [];
+      return null;
     },
     []
   );
@@ -224,6 +232,7 @@ export const useConversationHistory = ({
           url = `/api/execution-processes/${executionProcess.id}/normalized-logs/ws`;
         }
         const controller = streamJsonPatchEntries<PatchType>(url, {
+          replaySafeAppendOnly: true,
           retryOnUnexpectedClose: true,
           onEntries(entries) {
             const patchesWithKey = entries.map((entry, index) =>
@@ -281,6 +290,10 @@ export const useConversationHistory = ({
 
         const entries =
           await loadEntriesForHistoricExecutionProcess(executionProcess);
+        if (entries === null) {
+          setHistoryError('Failed to load some earlier conversation messages.');
+          continue;
+        }
         const entriesWithKey = entries.map((e, idx) =>
           patchWithKey(e, executionProcess.id, idx)
         );
@@ -320,6 +333,10 @@ export const useConversationHistory = ({
 
         const entries =
           await loadEntriesForHistoricExecutionProcess(executionProcess);
+        if (entries === null) {
+          setHistoryError('Failed to load some earlier conversation messages.');
+          continue;
+        }
         const entriesWithKey = entries.map((e, idx) =>
           patchWithKey(e, executionProcess.id, idx)
         );
@@ -395,6 +412,7 @@ export const useConversationHistory = ({
     emittedEmptyInitialRef.current = false;
     streamingProcessIdsRef.current.clear();
     previousStatusMapRef.current.clear();
+    setHistoryError(null);
     emitEntries(displayedExecutionProcesses.current, 'initial', true);
   }, [scopeKey, emitEntries]);
 
@@ -507,7 +525,10 @@ export const useConversationHistory = ({
 
       for (const process of processesToReload) {
         const entries = await loadEntriesForHistoricExecutionProcess(process);
-        if (entries.length === 0) continue;
+        if (entries === null) {
+          setHistoryError('Failed to load some earlier conversation messages.');
+          continue;
+        }
 
         const entriesWithKey = entries.map((e, idx) =>
           patchWithKey(e, process.id, idx)
@@ -545,5 +566,9 @@ export const useConversationHistory = ({
     }
   }, [scopeKey, idListKey, executionProcessesRaw]);
 
-  return { isFirstTurn, isLoadingHistory: isLoadingHistoryState };
+  return {
+    isFirstTurn,
+    isLoadingHistory: isLoadingHistoryState,
+    historyError,
+  };
 };

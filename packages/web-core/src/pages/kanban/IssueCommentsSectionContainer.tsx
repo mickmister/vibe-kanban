@@ -20,6 +20,7 @@ import {
   commitCommentAttachments,
   deleteAttachment,
 } from '@/shared/lib/remoteApi';
+import { scratchApi } from '@/shared/lib/api';
 import {
   extractAttachmentIds,
   removeAttachmentMarkdownBySource,
@@ -83,7 +84,6 @@ function IssueCommentsSectionContent() {
   const commentDraftId = `issue-comment:${issueContext.issueId}`;
   const {
     scratch: commentDraftScratch,
-    updateScratch: updateCommentDraft,
     deleteScratch: deleteCommentDraft,
     isLoading: isCommentDraftLoading,
     isConnected: isCommentDraftConnected,
@@ -96,15 +96,15 @@ function IssueCommentsSectionContent() {
   const skipNextPersistRef = useRef(false);
 
   const persistCommentDraft = useCallback(
-    async (value: string) => {
+    async (targetDraftId: string, value: string) => {
       try {
         if (!value.trim()) {
-          await deleteCommentDraft();
-          clearStoredScratchDraft(ScratchType.DRAFT_TASK, commentDraftId);
+          await scratchApi.delete(ScratchType.DRAFT_TASK, targetDraftId);
+          clearStoredScratchDraft(ScratchType.DRAFT_TASK, targetDraftId);
           return;
         }
 
-        await updateCommentDraft({
+        await scratchApi.update(ScratchType.DRAFT_TASK, targetDraftId, {
           payload: {
             type: 'DRAFT_TASK',
             data: value,
@@ -112,7 +112,7 @@ function IssueCommentsSectionContent() {
         });
         writeStoredScratchDraft(
           ScratchType.DRAFT_TASK,
-          commentDraftId,
+          targetDraftId,
           value,
           false
         );
@@ -120,7 +120,7 @@ function IssueCommentsSectionContent() {
         console.error('[IssueCommentsSection] Failed to persist draft:', e);
       }
     },
-    [commentDraftId, updateCommentDraft, deleteCommentDraft]
+    []
   );
 
   const {
@@ -130,6 +130,12 @@ function IssueCommentsSectionContent() {
   } = useDebouncedCallback(persistCommentDraft, 500);
 
   useEffect(() => {
+    return () => {
+      flushPersistCommentDraft();
+    };
+  }, [commentDraftId, flushPersistCommentDraft]);
+
+  useEffect(() => {
     cancelDebouncedPersistCommentDraft();
     hydratedCommentDraftIdRef.current = null;
     skipNextPersistRef.current = false;
@@ -137,7 +143,7 @@ function IssueCommentsSectionContent() {
       ScratchType.DRAFT_TASK,
       commentDraftId
     );
-    setCommentInput(cachedDraft?.value ?? '');
+    setCommentInput(cachedDraft?.dirty ? cachedDraft.value : '');
   }, [commentDraftId, cancelDebouncedPersistCommentDraft]);
 
   useEffect(() => {
@@ -161,9 +167,7 @@ function IssueCommentsSectionContent() {
     }
 
     const nextCommentInput =
-      cachedDraft?.dirty === true
-        ? cachedDraft.value
-        : (cachedDraft?.value ?? commentDraft ?? '');
+      cachedDraft?.dirty === true ? cachedDraft.value : (commentDraft ?? '');
     const shouldSkipNextPersist = nextCommentInput !== commentInput;
 
     hydratedCommentDraftIdRef.current = commentDraftId;
@@ -179,15 +183,9 @@ function IssueCommentsSectionContent() {
       commentDraftId
     );
     if (cachedDraft?.dirty) {
-      void persistCommentDraft(cachedDraft.value);
+      void persistCommentDraft(commentDraftId, cachedDraft.value);
     }
   }, [commentDraftId, isCommentDraftConnected, persistCommentDraft]);
-
-  useEffect(() => {
-    return () => {
-      flushPersistCommentDraft();
-    };
-  }, [flushPersistCommentDraft]);
 
   const handleCommentMarkdownInsert = useCallback((markdown: string) => {
     setCommentInput((prev) =>
@@ -256,7 +254,7 @@ function IssueCommentsSectionContent() {
         true
       );
     }
-    debouncedPersistCommentDraft(commentInput);
+    debouncedPersistCommentDraft(commentDraftId, commentInput);
   }, [
     commentInput,
     commentDraftId,

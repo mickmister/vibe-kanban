@@ -21,7 +21,7 @@ import { useScratch } from '@/shared/hooks/useScratch';
 import { useDebouncedCallback } from '@/shared/hooks/useDebouncedCallback';
 import { useUserSystem } from '@/shared/hooks/useUserSystem';
 import { useShape } from '@/shared/integrations/electric/hooks';
-import { repoApi } from '@/shared/lib/api';
+import { repoApi, scratchApi } from '@/shared/lib/api';
 import {
   clearStoredScratchDraft,
   readStoredScratchDraft,
@@ -264,7 +264,6 @@ export function useCreateModeState({
 
   const {
     scratch,
-    updateScratch,
     deleteScratch,
     isLoading: scratchLoading,
     isConnected: isScratchConnected,
@@ -310,9 +309,7 @@ export function useCreateModeState({
       scratchId
     );
     const scratchData =
-      cachedDraft?.dirty === true
-        ? cachedDraft.value
-        : (cachedDraft?.value ?? scratchDataFromServer);
+      cachedDraft?.dirty === true ? cachedDraft.value : scratchDataFromServer;
 
     void resolveCreateModeBootstrap({
       seedState,
@@ -510,29 +507,40 @@ export function useCreateModeState({
   // Persistence to scratch (debounced)
   // ============================================================================
   const { debounced: debouncedSave, flush: flushDebouncedSave } =
-    useDebouncedCallback(async (data: DraftWorkspaceData) => {
-      const isEmpty =
-        !data.message.trim() &&
-        data.repos.length === 0 &&
-        !data.executor_config &&
-        data.attachments.length === 0;
+    useDebouncedCallback(
+      async (
+        targetScratchId: string,
+        data: DraftWorkspaceData,
+        scratchExists: boolean
+      ) => {
+        const isEmpty =
+          !data.message.trim() &&
+          data.repos.length === 0 &&
+          !data.executor_config &&
+          data.attachments.length === 0;
 
-      if (isEmpty && !scratch) return;
+        if (isEmpty && !scratchExists) return;
 
-      try {
-        await updateScratch({
-          payload: { type: 'DRAFT_WORKSPACE', data },
-        });
-        writeStoredScratchDraft(
-          ScratchType.DRAFT_WORKSPACE,
-          scratchId,
-          data,
-          false
-        );
-      } catch (e) {
-        console.error('[useCreateModeState] Failed to save:', e);
-      }
-    }, 500);
+        try {
+          await scratchApi.update(
+            ScratchType.DRAFT_WORKSPACE,
+            targetScratchId,
+            {
+              payload: { type: 'DRAFT_WORKSPACE', data },
+            }
+          );
+          writeStoredScratchDraft(
+            ScratchType.DRAFT_WORKSPACE,
+            targetScratchId,
+            data,
+            false
+          );
+        } catch (e) {
+          console.error('[useCreateModeState] Failed to save:', e);
+        }
+      },
+      500
+    );
 
   useEffect(() => {
     if (state.phase !== 'ready') return;
@@ -573,7 +581,7 @@ export function useCreateModeState({
       true
     );
 
-    debouncedSave(payload);
+    debouncedSave(scratchId, payload, !!scratch);
   }, [
     state.phase,
     state.message,
@@ -595,9 +603,10 @@ export function useCreateModeState({
     );
     if (!cachedDraft?.dirty) return;
 
-    void updateScratch({
-      payload: { type: 'DRAFT_WORKSPACE', data: cachedDraft.value },
-    })
+    void scratchApi
+      .update(ScratchType.DRAFT_WORKSPACE, scratchId, {
+        payload: { type: 'DRAFT_WORKSPACE', data: cachedDraft.value },
+      })
       .then(() => {
         writeStoredScratchDraft(
           ScratchType.DRAFT_WORKSPACE,
@@ -609,13 +618,13 @@ export function useCreateModeState({
       .catch((e) => {
         console.error('[useCreateModeState] Failed to retry save:', e);
       });
-  }, [isScratchConnected, scratchId, updateScratch]);
+  }, [isScratchConnected, scratchId]);
 
   useEffect(() => {
     return () => {
       flushDebouncedSave();
     };
-  }, [flushDebouncedSave]);
+  }, [scratchId, flushDebouncedSave]);
 
   // ============================================================================
   // Resolve linked issue details from Electric (when simpleId/title are missing)

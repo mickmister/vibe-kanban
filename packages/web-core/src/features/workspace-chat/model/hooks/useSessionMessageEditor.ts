@@ -6,6 +6,7 @@ import {
 } from 'shared/types';
 import { useScratch } from '@/shared/hooks/useScratch';
 import { useDebouncedCallback } from '@/shared/hooks/useDebouncedCallback';
+import { scratchApi } from '@/shared/lib/api';
 import {
   areScratchDraftValuesEqual,
   clearStoredScratchDraft,
@@ -51,7 +52,6 @@ export function useSessionMessageEditor({
 }: UseSessionMessageEditorOptions): UseSessionMessageEditorResult {
   const {
     scratch,
-    updateScratch,
     deleteScratch,
     isLoading: isScratchLoading,
     isConnected: isScratchConnected,
@@ -66,14 +66,18 @@ export function useSessionMessageEditor({
   const [hasInitialValue, setHasInitialValue] = useState(false);
 
   const saveToScratch = useCallback(
-    async (message: string, executorConfig: ExecutorConfig) => {
-      if (!scratchId) return;
+    async (
+      targetScratchId: string,
+      message: string,
+      executorConfig: ExecutorConfig
+    ) => {
+      if (!targetScratchId) return;
       const payload: DraftFollowUpData = {
         message,
         executor_config: executorConfig,
       };
       try {
-        await updateScratch({
+        await scratchApi.update(ScratchType.DRAFT_FOLLOW_UP, targetScratchId, {
           payload: {
             type: 'DRAFT_FOLLOW_UP',
             data: payload,
@@ -81,7 +85,7 @@ export function useSessionMessageEditor({
         });
         writeStoredScratchDraft(
           ScratchType.DRAFT_FOLLOW_UP,
-          scratchId,
+          targetScratchId,
           payload,
           false
         );
@@ -89,7 +93,7 @@ export function useSessionMessageEditor({
         console.error('Failed to save follow-up draft', e);
       }
     },
-    [scratchId, updateScratch]
+    []
   );
 
   const {
@@ -103,6 +107,12 @@ export function useSessionMessageEditor({
 
   // Reset load state and clear message when scratchId changes (e.g., switching to approval mode)
   useEffect(() => {
+    return () => {
+      flushDebouncedSave();
+    };
+  }, [scratchId, flushDebouncedSave]);
+
+  useEffect(() => {
     hasLoadedRef.current = false;
     setHasInitialValue(false);
     const cachedDraft = scratchId
@@ -111,7 +121,7 @@ export function useSessionMessageEditor({
           scratchId
         )
       : null;
-    setLocalMessage(cachedDraft?.value.message ?? '');
+    setLocalMessage(cachedDraft?.dirty ? cachedDraft.value.message : '');
   }, [scratchId]);
 
   // Sync local message from scratch only on initial load
@@ -142,9 +152,7 @@ export function useSessionMessageEditor({
     }
 
     const preferredDraft =
-      cachedDraft?.dirty === true
-        ? cachedDraft.value
-        : (cachedDraft?.value ?? serverData);
+      cachedDraft?.dirty === true ? cachedDraft.value : null;
 
     setLocalMessage(preferredDraft?.message ?? serverData?.message ?? '');
     setHasInitialValue(true);
@@ -160,16 +168,19 @@ export function useSessionMessageEditor({
     if (!cachedDraft?.dirty) return;
 
     void saveToScratch(
+      scratchId,
       cachedDraft.value.message,
       cachedDraft.value.executor_config
     );
   }, [isScratchConnected, saveToScratch, scratchId]);
 
-  useEffect(() => {
-    return () => {
-      flushDebouncedSave();
-    };
-  }, [flushDebouncedSave]);
+  const saveCurrentScratch = useCallback(
+    async (message: string, executorConfig: ExecutorConfig) => {
+      if (!scratchId) return;
+      await saveToScratch(scratchId, message, executorConfig);
+    },
+    [saveToScratch, scratchId]
+  );
 
   // Handle message change with debounced save
   // Pass executor profile at call-time to avoid stale closure
@@ -186,8 +197,8 @@ export function useSessionMessageEditor({
           },
           true
         );
+        debouncedSave(scratchId, value, executorConfig);
       }
-      debouncedSave(value, executorConfig);
     },
     [debouncedSave, scratchId]
   );
@@ -198,7 +209,7 @@ export function useSessionMessageEditor({
     scratchData,
     isScratchLoading,
     hasInitialValue,
-    saveToScratch,
+    saveToScratch: saveCurrentScratch,
     clearDraft: async () => {
       cancelDebouncedSave();
       if (scratchId) {
