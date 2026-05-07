@@ -1,32 +1,43 @@
 # Websocket Chaos Proxy
 
-This directory contains a small `toxiproxy` setup for reproducing websocket
-disconnects, stalls, and slow delivery against the local backend.
+This directory contains a `toxiproxy` setup for reproducing websocket
+disconnects, resets, hangs, and latency against the local backend.
+
+`toxiproxy` works at the TCP layer, which makes it a better fit than
+message-aware proxies for simulating the transport failures that normally break
+long-lived websocket streams.
 
 ## What it covers
 
-- Local-web `/api/...` traffic, including websocket upgrades
+- Local-web `/api` HTTP + websocket traffic
 - Vite proxy -> toxiproxy -> backend topology
+- Abrupt disconnects, stalled sockets, partial data, and latency
 
 It does not see WebRTC data-channel traffic. For remote-web diagnostics, force
 the code path to use relay or direct browser websocket transport instead of the
 WebRTC socket shim.
 
-## Why Toxiproxy
+## Why this replaced the previous harness
 
-`toxiproxy` is a better fit than `mitmproxy` for frontend reconnect work in
-this repo because the main need is repeatable transport failures:
+The previous `mitmproxy` harness was better for websocket-aware message
+inspection, but less reliable for simulating raw transport failures such as:
 
-- bring the backend path down and back up
-- keep it stalled for a while
-- add latency or bandwidth pressure
-- repeat the same outage while iterating on frontend state handling
+- idle socket drops
+- TCP resets
+- downstream hangs
+- partial transport truncation
+
+`toxiproxy` gives us those failure modes directly through its TCP toxic API.
 
 ## Prerequisites
 
-Install `toxiproxy-server` locally, or run the official container image.
+The scripts support either a local `toxiproxy-server` binary or the official
+container image.
 
-Examples from the official project:
+- Docker installed and running, or
+- a local `toxiproxy-server` binary
+
+Examples:
 
 - macOS/Homebrew: `brew tap shopify/shopify && brew install toxiproxy`
 - Docker image: `ghcr.io/shopify/toxiproxy`
@@ -34,13 +45,24 @@ Examples from the official project:
 ## Topology
 
 1. Run the Rust backend on its normal port, for example `3001`.
-2. Run `toxiproxy-server`.
-3. Create a proxy on a second port, for example `3002`, upstreaming to the
-   backend.
-4. Start the Vite frontend with `BACKEND_PORT=3002` so all `/api` HTTP and
-   websocket traffic flows through `toxiproxy`.
+2. Start `toxiproxy`, which listens on a second port, for example `3002`, and
+   forwards to the backend.
+3. Start the Vite frontend with `BACKEND_PORT=3002` so all `/api` HTTP and
+   websocket traffic flows through the proxy.
 
 ## Quick Start
+
+### One-command wrapper
+
+This starts `toxiproxy`, creates the proxy, and clears any toxics:
+
+```bash
+BACKEND_PORT=3001 \
+TOXIPROXY_PORT=3002 \
+scripts/toxiproxy/run-local-ws-chaos.sh
+```
+
+### Granular setup
 
 Start the toxiproxy server:
 
@@ -59,8 +81,19 @@ scripts/toxiproxy/configure-local-ws-chaos.sh
 Then run the frontend against the proxy port:
 
 ```bash
-cd packages/local-web
-BACKEND_PORT=3002 npx vite --host 0.0.0.0 --port 3028
+BACKEND_PORT=3002 pnpm run local-web:dev
+```
+
+Inspect proxy status:
+
+```bash
+scripts/toxiproxy/toxic.sh status
+```
+
+Clear all toxics:
+
+```bash
+scripts/toxiproxy/toxic.sh clear
 ```
 
 ## Common Workflows
@@ -129,12 +162,46 @@ VK_TOXIC=bandwidth VK_RATE_KBPS=8 scripts/toxiproxy/configure-local-ws-chaos.sh
 
 ## Environment Variables
 
-- `BACKEND_PORT`
-  - Upstream Rust backend port.
-  - Default: `3001`
+### Wrapper script: `run-local-ws-chaos.sh`
+
 - `BACKEND_HOST`
   - Upstream Rust backend host.
   - Default: `127.0.0.1`
+- `BACKEND_PORT`
+  - Upstream Rust backend port.
+  - Default: `3001`
+- `TOXIPROXY_LISTEN_HOST`
+  - Listen host for the proxy.
+  - Default: `127.0.0.1`
+- `TOXIPROXY_PORT`
+  - Port exposed to the frontend.
+  - Default: `3002`
+- `TOXIPROXY_API_URL`
+  - Toxiproxy control API base URL.
+  - Default: `http://127.0.0.1:8474`
+- `TOXIPROXY_PROXY_NAME`
+  - Proxy resource name.
+  - Default: `vk_local_ws`
+- `TOXIPROXY_CONTAINER_NAME`
+  - Docker container name when using Docker mode.
+  - Default: `vk-toxiproxy`
+- `TOXIPROXY_IMAGE`
+  - Docker image to use.
+  - Default: `ghcr.io/shopify/toxiproxy`
+- `TOXIPROXY_SERVER_BIN`
+  - Optional local server binary. If set, Docker is skipped.
+
+### Manual proxy setup: `configure-local-ws-chaos.sh`
+
+`run-local-ws-chaos.sh` delegates to this script after the server is up, so
+these settings are shared by both flows.
+
+- `BACKEND_HOST`
+  - Upstream Rust backend host.
+  - Default: `127.0.0.1`
+- `BACKEND_PORT`
+  - Upstream Rust backend port.
+  - Default: `3001`
 - `TOXIPROXY_PORT`
   - Port exposed by the data proxy.
   - Default: `3002`
@@ -142,31 +209,24 @@ VK_TOXIC=bandwidth VK_RATE_KBPS=8 scripts/toxiproxy/configure-local-ws-chaos.sh
   - Toxiproxy control API base URL.
   - Default: `http://127.0.0.1:8474`
 - `TOXIPROXY_PROXY_NAME`
-  - Proxy name to create/update.
+  - Proxy name to create or update.
   - Default: `vk_local_ws`
 - `TOXIPROXY_LISTEN_HOST`
   - Listen host for the proxy.
   - Default: `127.0.0.1`
-  - Use `0.0.0.0` if the server is running inside Docker with host port
-    publishing.
+
+### Toxic-specific variables
+
 - `VK_TOXIC`
   - Optional toxic to add after the proxy is created.
-  - Supported by the helper script:
-    - `latency`
-    - `timeout`
-    - `slow_close`
-    - `bandwidth`
-    - `limit_data`
-    - `reset_peer`
+  - Supported values: `latency`, `timeout`, `slow_close`, `bandwidth`,
+    `limit_data`, `reset_peer`
 - `VK_STREAM`
   - Toxic direction.
   - Default: `downstream`
 - `VK_TOXICITY`
   - Probability the toxic is applied.
   - Default: `1.0`
-
-### Toxic-specific variables
-
 - `VK_LATENCY_MS`
   - Used by `latency`
   - Default: `0`
@@ -186,41 +246,104 @@ VK_TOXIC=bandwidth VK_RATE_KBPS=8 scripts/toxiproxy/configure-local-ws-chaos.sh
   - Used by `limit_data`
   - Default: `1024`
 
-## Suggested Scenarios
+## Common Manual Scenarios
+
+### Abrupt disconnect / TCP reset
+
+```bash
+scripts/toxiproxy/toxic.sh reset-peer downstream
+```
+
+Use this to verify reconnect logic when the socket is hard-reset by an
+intermediary.
+
+### Real clean websocket close
+
+`toxiproxy` cannot synthesize an application-level websocket close frame. For
+that case, use one of:
+
+- restart the backend while the page is open
+- restart the frontend dev proxy while the page is open
+- temporarily disable then re-enable the proxy to force reconnect behavior
+
+### Hanging socket / stalled stream
+
+```bash
+scripts/toxiproxy/toxic.sh timeout downstream 5000
+```
+
+Use this to simulate the connection appearing open while reads stall.
+
+### Cleanish "connection goes away after some traffic"
+
+```bash
+scripts/toxiproxy/toxic.sh limit-data downstream 4096
+```
+
+This is a good approximation for "the stream worked briefly, then died".
+
+### Latency pressure
+
+```bash
+scripts/toxiproxy/toxic.sh latency downstream 400 100
+```
+
+Use this to check whether views stay populated while updates arrive slowly.
+
+### Entire backend path down
+
+```bash
+scripts/toxiproxy/toxic.sh downstream-down
+```
+
+This cuts traffic from backend -> browser until cleared.
+
+Restore normal traffic:
+
+```bash
+scripts/toxiproxy/toxic.sh clear
+```
+
+## Suggested Manual Test Pass
 
 ### Scratch durability
 
-Use a full outage or hang while typing into:
-
-- follow-up draft
-- create-workspace prompt
-- issue comment draft
-- workspace notes
-
-Recommended commands:
+1. Start the proxy and frontend through `3002`.
+2. Type into:
+   - follow-up draft
+   - create-workspace prompt
+   - issue comment draft
+   - workspace notes
+3. Apply:
 
 ```bash
-scripts/toxiproxy/set-enabled.sh down
+scripts/toxiproxy/toxic.sh reset-peer downstream
 ```
 
-or
+or:
 
 ```bash
-VK_TOXIC=timeout VK_TIMEOUT_MS=0 scripts/toxiproxy/configure-local-ws-chaos.sh
+scripts/toxiproxy/toxic.sh limit-data downstream 2048
 ```
 
 Watch for lost characters after reconnect, remount, or submit.
 
 ### Conversation stream interruption
 
-Use an abrupt TCP reset:
+1. Start a running execution process.
+2. Apply:
 
 ```bash
-VK_TOXIC=reset_peer VK_TIMEOUT_MS=0 scripts/toxiproxy/configure-local-ws-chaos.sh
+scripts/toxiproxy/toxic.sh timeout downstream 5000
 ```
 
-Start a running execution process and confirm the timeline resumes instead of
-hanging.
+or:
+
+```bash
+scripts/toxiproxy/toxic.sh reset-peer downstream
+```
+
+Confirm the timeline resumes instead of hanging.
 
 ### Long outage recovery
 
@@ -235,10 +358,21 @@ scripts/toxiproxy/set-enabled.sh up
 Use this to verify that long-lived streams reconnect and keep their last known
 state visible while the transport is unavailable.
 
-### Latency pressure
+### Workspaces / approvals stale-stream check
+
+Apply:
 
 ```bash
-VK_TOXIC=latency VK_LATENCY_MS=400 scripts/toxiproxy/configure-local-ws-chaos.sh
+scripts/toxiproxy/toxic.sh reset-peer downstream
 ```
 
-Check whether views stay populated while patches arrive slowly.
+Confirm long-lived streams reconnect instead of silently going stale.
+
+## Notes
+
+- `toxiproxy` works at the TCP layer, so it cannot target websocket routes by
+  URL path. It affects the entire backend port routed through it.
+- `toxiproxy` is the preferred harness for disconnects, resets, hangs, and
+  latency, but not for websocket-frame-aware clean-close experiments.
+- For websocket-path-specific experiments, a message-aware proxy is still
+  useful, but for transport failures this setup is the preferred harness.

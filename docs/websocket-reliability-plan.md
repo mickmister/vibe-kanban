@@ -170,6 +170,10 @@ Acceptance criteria:
 
 ## Test Matrix
 
+Use the local `toxiproxy` harness in `scripts/toxiproxy/` for transport-level
+fault injection. Prefer it over the older websocket-aware proxy setup when the
+goal is to simulate raw disconnects, resets, hangs, or latency.
+
 Run the same checks on at least:
 
 - Scratch-backed follow-up editor
@@ -184,7 +188,7 @@ For each surface:
 
 1. Kill the websocket before the first `Ready` message.
 2. Kill it after the initial snapshot.
-3. Clean-close it mid-stream.
+3. Simulate a mid-stream transport reset or stalled socket.
 4. Delay frames enough to force backpressure and out-of-order user actions.
 5. Switch tabs or navigate while a debounced save is pending.
 
