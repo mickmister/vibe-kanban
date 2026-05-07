@@ -6,8 +6,14 @@ import {
   useSyncExternalStore,
 } from 'react';
 import { useTranslation } from 'react-i18next';
-import { ArrowsInSimpleIcon, ArrowsOutSimpleIcon } from '@phosphor-icons/react';
 import { Group, Layout, Panel, Separator } from 'react-resizable-panels';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@vibe/ui/components/Select';
 import type { CreateModeInitialState } from '@/shared/types/createMode';
 import { useWorkspaceContext } from '@/shared/hooks/useWorkspaceContext';
 import { usePageTitle } from '@/shared/hooks/usePageTitle';
@@ -111,11 +117,13 @@ export function WorkspacesLayout() {
 
   const isMobile = useIsMobile();
   const [mobileTab] = useMobileActiveTab();
-  const isZenMode = useUiPreferencesStore((s) => s.isZenMode);
-  const toggleZenMode = useUiPreferencesStore((s) => s.toggleZenMode);
+  const chatViewMode = useUiPreferencesStore((s) => s.chatViewMode);
+  const setChatViewMode = useUiPreferencesStore((s) => s.setChatViewMode);
   const mainContainerRef = useRef<WorkspacesMainContainerHandle>(null);
   const hasZenContext = isCreateMode || !!selectedWorkspace;
-  const isDesktopZenMode = !isMobile && isZenMode && hasZenContext;
+  const effectiveChatViewMode = hasZenContext ? chatViewMode : 'full';
+  const isDesktopZenMode =
+    !isMobile && effectiveChatViewMode !== 'full' && hasZenContext;
 
   const handleScrollToBottom = useCallback(
     (behavior: 'auto' | 'smooth' = 'smooth') => {
@@ -165,6 +173,12 @@ export function WorkspacesLayout() {
   }, [configLoading, config, updateAndSaveConfig]);
 
   // Ensure left panels visible when right main panel hidden
+  useEffect(() => {
+    if (!hasZenContext && chatViewMode !== 'full') {
+      setChatViewMode('full');
+    }
+  }, [chatViewMode, hasZenContext, setChatViewMode]);
+
   useEffect(() => {
     if (rightMainPanelMode === null) {
       setLeftSidebarVisible(true);
@@ -348,8 +362,7 @@ export function WorkspacesLayout() {
   const shouldShowLeftMainPanel = isDesktopZenMode || isLeftMainPanelVisible;
   const shouldShowRightMainPanel =
     !isDesktopZenMode && rightMainPanelMode !== null;
-  const canToggleZenMode =
-    !isMobile && (isDesktopZenMode || isCreateMode || !!selectedWorkspace);
+  const canSelectChatViewMode = !isMobile && hasZenContext;
 
   const mainContent = (
     <ReviewProvider workspaceId={selectedWorkspace?.id}>
@@ -370,6 +383,7 @@ export function WorkspacesLayout() {
                 {isCreateMode ? (
                   <CreateChatBoxContainer
                     onWorkspaceCreated={handleWorkspaceCreated}
+                    chatViewMode={effectiveChatViewMode}
                   />
                 ) : (
                   <WorkspacesMainContainer
@@ -384,7 +398,7 @@ export function WorkspacesLayout() {
                     isSessionsLoading={isSessionsLoading}
                     isNewSessionMode={isNewSessionMode}
                     onStartNewSession={startNewSession}
-                    isZenMode={isDesktopZenMode}
+                    chatViewMode={effectiveChatViewMode}
                   />
                 )}
               </Panel>
@@ -447,24 +461,40 @@ export function WorkspacesLayout() {
       )}
 
       <div className="relative flex-1 min-w-0 h-full">
-        {canToggleZenMode && (
-          <button
-            type="button"
-            onClick={toggleZenMode}
-            className="absolute right-3 top-3 z-20 inline-flex items-center gap-2 rounded-sm border border-border bg-secondary/90 px-3 py-2 text-sm text-normal shadow-sm backdrop-blur-sm transition-colors hover:bg-secondary"
-            aria-pressed={isDesktopZenMode}
-          >
-            {isDesktopZenMode ? (
-              <ArrowsInSimpleIcon className="size-icon-sm" weight="bold" />
-            ) : (
-              <ArrowsOutSimpleIcon className="size-icon-sm" weight="bold" />
-            )}
-            <span>
-              {isDesktopZenMode
-                ? t('workspaces.zenMode.exit', { defaultValue: 'Exit Zen' })
-                : t('workspaces.zenMode.enter', { defaultValue: 'Zen Mode' })}
-            </span>
-          </button>
+        {canSelectChatViewMode && (
+          <div className="absolute right-3 top-3 z-20 w-[220px] max-w-[calc(100%-1.5rem)]">
+            <Select
+              value={effectiveChatViewMode}
+              onValueChange={(value) =>
+                setChatViewMode(value as 'full' | 'mostly-zen' | 'zen')
+              }
+            >
+              <SelectTrigger className="h-10 rounded-sm border-border bg-secondary/90 text-sm text-normal shadow-sm backdrop-blur-sm">
+                <SelectValue
+                  placeholder={t('workspaces.chatViewMode.label', {
+                    defaultValue: 'Chat View',
+                  })}
+                />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="full">
+                  {t('workspaces.chatViewMode.full', {
+                    defaultValue: 'Full normal view',
+                  })}
+                </SelectItem>
+                <SelectItem value="mostly-zen">
+                  {t('workspaces.chatViewMode.mostlyZen', {
+                    defaultValue: 'Mostly zen',
+                  })}
+                </SelectItem>
+                <SelectItem value="zen">
+                  {t('workspaces.chatViewMode.zen', {
+                    defaultValue: 'Zen',
+                  })}
+                </SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
         )}
         {isCreateMode ? (
           <CreateModeProvider

@@ -8,6 +8,7 @@ import {
   useState,
 } from 'react';
 import type { Workspace, Session, RepoWithTargetBranch } from 'shared/types';
+import type { ChatViewMode } from '@/shared/stores/useUiPreferencesStore';
 import { createWorkspaceWithSession } from '@/shared/types/attempt';
 import { WorkspacesMain } from '@vibe/ui/components/WorkspacesMain';
 import {
@@ -33,7 +34,7 @@ function ChatBoxWithDiffStats({
   session,
   workspaceId,
   isNewSessionMode,
-  isZenMode,
+  chatViewMode,
   sessions,
   onSelectSession,
   onStartNewSession,
@@ -45,7 +46,7 @@ function ChatBoxWithDiffStats({
   session: Session | undefined;
   workspaceId: string | undefined;
   isNewSessionMode: boolean;
-  isZenMode: boolean;
+  chatViewMode: ChatViewMode;
   sessions: Session[];
   onSelectSession: (sessionId: string) => void;
   onStartNewSession: () => void;
@@ -78,7 +79,7 @@ function ChatBoxWithDiffStats({
       filesChanged={diffStats.files_changed}
       linesAdded={diffStats.lines_added}
       linesRemoved={diffStats.lines_removed}
-      isZenMode={isZenMode}
+      chatViewMode={chatViewMode}
       disableViewCode={false}
       showOpenWorkspaceButton={false}
       onScrollToPreviousMessage={onScrollToPreviousMessage}
@@ -104,7 +105,7 @@ interface WorkspacesMainContainerProps {
   isSessionsLoading?: boolean;
   isNewSessionMode: boolean;
   onStartNewSession: () => void;
-  isZenMode?: boolean;
+  chatViewMode?: ChatViewMode;
 }
 
 export const WorkspacesMainContainer = forwardRef<
@@ -122,7 +123,7 @@ export const WorkspacesMainContainer = forwardRef<
     isSessionsLoading: _isSessionsLoading,
     isNewSessionMode,
     onStartNewSession,
-    isZenMode = false,
+    chatViewMode = 'full',
   },
   ref
 ) {
@@ -230,7 +231,7 @@ export const WorkspacesMainContainer = forwardRef<
       session={session}
       workspaceId={workspaceWithSession?.id}
       isNewSessionMode={isNewSessionMode}
-      isZenMode={isZenMode}
+      chatViewMode={chatViewMode}
       sessions={sessions}
       onSelectSession={onSelectSession}
       onStartNewSession={onStartNewSession}
@@ -242,7 +243,7 @@ export const WorkspacesMainContainer = forwardRef<
   );
 
   const contextBarContent =
-    workspaceWithSession && !isZenMode ? (
+    workspaceWithSession && chatViewMode === 'full' ? (
       <ContextBarContainer containerRef={containerRef} />
     ) : null;
 

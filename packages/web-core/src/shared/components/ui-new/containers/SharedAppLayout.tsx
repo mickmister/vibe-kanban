@@ -70,7 +70,7 @@ export function SharedAppLayout() {
   const isLeftSidebarVisible = useUiPreferencesStore(
     (s) => s.isLeftSidebarVisible
   );
-  const isZenMode = useUiPreferencesStore((s) => s.isZenMode);
+  const chatViewMode = useUiPreferencesStore((s) => s.chatViewMode);
   const { isSignedIn } = useAuth();
   const { appVersion } = useUserSystem();
   const updateVersion = useAppUpdateStore((s) => s.updateVersion);
@@ -187,7 +187,8 @@ export function SharedAppLayout() {
   const isZenSupportedRoute = /\/workspaces(?:\/create|\/[^/]+)(?:\/|$)/.test(
     location.pathname
   );
-  const isZenShellActive = !isMobile && isZenMode && isZenSupportedRoute;
+  const isZenShellActive =
+    !isMobile && chatViewMode !== 'full' && isZenSupportedRoute;
   const activeProjectId = projectDestination?.projectId ?? null;
   const activeHostId =
     getDestinationHostId(currentDestination) ?? routeHostId ?? null;
@@ -394,6 +395,12 @@ export function SharedAppLayout() {
             )}
             {/* Desktop content. */}
             <div className="relative min-h-0 overflow-hidden">
+              {isZenShellActive && (
+                <div
+                  data-tauri-drag-region
+                  className="absolute inset-x-0 top-0 z-10 h-8"
+                />
+              )}
               {!isZenShellActive && isWorkspaceSidebarPreviewEnabled && (
                 <div className="absolute inset-y-0 left-0 z-20 flex items-center">
                   <WorkspacesSidebarReopenTag

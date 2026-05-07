@@ -38,6 +38,8 @@ import {
   type TurnNavigationItem,
 } from './TurnNavigationPopup';
 
+export type ChatViewMode = 'full' | 'mostly-zen' | 'zen';
+
 // Status enum - single source of truth for execution state
 export type ExecutionStatus =
   | 'idle'
@@ -155,7 +157,7 @@ export interface SessionChatBoxEditorRenderProps<
 
 interface SessionChatBoxProps<TExecutor extends string = string> {
   status: ExecutionStatus;
-  isZenMode?: boolean;
+  chatViewMode?: ChatViewMode;
   editor: EditorProps;
   renderEditor: (
     props: SessionChatBoxEditorRenderProps<TExecutor>
@@ -223,7 +225,7 @@ function defaultFormatSessionDate(createdAt: string | Date) {
  */
 export function SessionChatBox<TExecutor extends string = string>({
   status,
-  isZenMode = false,
+  chatViewMode = 'full',
   editor,
   renderEditor,
   actions,
@@ -377,7 +379,8 @@ export function SessionChatBox<TExecutor extends string = string>({
   const filesChanged = stats?.filesChanged ?? 0;
   const linesAdded = stats?.linesAdded;
   const linesRemoved = stats?.linesRemoved;
-  const shouldHideZenHeader = isZenMode && !isNewSessionMode;
+  const isMinimalZen = chatViewMode === 'zen';
+  const shouldHideZenHeader = isMinimalZen && !isNewSessionMode;
 
   // Render action buttons based on status
   const renderActionButtons = () => {
@@ -674,7 +677,7 @@ export function SessionChatBox<TExecutor extends string = string>({
       visualVariant={getVisualVariant()}
       isRunning={showRunningAnimation}
       dropzone={dropzone}
-      modelSelector={isZenMode ? undefined : modelSelector}
+      modelSelector={isMinimalZen ? undefined : modelSelector}
       headerLeft={
         shouldHideZenHeader ? undefined : (
         <>
@@ -889,7 +892,7 @@ export function SessionChatBox<TExecutor extends string = string>({
         )
       }
       footerLeft={
-        isZenMode ? undefined : (
+        isMinimalZen ? undefined : (
         <>
           <ToolbarIconButton
             icon={PaperclipIcon}

@@ -7,6 +7,7 @@ import { DropdownMenuItem, DropdownMenuLabel } from './Dropdown';
 import { PrimaryButton } from './PrimaryButton';
 import type { LocalAttachmentMetadata } from './WorkspaceContext';
 import { ToolbarDropdown, ToolbarIconButton } from './Toolbar';
+import type { ChatViewMode } from './SessionChatBox';
 
 export interface EditorProps {
   value: string;
@@ -56,6 +57,7 @@ export interface CreateChatBoxEditorRenderProps<
 }
 
 interface CreateChatBoxProps<TExecutor extends string = string> {
+  chatViewMode?: ChatViewMode;
   editor: EditorProps;
   renderEditor: (props: CreateChatBoxEditorRenderProps<TExecutor>) => ReactNode;
   agentIcon?: ReactNode;
@@ -91,6 +93,7 @@ function defaultExecutorLabel(executor: string) {
 }
 
 export function CreateChatBox<TExecutor extends string = string>({
+  chatViewMode = 'full',
   editor,
   renderEditor,
   agentIcon,
@@ -117,6 +120,7 @@ export function CreateChatBox<TExecutor extends string = string>({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const isDisabled = disabled || isSending;
   const canSend = editor.value.trim().length > 0 && !isDisabled;
+  const isMinimalZen = chatViewMode === 'zen';
 
   const handleCmdEnter = () => {
     if (canSend) {
@@ -156,8 +160,9 @@ export function CreateChatBox<TExecutor extends string = string>({
       error={error}
       visualVariant={VisualVariant.NORMAL}
       dropzone={dropzone}
-      modelSelector={modelSelector}
+      modelSelector={isMinimalZen ? undefined : modelSelector}
       headerLeft={
+        isMinimalZen ? undefined : (
         <>
           {agentIcon}
           <ToolbarDropdown label={executorLabel} disabled={isDisabled}>
@@ -186,8 +191,10 @@ export function CreateChatBox<TExecutor extends string = string>({
             </label>
           )}
         </>
+        )
       }
       footerLeft={
+        isMinimalZen ? undefined : (
         <>
           <ToolbarIconButton
             icon={PaperclipIcon}
@@ -234,6 +241,7 @@ export function CreateChatBox<TExecutor extends string = string>({
             </>
           )}
         </>
+        )
       }
       footerRight={
         <PrimaryButton

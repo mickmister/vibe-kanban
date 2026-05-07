@@ -19,6 +19,7 @@ import { CreateChatBox } from '@vibe/ui/components/CreateChatBox';
 import { SettingsDialog } from '@/shared/dialogs/settings/SettingsDialog';
 import { CreateModeRepoPickerBar } from './CreateModeRepoPickerBar';
 import { ModelSelectorContainer } from '@/shared/components/ModelSelectorContainer';
+import type { ChatViewMode } from '@/shared/stores/useUiPreferencesStore';
 
 function getRepoDisplayName(repo: Repo) {
   return repo.display_name || repo.name;
@@ -34,10 +35,12 @@ function truncateBranchLabel(branch: string) {
 
 interface CreateChatBoxContainerProps {
   onWorkspaceCreated: (workspaceId: string) => void;
+  chatViewMode?: ChatViewMode;
 }
 
 export function CreateChatBoxContainer({
   onWorkspaceCreated,
+  chatViewMode = 'full',
 }: CreateChatBoxContainerProps) {
   const { t } = useTranslation('common');
   const { profiles, config } = useUserSystem();
@@ -321,6 +324,7 @@ export function CreateChatBoxContainer({
 
               <div className="flex justify-center @container">
                 <CreateChatBox
+                  chatViewMode={chatViewMode}
                   editor={{
                     value: message,
                     onChange: setMessage,
