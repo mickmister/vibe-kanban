@@ -44,8 +44,15 @@ struct SessionExecutionProcessQuery {
     pub show_soft_deleted: Option<bool>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+enum NormalizedLogReplayMode {
+    Live,
+    Historic,
+}
+
 type SharedNormalizedLogHistoryFuture = Shared<BoxFuture<'static, Option<Arc<Vec<String>>>>>;
-type NormalizedLogHistoryInflight = Arc<Mutex<HashMap<Uuid, SharedNormalizedLogHistoryFuture>>>;
+type NormalizedLogHistoryInflight =
+    Arc<Mutex<HashMap<(Uuid, NormalizedLogReplayMode), SharedNormalizedLogHistoryFuture>>>;
 
 fn normalized_log_history_inflight() -> &'static NormalizedLogHistoryInflight {
     static INFLIGHT: OnceLock<NormalizedLogHistoryInflight> = OnceLock::new();
@@ -239,6 +246,7 @@ async fn get_live_normalized_log_messages_single_flight(
     store: Arc<MsgStore>,
 ) -> Arc<Vec<String>> {
     get_normalized_log_messages_single_flight(
+        NormalizedLogReplayMode::Live,
         exec_id,
         async move { Some(collect_live_normalized_log_messages(&store)) }.boxed(),
     )
@@ -250,7 +258,7 @@ async fn get_historic_normalized_log_messages_single_flight(
     deployment: &DeploymentImpl,
     exec_id: Uuid,
 ) -> Option<Arc<Vec<String>>> {
-    get_normalized_log_messages_single_flight(exec_id, {
+    get_normalized_log_messages_single_flight(NormalizedLogReplayMode::Historic, exec_id, {
         let deployment = deployment.clone();
         async move { collect_historic_normalized_log_messages(&deployment, exec_id).await }.boxed()
     })
@@ -258,17 +266,19 @@ async fn get_historic_normalized_log_messages_single_flight(
 }
 
 async fn get_normalized_log_messages_single_flight(
+    mode: NormalizedLogReplayMode,
     exec_id: Uuid,
     future: BoxFuture<'static, Option<Arc<Vec<String>>>>,
 ) -> Option<Arc<Vec<String>>> {
     let inflight = normalized_log_history_inflight();
+    let key = (exec_id, mode);
     let (future, created_here) = {
         let mut guard = inflight.lock().await;
-        if let Some(future) = guard.get(&exec_id) {
+        if let Some(future) = guard.get(&key) {
             (future.clone(), false)
         } else {
             let future = future.shared();
-            guard.insert(exec_id, future.clone());
+            guard.insert(key, future.clone());
             (future, true)
         }
     };
@@ -277,7 +287,7 @@ async fn get_normalized_log_messages_single_flight(
 
     if created_here {
         let mut guard = inflight.lock().await;
-        guard.remove(&exec_id);
+        guard.remove(&key);
     }
 
     result
@@ -469,4 +479,118 @@ pub(super) fn router(deployment: &DeploymentImpl) -> Router<DeploymentImpl> {
         .nest("/{id}", workspace_id_router);
 
     Router::new().nest("/execution-processes", workspaces_router)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    use futures_util::FutureExt;
+    use tokio::sync::{Mutex, oneshot};
+    use uuid::Uuid;
+
+    use super::{NormalizedLogReplayMode, get_normalized_log_messages_single_flight};
+
+    #[tokio::test]
+    async fn single_flight_shares_same_mode_requests() {
+        let exec_id = Uuid::new_v4();
+        let call_count = Arc::new(AtomicUsize::new(0));
+        let (tx, rx) = oneshot::channel::<()>();
+        let shared_rx = Arc::new(Mutex::new(Some(rx)));
+
+        let task1 = {
+            let call_count = call_count.clone();
+            let shared_rx = shared_rx.clone();
+            tokio::spawn(async move {
+                get_normalized_log_messages_single_flight(
+                    NormalizedLogReplayMode::Historic,
+                    exec_id,
+                    async move {
+                        call_count.fetch_add(1, Ordering::SeqCst);
+                        if let Some(rx) = shared_rx.lock().await.take() {
+                            let _ = rx.await;
+                        }
+                        Some(Arc::new(vec!["historic".to_string()]))
+                    }
+                    .boxed(),
+                )
+                .await
+            })
+        };
+
+        let task2 = {
+            let call_count = call_count.clone();
+            tokio::spawn(async move {
+                get_normalized_log_messages_single_flight(
+                    NormalizedLogReplayMode::Historic,
+                    exec_id,
+                    async move {
+                        call_count.fetch_add(1, Ordering::SeqCst);
+                        Some(Arc::new(vec!["duplicate".to_string()]))
+                    }
+                    .boxed(),
+                )
+                .await
+            })
+        };
+
+        tx.send(()).unwrap();
+
+        let result1 = task1.await.unwrap().unwrap();
+        let result2 = task2.await.unwrap().unwrap();
+
+        assert_eq!(call_count.load(Ordering::SeqCst), 1);
+        assert_eq!(&*result1, &vec!["historic".to_string()]);
+        assert_eq!(&*result2, &vec!["historic".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn single_flight_does_not_share_across_modes() {
+        let exec_id = Uuid::new_v4();
+        let live_count = Arc::new(AtomicUsize::new(0));
+        let historic_count = Arc::new(AtomicUsize::new(0));
+
+        let live = {
+            let live_count = live_count.clone();
+            tokio::spawn(async move {
+                get_normalized_log_messages_single_flight(
+                    NormalizedLogReplayMode::Live,
+                    exec_id,
+                    async move {
+                        live_count.fetch_add(1, Ordering::SeqCst);
+                        Some(Arc::new(vec!["live".to_string()]))
+                    }
+                    .boxed(),
+                )
+                .await
+            })
+        };
+
+        let historic = {
+            let historic_count = historic_count.clone();
+            tokio::spawn(async move {
+                get_normalized_log_messages_single_flight(
+                    NormalizedLogReplayMode::Historic,
+                    exec_id,
+                    async move {
+                        historic_count.fetch_add(1, Ordering::SeqCst);
+                        Some(Arc::new(vec!["historic".to_string()]))
+                    }
+                    .boxed(),
+                )
+                .await
+            })
+        };
+
+        let live_result = live.await.unwrap().unwrap();
+        let historic_result = historic.await.unwrap().unwrap();
+
+        assert_eq!(live_count.load(Ordering::SeqCst), 1);
+        assert_eq!(historic_count.load(Ordering::SeqCst), 1);
+        assert_eq!(&*live_result, &vec!["live".to_string()]);
+        assert_eq!(&*historic_result, &vec!["historic".to_string()]);
+    }
 }
