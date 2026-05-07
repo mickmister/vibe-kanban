@@ -3,6 +3,10 @@ import { produce } from 'immer';
 import type { Operation } from 'rfc6902';
 import { applyUpsertPatch } from '@/shared/lib/jsonPatch';
 import { openLocalApiWebSocket } from '@/shared/lib/localApiTransport';
+import {
+  getWsRetryDecision,
+  markWsStreamHealthy,
+} from '@/shared/lib/wsStreamRetryPolicy';
 
 type WsJsonPatchMsg = { JsonPatch: Operation[] };
 type WsReadyMsg = { Ready: true };
@@ -50,7 +54,10 @@ export const useJsonPatchWsStream = <T extends object>(
   const wsRef = useRef<WebSocket | null>(null);
   const dataRef = useRef<T | undefined>(undefined);
   const retryTimerRef = useRef<number | null>(null);
-  const retryAttemptsRef = useRef<number>(0);
+  const retryStateRef = useRef({
+    retryAttempts: 0,
+    hasReceivedPayload: false,
+  });
   const [retryNonce, setRetryNonce] = useState(0);
   const finishedRef = useRef<boolean>(false);
   const endpointIdentityRef = useRef<string | undefined>(undefined);
@@ -66,7 +73,7 @@ export const useJsonPatchWsStream = <T extends object>(
       setIsReconnecting(true);
     }
     // Exponential backoff with cap: 1s, 2s, 4s, 8s (max), then stay at 8s
-    const attempt = retryAttemptsRef.current;
+    const attempt = retryStateRef.current.retryAttempts;
     const delay = Math.min(8000, 1000 * Math.pow(2, attempt));
     retryTimerRef.current = window.setTimeout(() => {
       retryTimerRef.current = null;
@@ -85,7 +92,10 @@ export const useJsonPatchWsStream = <T extends object>(
         window.clearTimeout(retryTimerRef.current);
         retryTimerRef.current = null;
       }
-      retryAttemptsRef.current = 0;
+      retryStateRef.current = {
+        retryAttempts: 0,
+        hasReceivedPayload: false,
+      };
       finishedRef.current = false;
       setData(undefined);
       setIsConnected(false);
@@ -111,7 +121,10 @@ export const useJsonPatchWsStream = <T extends object>(
         window.clearTimeout(retryTimerRef.current);
         retryTimerRef.current = null;
       }
-      retryAttemptsRef.current = 0;
+      retryStateRef.current = {
+        retryAttempts: 0,
+        hasReceivedPayload: false,
+      };
       finishedRef.current = false;
       initializedForEndpointRef.current = undefined;
       dataRef.current = initialData();
@@ -151,8 +164,6 @@ export const useJsonPatchWsStream = <T extends object>(
             setError(null);
             setIsConnected(true);
             setIsReconnecting(false);
-            // Reset backoff on successful connection
-            retryAttemptsRef.current = 0;
             if (retryTimerRef.current) {
               window.clearTimeout(retryTimerRef.current);
               retryTimerRef.current = null;
@@ -166,6 +177,9 @@ export const useJsonPatchWsStream = <T extends object>(
 
               // Handle JsonPatch messages (same as SSE json_patch event)
               if ('JsonPatch' in msg) {
+                retryStateRef.current = markWsStreamHealthy(
+                  retryStateRef.current
+                );
                 const patches: Operation[] = msg.JsonPatch;
                 const filtered = deduplicatePatches
                   ? deduplicatePatches(patches)
@@ -185,6 +199,9 @@ export const useJsonPatchWsStream = <T extends object>(
 
               // Handle Ready messages (initial data has been sent)
               if ('Ready' in msg) {
+                retryStateRef.current = markWsStreamHealthy(
+                  retryStateRef.current
+                );
                 initializedForEndpointRef.current = endpoint;
                 setIsInitialized(true);
                 setIsReconnecting(false);
@@ -194,6 +211,9 @@ export const useJsonPatchWsStream = <T extends object>(
               // Handle finished messages ({finished: true})
               // Treat finished as terminal - do NOT reconnect
               if ('finished' in msg) {
+                retryStateRef.current = markWsStreamHealthy(
+                  retryStateRef.current
+                );
                 finishedRef.current = true;
                 manualCloseRef.current = true;
                 ws.close(1000, 'finished');
@@ -231,12 +251,15 @@ export const useJsonPatchWsStream = <T extends object>(
             }
 
             // Otherwise, reconnect on unexpected/error closures
-            retryAttemptsRef.current += 1;
-            if (
-              initializedForEndpointRef.current !== endpoint &&
-              retryAttemptsRef.current > 6
-            ) {
+            const { attempt } = getWsRetryDecision(retryStateRef.current, 6);
+            retryStateRef.current = {
+              ...retryStateRef.current,
+              retryAttempts: attempt,
+            };
+            if (initializedForEndpointRef.current !== endpoint && attempt > 6) {
               setError('Connection failed');
+              setIsReconnecting(false);
+              return;
             }
             scheduleReconnect();
           };
@@ -251,15 +274,18 @@ export const useJsonPatchWsStream = <T extends object>(
           }
 
           console.error('Failed to open WebSocket stream:', error);
-          retryAttemptsRef.current += 1;
+          const { attempt } = getWsRetryDecision(retryStateRef.current, 6);
+          retryStateRef.current = {
+            ...retryStateRef.current,
+            retryAttempts: attempt,
+          };
           if (initializedForEndpointRef.current === endpoint) {
             setIsReconnecting(true);
           }
-          if (
-            initializedForEndpointRef.current !== endpoint &&
-            retryAttemptsRef.current > 6
-          ) {
+          if (initializedForEndpointRef.current !== endpoint && attempt > 6) {
             setError('Connection failed');
+            setIsReconnecting(false);
+            return;
           }
           scheduleReconnect();
         }

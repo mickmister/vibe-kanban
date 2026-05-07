@@ -24,3 +24,15 @@ export function updateHistoricReplayFailures(
 
   return next;
 }
+
+export function getHistoricReplayRetryDelayMs(
+  processId: string,
+  attempt: number
+): number {
+  const cappedAttempt = Math.max(1, attempt);
+  const baseDelayMs = Math.min(8000, 1000 * 2 ** (cappedAttempt - 1));
+  const jitterMs =
+    [...processId].reduce((sum, char) => sum + char.charCodeAt(0), 0) % 250;
+
+  return baseDelayMs + jitterMs;
+}

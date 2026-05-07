@@ -107,4 +107,32 @@ describe('streamJsonPatchEntries', () => {
     expect(controller.getEntries()).toEqual(['first', 'second']);
     expect(onEntries).toHaveBeenLastCalledWith(['first', 'second']);
   });
+
+  it('stops retrying after repeated closes before any payload arrives', async () => {
+    const sockets = Array.from({ length: 7 }, () => new FakeWebSocket());
+    const availableSockets = [...sockets];
+    const onError = vi.fn();
+
+    setLocalApiTransport({
+      request: vi.fn(),
+      openWebSocket: () => availableSockets.shift()! as unknown as WebSocket,
+    });
+
+    streamJsonPatchEntries('/test', {
+      onError,
+      retryOnUnexpectedClose: true,
+    });
+    await vi.runAllTimersAsync();
+
+    for (const socket of sockets) {
+      socket.emit('close', { code: 1006, wasClean: false });
+      await vi.runAllTimersAsync();
+    }
+
+    expect(onError).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message: 'WebSocket stream closed unexpectedly',
+      })
+    );
+  });
 });

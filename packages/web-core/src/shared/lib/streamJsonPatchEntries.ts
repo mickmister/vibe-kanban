@@ -3,6 +3,10 @@ import { produce } from 'immer';
 import type { Operation } from 'rfc6902';
 import { applyUpsertPatch } from '@/shared/lib/jsonPatch';
 import { openLocalApiWebSocket } from '@/shared/lib/localApiTransport';
+import {
+  getWsRetryDecision,
+  markWsStreamHealthy,
+} from '@/shared/lib/wsStreamRetryPolicy';
 
 type PatchContainer<E = unknown> = { entries: E[] };
 
@@ -56,7 +60,11 @@ export function streamJsonPatchEntries<E = unknown>(
     opts.initial ?? ({ entries: [] } as PatchContainer<E>)
   );
   let finished = false;
-  let retryCount = 0;
+  const maxRetries = opts.maxRetries ?? 6;
+  let retryState = {
+    retryAttempts: 0,
+    hasReceivedPayload: false,
+  };
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
   const subscribers = new Set<(entries: E[]) => void>();
@@ -100,6 +108,7 @@ export function streamJsonPatchEntries<E = unknown>(
 
       // Handle JsonPatch messages — accumulate ops for next rAF flush
       if (msg.JsonPatch) {
+        retryState = markWsStreamHealthy(retryState);
         const raw = msg.JsonPatch as Operation[];
         pendingOps.push(...raw);
         if (rafId === null) {
@@ -113,6 +122,7 @@ export function streamJsonPatchEntries<E = unknown>(
           cancelAnimationFrame(rafId);
         }
         flush();
+        retryState = markWsStreamHealthy(retryState);
         finished = true;
         opts.onFinished?.(snapshot.entries);
         ws?.close();
@@ -144,7 +154,6 @@ export function streamJsonPatchEntries<E = unknown>(
         ws = opened;
         const handleOpen = () => {
           connected = true;
-          retryCount = 0;
           opts.onConnect?.();
         };
 
@@ -168,13 +177,16 @@ export function streamJsonPatchEntries<E = unknown>(
             return;
           }
 
-          const attempt = retryCount + 1;
-          const shouldRetry =
-            opts.retryOnUnexpectedClose === true &&
-            attempt <= (opts.maxRetries ?? 6);
+          const { attempt, shouldRetry } = getWsRetryDecision(
+            retryState,
+            maxRetries
+          );
 
-          if (shouldRetry) {
-            retryCount = attempt;
+          if (opts.retryOnUnexpectedClose === true && shouldRetry) {
+            retryState = {
+              ...retryState,
+              retryAttempts: attempt,
+            };
             const delay =
               opts.retryDelayMs?.(attempt) ??
               Math.min(1500, 250 * 2 ** (attempt - 1));
@@ -190,13 +202,16 @@ export function streamJsonPatchEntries<E = unknown>(
         }
       } catch (error) {
         if (!closed) {
-          const attempt = retryCount + 1;
-          const shouldRetry =
-            opts.retryOnUnexpectedClose === true &&
-            attempt <= (opts.maxRetries ?? 6);
+          const { attempt, shouldRetry } = getWsRetryDecision(
+            retryState,
+            maxRetries
+          );
 
-          if (shouldRetry) {
-            retryCount = attempt;
+          if (opts.retryOnUnexpectedClose === true && shouldRetry) {
+            retryState = {
+              ...retryState,
+              retryAttempts: attempt,
+            };
             const delay =
               opts.retryDelayMs?.(attempt) ??
               Math.min(1500, 250 * 2 ** (attempt - 1));

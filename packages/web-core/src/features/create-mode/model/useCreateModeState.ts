@@ -536,6 +536,9 @@ export function useCreateModeState({
       ),
       500
     );
+  const cancelDebouncedSave = useCallback(() => {
+    flushDebouncedSave();
+  }, [flushDebouncedSave]);
 
   useEffect(() => {
     const scratchData =
@@ -695,13 +698,14 @@ export function useCreateModeState({
 
   const clearDraft = useCallback(async () => {
     try {
+      cancelDebouncedSave();
       await deleteScratch();
       clearStoredScratchDraft(ScratchType.DRAFT_WORKSPACE, scratchId);
       dispatch({ type: 'CLEAR' });
     } catch (e) {
       console.error('[useCreateModeState] Failed to clear:', e);
     }
-  }, [deleteScratch, scratchId]);
+  }, [cancelDebouncedSave, deleteScratch, scratchId]);
 
   const clearLinkedIssue = useCallback(() => {
     dispatch({ type: 'CLEAR_LINKED_ISSUE' });

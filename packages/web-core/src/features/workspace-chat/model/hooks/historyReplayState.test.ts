@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { updateHistoricReplayFailures } from './historyReplayState';
+import {
+  getHistoricReplayRetryDelayMs,
+  updateHistoricReplayFailures,
+} from './historyReplayState';
 
 describe('updateHistoricReplayFailures', () => {
   it('ignores stale-scope updates', () => {
@@ -31,5 +34,18 @@ describe('updateHistoricReplayFailures', () => {
     });
 
     expect([...cleared]).toEqual([]);
+  });
+
+  it('uses bounded exponential backoff with deterministic jitter', () => {
+    const firstAttempt = getHistoricReplayRetryDelayMs('process-1', 1);
+    const secondAttempt = getHistoricReplayRetryDelayMs('process-1', 2);
+    const fifthAttempt = getHistoricReplayRetryDelayMs('process-1', 5);
+
+    expect(firstAttempt).toBeGreaterThanOrEqual(1000);
+    expect(firstAttempt).toBeLessThan(1250);
+    expect(secondAttempt).toBeGreaterThanOrEqual(2000);
+    expect(secondAttempt).toBeLessThan(2250);
+    expect(fifthAttempt).toBeGreaterThanOrEqual(8000);
+    expect(fifthAttempt).toBeLessThan(8250);
   });
 });

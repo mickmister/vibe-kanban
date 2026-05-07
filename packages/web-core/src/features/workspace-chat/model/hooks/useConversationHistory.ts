@@ -14,7 +14,10 @@ import type {
   PatchTypeWithKey,
   UseConversationHistoryParams,
 } from '@/shared/hooks/useConversationHistory/types';
-import { updateHistoricReplayFailures } from './historyReplayState';
+import {
+  getHistoricReplayRetryDelayMs,
+  updateHistoricReplayFailures,
+} from './historyReplayState';
 
 // Result type for the new UI's conversation history hook
 export interface UseConversationHistoryResult {
@@ -32,6 +35,8 @@ import {
 
 const HISTORIC_REPLAY_TIMEOUT_MS = 5000;
 const HISTORIC_REPLAY_MAX_RETRIES = 3;
+const HISTORIC_REPLAY_BACKGROUND_MAX_RETRIES = 3;
+const HISTORIC_REPLAY_BACKGROUND_MAX_CONCURRENCY = 1;
 const HISTORIC_REPLAY_ERROR =
   'Failed to load some earlier conversation messages.';
 
@@ -58,7 +63,11 @@ export const useConversationHistory = ({
   const previousStatusMapRef = useRef<Map<string, ExecutionProcessStatus>>(
     new Map()
   );
-  const previousConnectionStateRef = useRef<boolean | null>(null);
+  const failedHistoricProcessIdsRef = useRef<Set<string>>(new Set());
+  const historicRetryAttemptsRef = useRef<Map<string, number>>(new Map());
+  const historicRetryDueAtRef = useRef<Map<string, number>>(new Map());
+  const historicRetryInFlightRef = useRef<Set<string>>(new Set());
+  const historicRetryTimerRef = useRef<number | null>(null);
   const [isLoadingHistoryState, setIsLoadingHistory] = useState(false);
   const scopeGenerationRef = useRef(0);
   const [failedHistoricProcessIds, setFailedHistoricProcessIds] = useState<
@@ -74,6 +83,29 @@ export const useConversationHistory = ({
       setIsLoadingHistory(value);
     },
     [isCurrentGeneration]
+  );
+
+  const clearHistoricRetryTimer = useCallback(() => {
+    if (historicRetryTimerRef.current === null) return;
+    window.clearTimeout(historicRetryTimerRef.current);
+    historicRetryTimerRef.current = null;
+  }, []);
+
+  const clearHistoricRetryTracking = useCallback(
+    (processId?: string) => {
+      if (!processId) {
+        clearHistoricRetryTimer();
+        historicRetryAttemptsRef.current.clear();
+        historicRetryDueAtRef.current.clear();
+        historicRetryInFlightRef.current.clear();
+        return;
+      }
+
+      historicRetryAttemptsRef.current.delete(processId);
+      historicRetryDueAtRef.current.delete(processId);
+      historicRetryInFlightRef.current.delete(processId);
+    },
+    [clearHistoricRetryTimer]
   );
 
   // Derive whether this is the first turn (no follow-up processes exist)
@@ -294,6 +326,182 @@ export const useConversationHistory = ({
     },
     [emitEntries, isCurrentGeneration]
   );
+
+  const retryHistoricProcessInBackground = useCallback(
+    async (processId: string, generation: number) => {
+      const process = executionProcesses.current.find(
+        (p) => p.id === processId
+      );
+      if (!process || process.status === ExecutionProcessStatus.running) {
+        return;
+      }
+
+      const entries = await loadEntriesForHistoricExecutionProcess(
+        process,
+        generation
+      );
+      if (!isCurrentGeneration(generation)) {
+        return;
+      }
+
+      if (entries === null) {
+        const attempt =
+          (historicRetryAttemptsRef.current.get(processId) ?? 0) + 1;
+        historicRetryAttemptsRef.current.set(processId, attempt);
+
+        if (attempt < HISTORIC_REPLAY_BACKGROUND_MAX_RETRIES) {
+          historicRetryDueAtRef.current.set(
+            processId,
+            Date.now() + getHistoricReplayRetryDelayMs(processId, attempt)
+          );
+        }
+
+        setHistoricProcessFailure(generation, processId, true);
+        return;
+      }
+
+      clearHistoricRetryTracking(processId);
+      setHistoricProcessFailure(generation, processId, false);
+
+      const entriesWithKey = entries.map((entry, index) =>
+        patchWithKey(entry, process.id, index)
+      );
+      const didMerge = mergeIntoDisplayedForGeneration(generation, (state) => {
+        state[process.id] = {
+          executionProcess: process,
+          entries: entriesWithKey,
+        };
+      });
+      if (!didMerge) return;
+
+      emitEntriesForGeneration(
+        generation,
+        displayedExecutionProcesses.current,
+        'historic',
+        false
+      );
+    },
+    [
+      clearHistoricRetryTracking,
+      emitEntriesForGeneration,
+      isCurrentGeneration,
+      loadEntriesForHistoricExecutionProcess,
+      mergeIntoDisplayedForGeneration,
+      setHistoricProcessFailure,
+    ]
+  );
+
+  const scheduleHistoricReplayRetry = useCallback(
+    (generation: number) => {
+      if (!isCurrentGeneration(generation)) return;
+      if (historicRetryTimerRef.current !== null) return;
+
+      const failedIds = [...failedHistoricProcessIdsRef.current].filter(
+        (id) => {
+          if (historicRetryInFlightRef.current.has(id)) return false;
+          return (
+            (historicRetryAttemptsRef.current.get(id) ?? 0) <
+            HISTORIC_REPLAY_BACKGROUND_MAX_RETRIES
+          );
+        }
+      );
+      if (failedIds.length === 0) return;
+
+      let nextProcessId: string | null = null;
+      let nextDueAt = Number.POSITIVE_INFINITY;
+
+      for (const processId of failedIds) {
+        const dueAt =
+          historicRetryDueAtRef.current.get(processId) ?? Date.now();
+        if (dueAt < nextDueAt) {
+          nextDueAt = dueAt;
+          nextProcessId = processId;
+        }
+      }
+
+      if (!nextProcessId) return;
+
+      const delay = Math.max(0, nextDueAt - Date.now());
+      historicRetryTimerRef.current = window.setTimeout(() => {
+        historicRetryTimerRef.current = null;
+
+        if (!isCurrentGeneration(generation)) return;
+        if (
+          historicRetryInFlightRef.current.size >=
+          HISTORIC_REPLAY_BACKGROUND_MAX_CONCURRENCY
+        ) {
+          scheduleHistoricReplayRetry(generation);
+          return;
+        }
+
+        if (!failedHistoricProcessIdsRef.current.has(nextProcessId)) {
+          clearHistoricRetryTracking(nextProcessId);
+          scheduleHistoricReplayRetry(generation);
+          return;
+        }
+
+        const attempts =
+          historicRetryAttemptsRef.current.get(nextProcessId) ?? 0;
+        if (attempts >= HISTORIC_REPLAY_BACKGROUND_MAX_RETRIES) {
+          scheduleHistoricReplayRetry(generation);
+          return;
+        }
+
+        historicRetryDueAtRef.current.delete(nextProcessId);
+        historicRetryInFlightRef.current.add(nextProcessId);
+
+        void retryHistoricProcessInBackground(
+          nextProcessId,
+          generation
+        ).finally(() => {
+          historicRetryInFlightRef.current.delete(nextProcessId);
+          if (!isCurrentGeneration(generation)) return;
+          scheduleHistoricReplayRetry(generation);
+        });
+      }, delay);
+    },
+    [
+      clearHistoricRetryTracking,
+      isCurrentGeneration,
+      retryHistoricProcessInBackground,
+    ]
+  );
+
+  useEffect(() => {
+    failedHistoricProcessIdsRef.current = failedHistoricProcessIds;
+
+    for (const processId of failedHistoricProcessIds) {
+      if (
+        historicRetryDueAtRef.current.has(processId) ||
+        historicRetryInFlightRef.current.has(processId)
+      ) {
+        continue;
+      }
+
+      const nextAttempt =
+        (historicRetryAttemptsRef.current.get(processId) ?? 0) + 1;
+      if (nextAttempt > HISTORIC_REPLAY_BACKGROUND_MAX_RETRIES) {
+        continue;
+      }
+
+      historicRetryDueAtRef.current.set(
+        processId,
+        Date.now() + getHistoricReplayRetryDelayMs(processId, nextAttempt)
+      );
+    }
+
+    for (const processId of [...historicRetryAttemptsRef.current.keys()]) {
+      if (!failedHistoricProcessIds.has(processId)) {
+        clearHistoricRetryTracking(processId);
+      }
+    }
+
+    scheduleHistoricReplayRetry(scopeGenerationRef.current);
+  }, [
+    clearHistoricRetryTracking,
+    failedHistoricProcessIds,
+    scheduleHistoricReplayRetry,
+  ]);
 
   // This emits its own events as they are streamed
   const loadRunningAndEmit = useCallback(
@@ -576,6 +784,7 @@ export const useConversationHistory = ({
   useEffect(() => {
     scopeGenerationRef.current += 1;
     closeAllRunningStreams();
+    clearHistoricRetryTracking();
     displayedExecutionProcesses.current = {};
     loadedInitialEntries.current = false;
     emittedEmptyInitialRef.current = false;
@@ -584,7 +793,12 @@ export const useConversationHistory = ({
     setIsLoadingHistory(false);
     setFailedHistoricProcessIds(new Set());
     emitEntries(displayedExecutionProcesses.current, 'initial', true);
-  }, [closeAllRunningStreams, scopeKey, emitEntries]);
+  }, [
+    clearHistoricRetryTracking,
+    closeAllRunningStreams,
+    scopeKey,
+    emitEntries,
+  ]);
 
   useEffect(() => {
     let cancelled = false;
@@ -783,81 +997,6 @@ export const useConversationHistory = ({
     setHistoricProcessFailure,
   ]);
 
-  useEffect(() => {
-    const wasConnected = previousConnectionStateRef.current;
-    previousConnectionStateRef.current = isConnected;
-
-    const didReconnect = wasConnected === false && isConnected;
-    if (!didReconnect || failedHistoricProcessIds.size === 0) return;
-
-    let cancelled = false;
-    const generation = scopeGenerationRef.current;
-    const failedIds = [...failedHistoricProcessIds];
-
-    (async () => {
-      let anyUpdated = false;
-
-      for (const processId of failedIds) {
-        if (cancelled || scopeGenerationRef.current !== generation) return;
-
-        const process = executionProcesses.current.find(
-          (p) => p.id === processId
-        );
-        if (!process || process.status === ExecutionProcessStatus.running) {
-          continue;
-        }
-
-        const entries = await loadEntriesForHistoricExecutionProcess(
-          process,
-          generation
-        );
-
-        if (cancelled || scopeGenerationRef.current !== generation) return;
-
-        if (entries === null) {
-          setHistoricProcessFailure(generation, process.id, true);
-          continue;
-        }
-        setHistoricProcessFailure(generation, process.id, false);
-
-        const entriesWithKey = entries.map((e, idx) =>
-          patchWithKey(e, process.id, idx)
-        );
-
-        const didMerge = mergeIntoDisplayedForGeneration(
-          generation,
-          (state) => {
-            state[process.id] = {
-              executionProcess: process,
-              entries: entriesWithKey,
-            };
-          }
-        );
-        if (!didMerge) return;
-        anyUpdated = true;
-      }
-
-      if (
-        !cancelled &&
-        anyUpdated &&
-        scopeGenerationRef.current === generation
-      ) {
-        emitEntries(displayedExecutionProcesses.current, 'historic', false);
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [
-    emitEntriesForGeneration,
-    failedHistoricProcessIds,
-    isConnected,
-    loadEntriesForHistoricExecutionProcess,
-    mergeIntoDisplayedForGeneration,
-    setHistoricProcessFailure,
-  ]);
-
   // If an execution process is removed, remove it from the state
   useEffect(() => {
     if (!executionProcessesRaw) return;
@@ -876,6 +1015,7 @@ export const useConversationHistory = ({
         const next = new Set(prev);
         let changed = false;
         removedProcessIds.forEach((id) => {
+          clearHistoricRetryTracking(id);
           if (next.delete(id)) {
             changed = true;
           }
@@ -883,7 +1023,7 @@ export const useConversationHistory = ({
         return changed ? next : prev;
       });
     }
-  }, [scopeKey, idListKey, executionProcessesRaw]);
+  }, [clearHistoricRetryTracking, scopeKey, idListKey, executionProcessesRaw]);
 
   const historyError =
     failedHistoricProcessIds.size > 0 ? HISTORIC_REPLAY_ERROR : null;
