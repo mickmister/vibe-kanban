@@ -72,8 +72,12 @@ export function CreateChatBoxContainer({
   const { createWorkspace } = useCreateWorkspace();
   const hasSelectedRepos = repos.length > 0;
   const [hasAttemptedSubmit, setHasAttemptedSubmit] = useState(false);
-  const [hasInitializedStep, setHasInitializedStep] = useState(false);
-  const [isSelectingRepos, setIsSelectingRepos] = useState(true);
+  const [hasInitializedStep, setHasInitializedStep] = useState(
+    () => hasSelectedRepos || hasResolvedInitialRepoDefaults
+  );
+  const [isSelectingRepos, setIsSelectingRepos] = useState(
+    () => !hasSelectedRepos
+  );
 
   useEffect(() => {
     if (!hasInitialValue || hasInitializedStep) return;
@@ -303,9 +307,9 @@ export function CreateChatBoxContainer({
             : 'Failed to create workspace'
           : null;
 
-  // Wait for initial value to be applied before rendering
-  // This ensures the editor mounts with content ready, so autoFocus works correctly
-  if (!hasInitialValue) {
+  // Wait for initial value and initial step resolution before rendering.
+  // This prevents a brief repo-step flash when the draft already has selected repos.
+  if (!hasInitialValue || !hasInitializedStep) {
     return null;
   }
 

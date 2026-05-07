@@ -122,7 +122,18 @@ export function WorkspacesLayout() {
   const mainContainerRef = useRef<WorkspacesMainContainerHandle>(null);
   const hasForcedInitialExistingSessionZen = useRef(false);
   const hasZenContext = isCreateMode || !!selectedWorkspace;
-  const effectiveChatViewMode = hasZenContext ? chatViewMode : 'full';
+  const shouldForceInitialExistingSessionZen =
+    !isMobile &&
+    !isCreateMode &&
+    !isNewSessionMode &&
+    !!selectedWorkspace &&
+    !!selectedSession &&
+    !hasForcedInitialExistingSessionZen.current;
+  const effectiveChatViewMode = hasZenContext
+    ? shouldForceInitialExistingSessionZen
+      ? 'zen'
+      : chatViewMode
+    : 'full';
   const isDesktopZenMode =
     !isMobile && effectiveChatViewMode !== 'full' && hasZenContext;
 
