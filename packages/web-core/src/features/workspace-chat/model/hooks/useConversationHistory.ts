@@ -61,6 +61,10 @@ export const useConversationHistory = ({
   const [failedHistoricProcessIds, setFailedHistoricProcessIds] = useState<
     Set<string>
   >(new Set());
+  const isCurrentGeneration = useCallback(
+    (generation: number) => scopeGenerationRef.current === generation,
+    []
+  );
 
   // Derive whether this is the first turn (no follow-up processes exist)
   const isFirstTurn = useMemo(() => {
@@ -78,6 +82,18 @@ export const useConversationHistory = ({
     const state = displayedExecutionProcesses.current;
     mutator(state);
   };
+
+  const mergeIntoDisplayedForGeneration = useCallback(
+    (
+      generation: number,
+      mutator: (state: ExecutionProcessStateStore) => void
+    ): boolean => {
+      if (!isCurrentGeneration(generation)) return false;
+      mergeIntoDisplayed(mutator);
+      return true;
+    },
+    [isCurrentGeneration]
+  );
 
   // The hook owns transport, loading, and reconciliation.
   // It emits a source model that later derivation layers can transform further.
@@ -241,10 +257,30 @@ export const useConversationHistory = ({
     [buildTimelineSource]
   );
 
+  const emitEntriesForGeneration = useCallback(
+    (
+      generation: number,
+      executionProcessState: ExecutionProcessStateStore,
+      addEntryType: AddEntryType,
+      loading: boolean
+    ): boolean => {
+      if (!isCurrentGeneration(generation)) return false;
+      emitEntries(executionProcessState, addEntryType, loading);
+      return true;
+    },
+    [emitEntries, isCurrentGeneration]
+  );
+
   // This emits its own events as they are streamed
   const loadRunningAndEmit = useCallback(
-    (executionProcess: ExecutionProcess): Promise<void> => {
+    (executionProcess: ExecutionProcess, generation: number): Promise<void> => {
       return new Promise((resolve, reject) => {
+        let settled = false;
+        const finish = (fn: () => void) => {
+          if (settled) return;
+          settled = true;
+          fn();
+        };
         let url = '';
         if (executionProcess.executor_action.typ.type === 'ScriptRequest') {
           url = `/api/execution-processes/${executionProcess.id}/raw-logs/ws`;
@@ -255,45 +291,89 @@ export const useConversationHistory = ({
           replaySafeAppendOnly: true,
           retryOnUnexpectedClose: true,
           onEntries(entries) {
+            if (!isCurrentGeneration(generation)) {
+              finish(() => {
+                controller.close();
+                resolve();
+              });
+              return;
+            }
             const patchesWithKey = entries.map((entry, index) =>
               patchWithKey(entry, executionProcess.id, index)
             );
-            mergeIntoDisplayed((state) => {
-              state[executionProcess.id] = {
-                executionProcess,
-                entries: patchesWithKey,
-              };
-            });
-            emitEntries(displayedExecutionProcesses.current, 'running', false);
+            const didMerge = mergeIntoDisplayedForGeneration(
+              generation,
+              (state) => {
+                state[executionProcess.id] = {
+                  executionProcess,
+                  entries: patchesWithKey,
+                };
+              }
+            );
+            if (!didMerge) {
+              finish(() => {
+                controller.close();
+                resolve();
+              });
+              return;
+            }
+            emitEntriesForGeneration(
+              generation,
+              displayedExecutionProcesses.current,
+              'running',
+              false
+            );
           },
           onFinished: () => {
-            emitEntries(displayedExecutionProcesses.current, 'running', false);
-            controller.close();
-            resolve();
+            finish(() => {
+              emitEntriesForGeneration(
+                generation,
+                displayedExecutionProcesses.current,
+                'running',
+                false
+              );
+              controller.close();
+              resolve();
+            });
           },
           onError: () => {
-            controller.close();
-            reject();
+            if (!isCurrentGeneration(generation)) {
+              finish(() => {
+                controller.close();
+                resolve();
+              });
+              return;
+            }
+            finish(() => {
+              controller.close();
+              reject();
+            });
           },
         });
       });
     },
-    [emitEntries]
+    [
+      emitEntriesForGeneration,
+      isCurrentGeneration,
+      mergeIntoDisplayedForGeneration,
+    ]
   );
 
   // Sometimes it can take a few seconds for the stream to start, wrap the loadRunningAndEmit method
   const loadRunningAndEmitWithBackoff = useCallback(
-    async (executionProcess: ExecutionProcess) => {
+    async (executionProcess: ExecutionProcess, generation: number) => {
       for (let i = 0; i < 20; i++) {
+        if (!isCurrentGeneration(generation)) return;
         try {
-          await loadRunningAndEmit(executionProcess);
+          await loadRunningAndEmit(executionProcess, generation);
           break;
         } catch (_) {
+          if (!isCurrentGeneration(generation)) return;
           await new Promise((resolve) => setTimeout(resolve, 500));
         }
       }
     },
-    [loadRunningAndEmit]
+    [isCurrentGeneration, loadRunningAndEmit]
   );
 
   const loadHistoricEntries = useCallback(
@@ -306,6 +386,9 @@ export const useConversationHistory = ({
       for (const executionProcess of [
         ...executionProcesses.current,
       ].reverse()) {
+        if (!isCurrentGeneration(generation)) {
+          return localDisplayedExecutionProcesses;
+        }
         if (executionProcess.status === ExecutionProcessStatus.running)
           continue;
 
@@ -313,6 +396,9 @@ export const useConversationHistory = ({
           executionProcess,
           generation
         );
+        if (!isCurrentGeneration(generation)) {
+          return localDisplayedExecutionProcesses;
+        }
         if (entries === null) {
           setHistoricProcessFailure(generation, executionProcess.id, true);
           continue;
@@ -339,6 +425,7 @@ export const useConversationHistory = ({
     },
     [
       executionProcesses,
+      isCurrentGeneration,
       loadEntriesForHistoricExecutionProcess,
       setHistoricProcessFailure,
     ]
@@ -353,6 +440,7 @@ export const useConversationHistory = ({
       for (const executionProcess of [
         ...executionProcesses.current,
       ].reverse()) {
+        if (!isCurrentGeneration(generation)) return false;
         const current = displayedExecutionProcesses.current;
         if (
           current[executionProcess.id] ||
@@ -364,6 +452,7 @@ export const useConversationHistory = ({
           executionProcess,
           generation
         );
+        if (!isCurrentGeneration(generation)) return false;
         if (entries === null) {
           setHistoricProcessFailure(generation, executionProcess.id, true);
           continue;
@@ -373,12 +462,16 @@ export const useConversationHistory = ({
           patchWithKey(e, executionProcess.id, idx)
         );
 
-        mergeIntoDisplayed((state) => {
-          state[executionProcess.id] = {
-            executionProcess,
-            entries: entriesWithKey,
-          };
-        });
+        const didMerge = mergeIntoDisplayedForGeneration(
+          generation,
+          (state) => {
+            state[executionProcess.id] = {
+              executionProcess,
+              entries: entriesWithKey,
+            };
+          }
+        );
+        if (!didMerge) return false;
 
         if (
           flattenEntries(displayedExecutionProcesses.current).length > batchSize
@@ -392,7 +485,9 @@ export const useConversationHistory = ({
     },
     [
       executionProcesses,
+      isCurrentGeneration,
       loadEntriesForHistoricExecutionProcess,
+      mergeIntoDisplayedForGeneration,
       setHistoricProcessFailure,
     ]
   );
@@ -455,6 +550,7 @@ export const useConversationHistory = ({
 
   useEffect(() => {
     let cancelled = false;
+    const generation = scopeGenerationRef.current;
     (async () => {
       if (loadedInitialEntries.current) return;
 
@@ -463,29 +559,47 @@ export const useConversationHistory = ({
       if (executionProcesses.current.length === 0) {
         if (emittedEmptyInitialRef.current) return;
         emittedEmptyInitialRef.current = true;
-        emitEntries(displayedExecutionProcesses.current, 'initial', false);
+        emitEntriesForGeneration(
+          generation,
+          displayedExecutionProcesses.current,
+          'initial',
+          false
+        );
         return;
       }
 
       emittedEmptyInitialRef.current = false;
 
       const allInitialEntries = await loadHistoricEntries(MIN_INITIAL_ENTRIES);
-      if (cancelled) return;
+      if (cancelled || !isCurrentGeneration(generation)) return;
       loadedInitialEntries.current = true;
-      mergeIntoDisplayed((state) => {
+      const didMerge = mergeIntoDisplayedForGeneration(generation, (state) => {
         Object.assign(state, allInitialEntries);
       });
-      emitEntries(displayedExecutionProcesses.current, 'initial', false);
+      if (!didMerge) return;
+      emitEntriesForGeneration(
+        generation,
+        displayedExecutionProcesses.current,
+        'initial',
+        false
+      );
 
       setIsLoadingHistory(true);
       while (
         !cancelled &&
         (await loadRemainingEntriesInBatches(REMAINING_BATCH_SIZE))
       ) {
-        if (cancelled) return;
-        emitEntries(displayedExecutionProcesses.current, 'historic', false);
+        if (cancelled || !isCurrentGeneration(generation)) return;
+        emitEntriesForGeneration(
+          generation,
+          displayedExecutionProcesses.current,
+          'historic',
+          false
+        );
       }
-      if (!cancelled) setIsLoadingHistory(false);
+      if (!cancelled && isCurrentGeneration(generation)) {
+        setIsLoadingHistory(false);
+      }
     })();
     return () => {
       cancelled = true;
@@ -493,15 +607,18 @@ export const useConversationHistory = ({
   }, [
     scopeKey,
     idListKey,
+    isCurrentGeneration,
     isLoading,
+    emitEntriesForGeneration,
     loadHistoricEntries,
     loadRemainingEntriesInBatches,
-    emitEntries,
+    mergeIntoDisplayedForGeneration,
   ]); // include idListKey so new processes trigger reload
 
   useEffect(() => {
     const activeProcesses = getActiveAgentProcesses();
     if (activeProcesses.length === 0) return;
+    const generation = scopeGenerationRef.current;
 
     for (const activeProcess of activeProcesses) {
       if (!displayedExecutionProcesses.current[activeProcess.id]) {
@@ -510,7 +627,8 @@ export const useConversationHistory = ({
             ? 'running'
             : 'initial';
         ensureProcessVisible(activeProcess);
-        emitEntries(
+        emitEntriesForGeneration(
+          generation,
           displayedExecutionProcesses.current,
           runningOrInitial,
           false
@@ -522,16 +640,20 @@ export const useConversationHistory = ({
         !streamingProcessIdsRef.current.has(activeProcess.id)
       ) {
         streamingProcessIdsRef.current.add(activeProcess.id);
-        loadRunningAndEmitWithBackoff(activeProcess).finally(() => {
-          streamingProcessIdsRef.current.delete(activeProcess.id);
-        });
+        void loadRunningAndEmitWithBackoff(activeProcess, generation).finally(
+          () => {
+            if (!isCurrentGeneration(generation)) return;
+            streamingProcessIdsRef.current.delete(activeProcess.id);
+          }
+        );
       }
     }
   }, [
     scopeKey,
     idStatusKey,
-    emitEntries,
+    emitEntriesForGeneration,
     ensureProcessVisible,
+    isCurrentGeneration,
     loadRunningAndEmitWithBackoff,
   ]);
 
@@ -562,10 +684,12 @@ export const useConversationHistory = ({
       let anyUpdated = false;
 
       for (const process of processesToReload) {
+        if (!isCurrentGeneration(generation)) return;
         const entries = await loadEntriesForHistoricExecutionProcess(
           process,
           generation
         );
+        if (!isCurrentGeneration(generation)) return;
         if (entries === null) {
           setHistoricProcessFailure(generation, process.id, true);
           continue;
@@ -576,24 +700,35 @@ export const useConversationHistory = ({
           patchWithKey(e, process.id, idx)
         );
 
-        mergeIntoDisplayed((state) => {
-          state[process.id] = {
-            executionProcess: process,
-            entries: entriesWithKey,
-          };
-        });
+        const didMerge = mergeIntoDisplayedForGeneration(
+          generation,
+          (state) => {
+            state[process.id] = {
+              executionProcess: process,
+              entries: entriesWithKey,
+            };
+          }
+        );
+        if (!didMerge) return;
         anyUpdated = true;
       }
 
-      if (anyUpdated) {
-        emitEntries(displayedExecutionProcesses.current, 'running', false);
+      if (anyUpdated && isCurrentGeneration(generation)) {
+        emitEntriesForGeneration(
+          generation,
+          displayedExecutionProcesses.current,
+          'running',
+          false
+        );
       }
     })();
   }, [
     idStatusKey,
     executionProcessesRaw,
-    emitEntries,
+    emitEntriesForGeneration,
+    isCurrentGeneration,
     loadEntriesForHistoricExecutionProcess,
+    mergeIntoDisplayedForGeneration,
     setHistoricProcessFailure,
   ]);
 
@@ -638,12 +773,16 @@ export const useConversationHistory = ({
           patchWithKey(e, process.id, idx)
         );
 
-        mergeIntoDisplayed((state) => {
-          state[process.id] = {
-            executionProcess: process,
-            entries: entriesWithKey,
-          };
-        });
+        const didMerge = mergeIntoDisplayedForGeneration(
+          generation,
+          (state) => {
+            state[process.id] = {
+              executionProcess: process,
+              entries: entriesWithKey,
+            };
+          }
+        );
+        if (!didMerge) return;
         anyUpdated = true;
       }
 
@@ -660,10 +799,11 @@ export const useConversationHistory = ({
       cancelled = true;
     };
   }, [
-    emitEntries,
+    emitEntriesForGeneration,
     failedHistoricProcessIds,
     isConnected,
     loadEntriesForHistoricExecutionProcess,
+    mergeIntoDisplayedForGeneration,
     setHistoricProcessFailure,
   ]);
 
