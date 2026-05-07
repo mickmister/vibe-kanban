@@ -680,7 +680,6 @@ export function SessionChatBox<TExecutor extends string = string>({
       visualVariant={getVisualVariant()}
       isRunning={showRunningAnimation}
       dropzone={dropzone}
-      bottomLeftOverlay={chatViewModeSelector}
       modelSelector={isMinimalZen ? undefined : modelSelector}
       headerLeft={
         shouldHideZenHeader ? undefined : (
@@ -896,43 +895,46 @@ export function SessionChatBox<TExecutor extends string = string>({
         )
       }
       footerLeft={
-        isMinimalZen ? undefined : (
         <>
-          <ToolbarIconButton
-            icon={PaperclipIcon}
-            aria-label={t('tasks:taskFormDialog.attachFile')}
-            title={t('tasks:taskFormDialog.attachFile')}
-            onClick={handleAttachClick}
-            disabled={areContentInsertActionsDisabled}
-          />
-          <input
-            ref={fileInputRef}
-            type="file"
-            multiple
-            className="hidden"
-            onChange={handleFileInputChange}
-          />
-          {onPrCommentClick && (
-            <ToolbarIconButton
-              icon={GithubLogoIcon}
-              aria-label="Add PR Comments"
-              title="Insert PR comments into message"
-              onClick={onPrCommentClick}
-              disabled={areContentInsertActionsDisabled}
-            />
+          {chatViewModeSelector}
+          {!isMinimalZen && (
+            <>
+              <ToolbarIconButton
+                icon={PaperclipIcon}
+                aria-label={t('tasks:taskFormDialog.attachFile')}
+                title={t('tasks:taskFormDialog.attachFile')}
+                onClick={handleAttachClick}
+                disabled={areContentInsertActionsDisabled}
+              />
+              <input
+                ref={fileInputRef}
+                type="file"
+                multiple
+                className="hidden"
+                onChange={handleFileInputChange}
+              />
+              {onPrCommentClick && (
+                <ToolbarIconButton
+                  icon={GithubLogoIcon}
+                  aria-label="Add PR Comments"
+                  title="Insert PR comments into message"
+                  onClick={onPrCommentClick}
+                  disabled={areContentInsertActionsDisabled}
+                />
+              )}
+              {toolbarActions?.items.map((item) => (
+                <ToolbarIconButton
+                  key={item.id}
+                  icon={item.icon}
+                  aria-label={item.label}
+                  title={item.tooltip}
+                  onClick={item.onClick}
+                  disabled={isDisabled || isRunning || Boolean(item.disabled)}
+                />
+              ))}
+            </>
           )}
-          {toolbarActions?.items.map((item) => (
-            <ToolbarIconButton
-              key={item.id}
-              icon={item.icon}
-              aria-label={item.label}
-              title={item.tooltip}
-              onClick={item.onClick}
-              disabled={isDisabled || isRunning || Boolean(item.disabled)}
-            />
-          ))}
         </>
-        )
       }
       footerRight={footerActionContent}
     />
