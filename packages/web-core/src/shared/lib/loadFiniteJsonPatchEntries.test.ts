@@ -59,9 +59,12 @@ describe('loadFiniteJsonPatchEntries', () => {
       timeoutMs: 1000,
       replaySafeAppendOnly: true,
     });
+    const rejection = expect(pending).rejects.toThrow(
+      'Finite stream timed out'
+    );
 
     await vi.advanceTimersByTimeAsync(1000);
 
-    await expect(pending).rejects.toThrow('Finite stream timed out');
+    await rejection;
   });
 });

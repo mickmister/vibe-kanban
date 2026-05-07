@@ -194,6 +194,24 @@ jobs:
             "node scripts/check-unused-i18n-keys.mjs" \
             "./scripts/check-legacy-frontend-paths.sh"
 
+  frontend-tests:
+    needs: changes
+    if: always() && (needs.changes.outputs.frontend == 'true' || needs.changes.result == 'skipped')
+    runs-on: *runner_label
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Node
+        uses: ./.github/actions/setup-node
+
+      - name: Install dependencies
+        run: pnpm install
+
+      - name: Run web-core Vitest suite
+        env:
+          NODE_OPTIONS: --max-old-space-size=8192
+        run: pnpm run web-core:test
+
   backend-schema-checks:
     needs: changes
     if: always() && (needs.changes.outputs.backend == 'true' || needs.changes.result == 'skipped')
