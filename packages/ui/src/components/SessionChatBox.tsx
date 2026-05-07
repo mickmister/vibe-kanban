@@ -680,7 +680,7 @@ export function SessionChatBox<TExecutor extends string = string>({
       visualVariant={getVisualVariant()}
       isRunning={showRunningAnimation}
       dropzone={dropzone}
-      bottomLeftOverlay={isMinimalZen ? chatViewModeSelector : undefined}
+      bottomLeftOverlay={chatViewModeSelector}
       modelSelector={isMinimalZen ? undefined : modelSelector}
       headerLeft={
         shouldHideZenHeader ? undefined : (
@@ -826,7 +826,6 @@ export function SessionChatBox<TExecutor extends string = string>({
             {supportsContextUsage && (
               <ContextUsageGauge tokenUsageInfo={tokenUsageInfo} />
             )}
-            {chatViewModeSelector}
             <ToolbarDropdown
               label={sessionLabel}
               disabled={isInFeedbackMode || isInEditMode || isInApprovalMode}

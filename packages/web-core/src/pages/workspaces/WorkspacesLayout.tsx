@@ -120,6 +120,7 @@ export function WorkspacesLayout() {
   const chatViewMode = useUiPreferencesStore((s) => s.chatViewMode);
   const setChatViewMode = useUiPreferencesStore((s) => s.setChatViewMode);
   const mainContainerRef = useRef<WorkspacesMainContainerHandle>(null);
+  const hasForcedInitialExistingSessionZen = useRef(false);
   const hasZenContext = isCreateMode || !!selectedWorkspace;
   const effectiveChatViewMode = hasZenContext ? chatViewMode : 'full';
   const isDesktopZenMode =
@@ -178,6 +179,25 @@ export function WorkspacesLayout() {
       setChatViewMode('full');
     }
   }, [chatViewMode, hasZenContext, setChatViewMode]);
+
+  useEffect(() => {
+    if (hasForcedInitialExistingSessionZen.current) return;
+    if (isMobile || isCreateMode || isNewSessionMode) return;
+    if (!selectedWorkspace || !selectedSession) return;
+
+    hasForcedInitialExistingSessionZen.current = true;
+    if (chatViewMode !== 'zen') {
+      setChatViewMode('zen');
+    }
+  }, [
+    chatViewMode,
+    isCreateMode,
+    isMobile,
+    isNewSessionMode,
+    selectedSession,
+    selectedWorkspace,
+    setChatViewMode,
+  ]);
 
   useEffect(() => {
     if (rightMainPanelMode === null) {
@@ -374,7 +394,7 @@ export function WorkspacesLayout() {
         className={cn(
           'h-9 w-[112px] rounded-sm border-border bg-secondary text-sm text-normal',
           effectiveChatViewMode === 'zen' &&
-            'opacity-0 transition-opacity duration-150 hover:opacity-100 focus:opacity-100 data-[state=open]:opacity-100'
+            'opacity-0 transition-opacity duration-150 hover:opacity-100 focus:opacity-100 focus-within:opacity-100 data-[state=open]:opacity-100'
         )}
       >
         <SelectValue

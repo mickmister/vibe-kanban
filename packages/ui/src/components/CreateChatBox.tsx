@@ -182,7 +182,6 @@ export function CreateChatBox<TExecutor extends string = string>({
       error={error}
       visualVariant={VisualVariant.NORMAL}
       dropzone={dropzone}
-      bottomLeftOverlay={isMinimalZen ? chatViewModeSelector : undefined}
       modelSelector={isMinimalZen ? undefined : modelSelector}
       headerLeft={
         isMinimalZen ? undefined : (
@@ -216,7 +215,7 @@ export function CreateChatBox<TExecutor extends string = string>({
           </>
         )
       }
-      headerRight={isMinimalZen ? undefined : chatViewModeSelector}
+      headerRight={undefined}
       footerLeft={
         <>
           {!isMinimalZen && (
@@ -238,6 +237,7 @@ export function CreateChatBox<TExecutor extends string = string>({
             </>
           )}
           {repoSummaryNode}
+          {chatViewModeSelector}
           {linkedIssue && (
             <div
               className="inline-flex items-center gap-half whitespace-nowrap text-sm text-low"
