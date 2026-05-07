@@ -121,13 +121,13 @@ export function WorkspacesLayout() {
   const setChatViewMode = useUiPreferencesStore((s) => s.setChatViewMode);
   const mainContainerRef = useRef<WorkspacesMainContainerHandle>(null);
   const hasForcedInitialExistingSessionZen = useRef(false);
-  const hasZenContext = isCreateMode || !!selectedWorkspace;
+  const hasWorkspaceRoute = !!workspaceId;
+  const hasZenContext = isCreateMode || hasWorkspaceRoute;
   const shouldForceInitialExistingSessionZen =
     !isMobile &&
-    !isCreateMode &&
+    hasWorkspaceRoute &&
     !isNewSessionMode &&
-    !!selectedWorkspace &&
-    !!selectedSession &&
+    !isCreateMode &&
     !hasForcedInitialExistingSessionZen.current;
   const effectiveChatViewMode = hasZenContext
     ? shouldForceInitialExistingSessionZen
@@ -193,8 +193,8 @@ export function WorkspacesLayout() {
 
   useEffect(() => {
     if (hasForcedInitialExistingSessionZen.current) return;
-    if (isMobile || isCreateMode || isNewSessionMode) return;
-    if (!selectedWorkspace || !selectedSession) return;
+    if (isMobile || isCreateMode || isNewSessionMode || !hasWorkspaceRoute)
+      return;
 
     hasForcedInitialExistingSessionZen.current = true;
     if (chatViewMode !== 'zen') {
@@ -202,11 +202,10 @@ export function WorkspacesLayout() {
     }
   }, [
     chatViewMode,
+    hasWorkspaceRoute,
     isCreateMode,
     isMobile,
     isNewSessionMode,
-    selectedSession,
-    selectedWorkspace,
     setChatViewMode,
   ]);
 
