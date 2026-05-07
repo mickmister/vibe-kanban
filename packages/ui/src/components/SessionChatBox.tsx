@@ -382,7 +382,7 @@ export function SessionChatBox<TExecutor extends string = string>({
   const linesAdded = stats?.linesAdded;
   const linesRemoved = stats?.linesRemoved;
   const isMinimalZen = chatViewMode === 'zen';
-  const shouldHideZenHeader = isMinimalZen && !isNewSessionMode;
+  const shouldHideZenHeader = isMinimalZen;
 
   // Render action buttons based on status
   const renderActionButtons = () => {
@@ -659,6 +659,14 @@ export function SessionChatBox<TExecutor extends string = string>({
     if (isInApprovalMode || isInAskQuestionMode) return VisualVariant.PLAN;
     return VisualVariant.NORMAL;
   };
+  const footerActionContent = isMinimalZen ? (
+    <>
+      {chatViewModeSelector}
+      {renderActionButtons()}
+    </>
+  ) : (
+    renderActionButtons()
+  );
 
   return (
     <ChatBoxBase
@@ -795,9 +803,7 @@ export function SessionChatBox<TExecutor extends string = string>({
         )
       }
       headerRight={
-        shouldHideZenHeader ? (
-          chatViewModeSelector
-        ) : (
+        shouldHideZenHeader ? undefined : (
           <>
             {/* Turn navigation + Agent icon for existing session mode */}
             {!isNewSessionMode && (
@@ -935,7 +941,7 @@ export function SessionChatBox<TExecutor extends string = string>({
         </>
         )
       }
-      footerRight={renderActionButtons()}
+      footerRight={footerActionContent}
     />
   );
 }
