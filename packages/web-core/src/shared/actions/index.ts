@@ -617,6 +617,25 @@ export const Actions = {
     },
   },
 
+  ToggleChatViewMode: {
+    id: 'toggle-chat-view-mode',
+    label: 'Cycle Chat View Mode',
+    icon: ArrowsLeftRightIcon,
+    shortcut: 'V Z',
+    requiresTarget: ActionTargetType.NONE,
+    isVisible: (ctx) => ctx.layoutMode === 'workspaces',
+    execute: () => {
+      const store = useUiPreferencesStore.getState();
+      const nextMode =
+        store.chatViewMode === 'zen'
+          ? 'full'
+          : store.chatViewMode === 'full'
+            ? 'mostly-zen'
+            : 'zen';
+      store.setChatViewMode(nextMode);
+    },
+  },
+
   ToggleRightSidebar: {
     id: 'toggle-right-sidebar',
     label: () =>

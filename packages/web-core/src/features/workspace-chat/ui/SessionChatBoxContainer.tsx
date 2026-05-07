@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef } from 'react';
+import { type ReactNode, useCallback, useEffect, useMemo, useRef } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useDropzone } from 'react-dropzone';
 import {
@@ -45,6 +45,7 @@ import {
 } from '@vibe/ui/components/SessionChatBox';
 import { ModelSelectorContainer } from '@/shared/components/ModelSelectorContainer';
 import {
+  type ChatViewMode,
   useWorkspacePanelState,
   RIGHT_MAIN_PANEL_MODES,
 } from '@/shared/stores/useUiPreferencesStore';
@@ -90,6 +91,10 @@ function computeExecutionStatus(params: {
 interface SharedProps {
   /** Available sessions for this workspace */
   sessions: Session[];
+  /** Chat presentation mode */
+  chatViewMode?: ChatViewMode;
+  /** Optional control rendered in the chat header */
+  chatViewModeSelector?: ReactNode;
   /** Number of files changed in current session */
   filesChanged: number;
   /** Number of lines added */
@@ -144,6 +149,8 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
   const {
     mode,
     sessions,
+    chatViewMode = 'full',
+    chatViewModeSelector,
     filesChanged,
     linesAdded,
     linesRemoved,
@@ -994,6 +1001,8 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
           linesRemoved: 0,
         }}
         onViewCode={disableViewCode ? undefined : handleViewCode}
+        chatViewMode={chatViewMode}
+        chatViewModeSelector={chatViewModeSelector}
       />
     );
   }
@@ -1002,6 +1011,8 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     <SessionChatBox<BaseCodingAgent>
       status={status}
       onViewCode={disableViewCode ? undefined : handleViewCode}
+      chatViewMode={chatViewMode}
+      chatViewModeSelector={chatViewModeSelector}
       onOpenWorkspace={
         showOpenWorkspaceButton && workspaceId ? handleOpenWorkspace : undefined
       }
