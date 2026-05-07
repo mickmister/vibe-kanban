@@ -9,6 +9,7 @@ import {
   type MouseEvent,
 } from 'react';
 import { SpinnerIcon } from '@phosphor-icons/react';
+import { AlertCircle } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
 import {
@@ -41,6 +42,7 @@ import { useConversationHistory } from '../model/hooks/useConversationHistory';
 import { useSetTokenUsageInfo } from '../model/contexts/EntriesContext';
 import type { WorkspaceWithSession } from '@/shared/types/attempt';
 import type { RepoWithTargetBranch } from 'shared/types';
+import { Alert, AlertDescription } from '@vibe/ui/components/Alert';
 import { ChatEmptyState } from '@vibe/ui/components/ChatEmptyState';
 import { ChatScriptPlaceholder } from '@vibe/ui/components/ChatScriptPlaceholder';
 import { ScriptFixerDialog } from '@/shared/dialogs/scripts/ScriptFixerDialog';
@@ -383,11 +385,12 @@ export const ConversationList = forwardRef<
     }
   };
 
-  const { isFirstTurn, isLoadingHistory } = useConversationHistory({
-    attempt,
-    onTimelineUpdated,
-    scopeKey: conversationScopeKey,
-  });
+  const { isFirstTurn, isLoadingHistory, historyError } =
+    useConversationHistory({
+      attempt,
+      onTimelineUpdated,
+      scopeKey: conversationScopeKey,
+    });
 
   const prevEntriesRef = useRef<DisplayEntry[]>([]);
   const prevRowsRef = useRef<ConversationRow[]>([]);
@@ -798,6 +801,20 @@ export const ConversationList = forwardRef<
               <span className="text-xs text-low">
                 {t('conversation.loadingEarlierMessages')}
               </span>
+            </div>
+          )}
+
+          {historyError && !showLoader && (
+            <div className="px-double py-3">
+              <Alert variant="destructive">
+                <AlertCircle className="h-4 w-4" />
+                <AlertDescription>
+                  {t('conversation.historyLoadError', {
+                    defaultValue:
+                      'Failed to load some earlier conversation messages. You can keep working, but older history may be incomplete until you retry.',
+                  })}
+                </AlertDescription>
+              </Alert>
             </div>
           )}
 
