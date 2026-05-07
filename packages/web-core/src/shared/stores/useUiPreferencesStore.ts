@@ -462,7 +462,7 @@ export const useUiPreferencesStore = create<State>()((set, get) => ({
   isLeftSidebarVisible: true,
   isRightSidebarVisible: true,
   isTerminalVisible: true,
-  chatViewMode: 'full' as ChatViewMode,
+  chatViewMode: 'mostly-zen' as ChatViewMode,
   previewRefreshKey: 0,
 
   // Workspace-specific panel state

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef } from 'react';
+import { type ReactNode, useCallback, useEffect, useMemo, useRef } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useDropzone } from 'react-dropzone';
 import {
@@ -93,6 +93,8 @@ interface SharedProps {
   sessions: Session[];
   /** Chat presentation mode */
   chatViewMode?: ChatViewMode;
+  /** Optional control rendered in the chat header */
+  chatViewModeSelector?: ReactNode;
   /** Number of files changed in current session */
   filesChanged: number;
   /** Number of lines added */
@@ -148,6 +150,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     mode,
     sessions,
     chatViewMode = 'full',
+    chatViewModeSelector,
     filesChanged,
     linesAdded,
     linesRemoved,
@@ -999,6 +1002,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
         }}
         onViewCode={disableViewCode ? undefined : handleViewCode}
         chatViewMode={chatViewMode}
+        chatViewModeSelector={chatViewModeSelector}
       />
     );
   }
@@ -1008,6 +1012,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
       status={status}
       onViewCode={disableViewCode ? undefined : handleViewCode}
       chatViewMode={chatViewMode}
+      chatViewModeSelector={chatViewModeSelector}
       onOpenWorkspace={
         showOpenWorkspaceButton && workspaceId ? handleOpenWorkspace : undefined
       }

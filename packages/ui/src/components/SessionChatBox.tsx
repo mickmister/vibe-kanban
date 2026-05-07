@@ -158,6 +158,7 @@ export interface SessionChatBoxEditorRenderProps<
 interface SessionChatBoxProps<TExecutor extends string = string> {
   status: ExecutionStatus;
   chatViewMode?: ChatViewMode;
+  chatViewModeSelector?: ReactNode;
   editor: EditorProps;
   renderEditor: (
     props: SessionChatBoxEditorRenderProps<TExecutor>
@@ -226,6 +227,7 @@ function defaultFormatSessionDate(createdAt: string | Date) {
 export function SessionChatBox<TExecutor extends string = string>({
   status,
   chatViewMode = 'full',
+  chatViewModeSelector,
   editor,
   renderEditor,
   actions,
@@ -793,102 +795,105 @@ export function SessionChatBox<TExecutor extends string = string>({
         )
       }
       headerRight={
-        shouldHideZenHeader ? undefined : (
-        <>
-          {/* Turn navigation + Agent icon for existing session mode */}
-          {!isNewSessionMode && (
-            <>
-              {onScrollToPreviousMessage && (
-                <TurnNavigationPopup
-                  turns={userMessageTurns ?? []}
-                  onNavigateToTurn={onScrollToUserMessage ?? (() => {})}
-                  getActiveTurnPatchKey={getActiveTurnPatchKey}
-                >
-                  <ToolbarIconButton
-                    icon={ArrowUpIcon}
-                    title={t('conversation.actions.scrollToPreviousMessage')}
-                    aria-label={t(
-                      'conversation.actions.scrollToPreviousMessage'
-                    )}
-                    onClick={onScrollToPreviousMessage}
-                  />
-                </TurnNavigationPopup>
-              )}
-              {renderAgentIcon?.(agent, 'size-icon-xl')}
-            </>
-          )}
-          {/* Todo progress popup - always rendered, disabled when no todos */}
-          <TodoProgressPopup todos={todos ?? []} />
-          {supportsContextUsage && (
-            <ContextUsageGauge tokenUsageInfo={tokenUsageInfo} />
-          )}
-          <ToolbarDropdown
-            label={sessionLabel}
-            disabled={isInFeedbackMode || isInEditMode || isInApprovalMode}
-            className="min-w-0 max-w-[120px]"
-          >
-            {/* New Session option */}
-            <DropdownMenuItem
-              icon={isNewSessionMode ? CheckIcon : PlusIcon}
-              onClick={() => onNewSession?.()}
-            >
-              {t('conversation.sessions.newSession')}
-            </DropdownMenuItem>
-            {sessions.length > 0 && <DropdownMenuSeparator />}
-            {sessions.length > 0 ? (
+        shouldHideZenHeader ? (
+          chatViewModeSelector
+        ) : (
+          <>
+            {/* Turn navigation + Agent icon for existing session mode */}
+            {!isNewSessionMode && (
               <>
-                <DropdownMenuLabel>
-                  {t('conversation.sessions.label')}
-                </DropdownMenuLabel>
-                {sessions.map((s, index) => (
-                  <DropdownMenuItem
-                    key={s.id}
-                    icon={
-                      !isNewSessionMode && s.id === selectedSessionId
-                        ? CheckIcon
-                        : undefined
-                    }
-                    onClick={() => onSelectSession(s.id)}
+                {onScrollToPreviousMessage && (
+                  <TurnNavigationPopup
+                    turns={userMessageTurns ?? []}
+                    onNavigateToTurn={onScrollToUserMessage ?? (() => {})}
+                    getActiveTurnPatchKey={getActiveTurnPatchKey}
                   >
-                    <span className="flex items-center gap-1.5 max-w-[200px]">
-                      {renderAgentIcon?.(
-                        s.executor ?? null,
-                        'size-icon shrink-0'
+                    <ToolbarIconButton
+                      icon={ArrowUpIcon}
+                      title={t('conversation.actions.scrollToPreviousMessage')}
+                      aria-label={t(
+                        'conversation.actions.scrollToPreviousMessage'
                       )}
-                      <span className="truncate">
-                        {s.name
-                          ? s.name
-                          : index === 0
-                            ? t('conversation.sessions.latest')
-                            : formatSessionDate(s.created_at)}
-                      </span>
-                    </span>
-                  </DropdownMenuItem>
-                ))}
+                      onClick={onScrollToPreviousMessage}
+                    />
+                  </TurnNavigationPopup>
+                )}
+                {renderAgentIcon?.(agent, 'size-icon-xl')}
               </>
-            ) : (
-              <DropdownMenuItem disabled>
-                {t('conversation.sessions.noPreviousSessions')}
+            )}
+            {/* Todo progress popup - always rendered, disabled when no todos */}
+            <TodoProgressPopup todos={todos ?? []} />
+            {supportsContextUsage && (
+              <ContextUsageGauge tokenUsageInfo={tokenUsageInfo} />
+            )}
+            {chatViewModeSelector}
+            <ToolbarDropdown
+              label={sessionLabel}
+              disabled={isInFeedbackMode || isInEditMode || isInApprovalMode}
+              className="min-w-0 max-w-[120px]"
+            >
+              {/* New Session option */}
+              <DropdownMenuItem
+                icon={isNewSessionMode ? CheckIcon : PlusIcon}
+                onClick={() => onNewSession?.()}
+              >
+                {t('conversation.sessions.newSession')}
               </DropdownMenuItem>
-            )}
-            {onRenameSession && selectedSessionId && !isNewSessionMode && (
-              <>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem
-                  icon={PencilSimpleIcon}
-                  onClick={() =>
-                    onRenameSession(
-                      selectedSessionId,
-                      selectedSessionObj?.name ?? ''
-                    )
-                  }
-                >
-                  {t('conversation.sessions.rename')}
+              {sessions.length > 0 && <DropdownMenuSeparator />}
+              {sessions.length > 0 ? (
+                <>
+                  <DropdownMenuLabel>
+                    {t('conversation.sessions.label')}
+                  </DropdownMenuLabel>
+                  {sessions.map((s, index) => (
+                    <DropdownMenuItem
+                      key={s.id}
+                      icon={
+                        !isNewSessionMode && s.id === selectedSessionId
+                          ? CheckIcon
+                          : undefined
+                      }
+                      onClick={() => onSelectSession(s.id)}
+                    >
+                      <span className="flex items-center gap-1.5 max-w-[200px]">
+                        {renderAgentIcon?.(
+                          s.executor ?? null,
+                          'size-icon shrink-0'
+                        )}
+                        <span className="truncate">
+                          {s.name
+                            ? s.name
+                            : index === 0
+                              ? t('conversation.sessions.latest')
+                              : formatSessionDate(s.created_at)}
+                        </span>
+                      </span>
+                    </DropdownMenuItem>
+                  ))}
+                </>
+              ) : (
+                <DropdownMenuItem disabled>
+                  {t('conversation.sessions.noPreviousSessions')}
                 </DropdownMenuItem>
-              </>
-            )}
-          </ToolbarDropdown>
-        </>
+              )}
+              {onRenameSession && selectedSessionId && !isNewSessionMode && (
+                <>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem
+                    icon={PencilSimpleIcon}
+                    onClick={() =>
+                      onRenameSession(
+                        selectedSessionId,
+                        selectedSessionObj?.name ?? ''
+                      )
+                    }
+                  >
+                    {t('conversation.sessions.rename')}
+                  </DropdownMenuItem>
+                </>
+              )}
+            </ToolbarDropdown>
+          </>
         )
       }
       footerLeft={

@@ -1,4 +1,10 @@
-import { useMemo, useCallback, useState, useEffect } from 'react';
+import {
+  type ReactNode,
+  useMemo,
+  useCallback,
+  useState,
+  useEffect,
+} from 'react';
 import { useTranslation } from 'react-i18next';
 import { useDropzone } from 'react-dropzone';
 import { useCreateMode } from '@/features/create-mode/model/useCreateMode';
@@ -36,11 +42,13 @@ function truncateBranchLabel(branch: string) {
 interface CreateChatBoxContainerProps {
   onWorkspaceCreated: (workspaceId: string) => void;
   chatViewMode?: ChatViewMode;
+  chatViewModeSelector?: ReactNode;
 }
 
 export function CreateChatBoxContainer({
   onWorkspaceCreated,
   chatViewMode = 'full',
+  chatViewModeSelector,
 }: CreateChatBoxContainerProps) {
   const { t } = useTranslation('common');
   const { profiles, config } = useUserSystem();
@@ -325,6 +333,7 @@ export function CreateChatBoxContainer({
               <div className="flex justify-center @container">
                 <CreateChatBox
                   chatViewMode={chatViewMode}
+                  chatViewModeSelector={chatViewModeSelector}
                   editor={{
                     value: message,
                     onChange: setMessage,

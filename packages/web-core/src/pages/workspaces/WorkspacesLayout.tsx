@@ -363,6 +363,39 @@ export function WorkspacesLayout() {
   const shouldShowRightMainPanel =
     !isDesktopZenMode && rightMainPanelMode !== null;
   const canSelectChatViewMode = !isMobile && hasZenContext;
+  const chatViewModeSelector = canSelectChatViewMode ? (
+    <Select
+      value={effectiveChatViewMode}
+      onValueChange={(value) =>
+        setChatViewMode(value as 'full' | 'mostly-zen' | 'zen')
+      }
+    >
+      <SelectTrigger className="h-9 w-[112px] rounded-sm border-border bg-secondary text-sm text-normal">
+        <SelectValue
+          placeholder={t('workspaces.chatViewMode.label', {
+            defaultValue: 'Chat View',
+          })}
+        />
+      </SelectTrigger>
+      <SelectContent>
+        <SelectItem value="full">
+          {t('workspaces.chatViewMode.full', {
+            defaultValue: 'Full',
+          })}
+        </SelectItem>
+        <SelectItem value="mostly-zen">
+          {t('workspaces.chatViewMode.mostlyZen', {
+            defaultValue: 'Chat',
+          })}
+        </SelectItem>
+        <SelectItem value="zen">
+          {t('workspaces.chatViewMode.zen', {
+            defaultValue: 'Zen',
+          })}
+        </SelectItem>
+      </SelectContent>
+    </Select>
+  ) : undefined;
 
   const mainContent = (
     <ReviewProvider workspaceId={selectedWorkspace?.id}>
@@ -384,6 +417,7 @@ export function WorkspacesLayout() {
                   <CreateChatBoxContainer
                     onWorkspaceCreated={handleWorkspaceCreated}
                     chatViewMode={effectiveChatViewMode}
+                    chatViewModeSelector={chatViewModeSelector}
                   />
                 ) : (
                   <WorkspacesMainContainer
@@ -399,6 +433,7 @@ export function WorkspacesLayout() {
                     isNewSessionMode={isNewSessionMode}
                     onStartNewSession={startNewSession}
                     chatViewMode={effectiveChatViewMode}
+                    chatViewModeSelector={chatViewModeSelector}
                   />
                 )}
               </Panel>
@@ -461,41 +496,6 @@ export function WorkspacesLayout() {
       )}
 
       <div className="relative flex-1 min-w-0 h-full">
-        {canSelectChatViewMode && (
-          <div className="absolute right-3 top-3 z-20 w-[220px] max-w-[calc(100%-1.5rem)]">
-            <Select
-              value={effectiveChatViewMode}
-              onValueChange={(value) =>
-                setChatViewMode(value as 'full' | 'mostly-zen' | 'zen')
-              }
-            >
-              <SelectTrigger className="h-10 rounded-sm border-border bg-secondary/90 text-sm text-normal shadow-sm backdrop-blur-sm">
-                <SelectValue
-                  placeholder={t('workspaces.chatViewMode.label', {
-                    defaultValue: 'Chat View',
-                  })}
-                />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="full">
-                  {t('workspaces.chatViewMode.full', {
-                    defaultValue: 'Full normal view',
-                  })}
-                </SelectItem>
-                <SelectItem value="mostly-zen">
-                  {t('workspaces.chatViewMode.mostlyZen', {
-                    defaultValue: 'Mostly zen',
-                  })}
-                </SelectItem>
-                <SelectItem value="zen">
-                  {t('workspaces.chatViewMode.zen', {
-                    defaultValue: 'Zen',
-                  })}
-                </SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-        )}
         {isCreateMode ? (
           <CreateModeProvider
             key={createModeProviderKey}
