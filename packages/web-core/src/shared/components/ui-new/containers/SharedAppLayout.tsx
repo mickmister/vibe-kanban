@@ -79,6 +79,7 @@ export function SharedAppLayout() {
   const { data: starCount } = useGitHubStars();
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
   const [isAppBarHovered, setIsAppBarHovered] = useState(false);
+  const hasForcedInitialWorkspaceZenShell = useRef(false);
   const { hosts: remoteCloudHosts } = useRemoteCloudHostsAppBarModel();
   const { hostId: routeHostId } = useParams({ strict: false });
   const navigate = useNavigate();
@@ -187,8 +188,17 @@ export function SharedAppLayout() {
   const isZenSupportedRoute = /\/workspaces(?:\/create|\/[^/]+)(?:\/|$)/.test(
     location.pathname
   );
+  const isExistingWorkspaceRoute =
+    /\/workspaces\/[^/]+(?:\/|$)/.test(location.pathname) &&
+    !/\/workspaces\/create(?:\/|$)/.test(location.pathname);
+  const shouldForceInitialWorkspaceZenShell =
+    !isMobile &&
+    isExistingWorkspaceRoute &&
+    !hasForcedInitialWorkspaceZenShell.current;
   const isZenShellActive =
-    !isMobile && chatViewMode !== 'full' && isZenSupportedRoute;
+    !isMobile &&
+    (chatViewMode !== 'full' || shouldForceInitialWorkspaceZenShell) &&
+    isZenSupportedRoute;
   const activeProjectId = projectDestination?.projectId ?? null;
   const activeHostId =
     getDestinationHostId(currentDestination) ?? routeHostId ?? null;
@@ -201,6 +211,12 @@ export function SharedAppLayout() {
   const setSelectedProjectId = useUiPreferencesStore(
     (s) => s.setSelectedProjectId
   );
+  useEffect(() => {
+    if (shouldForceInitialWorkspaceZenShell) {
+      hasForcedInitialWorkspaceZenShell.current = true;
+    }
+  }, [shouldForceInitialWorkspaceZenShell]);
+
   useEffect(() => {
     if (activeProjectId) {
       setSelectedProjectId(activeProjectId);
