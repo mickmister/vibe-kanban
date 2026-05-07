@@ -49,6 +49,9 @@ export const useConversationHistory = ({
   const loadedInitialEntries = useRef(false);
   const emittedEmptyInitialRef = useRef(false);
   const streamingProcessIdsRef = useRef<Set<string>>(new Set());
+  const runningStreamControllersRef = useRef<Map<string, { close(): void }>>(
+    new Map()
+  );
   const onTimelineUpdatedRef = useRef<
     UseConversationHistoryParams['onTimelineUpdated'] | null
   >(null);
@@ -64,6 +67,13 @@ export const useConversationHistory = ({
   const isCurrentGeneration = useCallback(
     (generation: number) => scopeGenerationRef.current === generation,
     []
+  );
+  const setLoadingHistoryForGeneration = useCallback(
+    (generation: number, value: boolean) => {
+      if (!isCurrentGeneration(generation)) return;
+      setIsLoadingHistory(value);
+    },
+    [isCurrentGeneration]
   );
 
   // Derive whether this is the first turn (no follow-up processes exist)
@@ -218,6 +228,20 @@ export const useConversationHistory = ({
     );
   };
 
+  const closeRunningStream = useCallback((processId: string) => {
+    const controller = runningStreamControllersRef.current.get(processId);
+    if (!controller) return;
+    runningStreamControllersRef.current.delete(processId);
+    controller.close();
+  }, []);
+
+  const closeAllRunningStreams = useCallback(() => {
+    for (const controller of runningStreamControllersRef.current.values()) {
+      controller.close();
+    }
+    runningStreamControllersRef.current.clear();
+  }, []);
+
   const emitEntries = useCallback(
     (
       executionProcessState: ExecutionProcessStateStore,
@@ -350,6 +374,10 @@ export const useConversationHistory = ({
             });
           },
         });
+        runningStreamControllersRef.current.set(
+          executionProcess.id,
+          controller
+        );
       });
     },
     [
@@ -527,6 +555,7 @@ export const useConversationHistory = ({
 
     for (const id of displayedIds) {
       if (!visibleProcessIds.has(id)) {
+        closeRunningStream(id);
         delete displayedExecutionProcesses.current[id];
         changed = true;
       }
@@ -535,18 +564,27 @@ export const useConversationHistory = ({
     if (changed) {
       emitEntries(displayedExecutionProcesses.current, 'historic', false);
     }
-  }, [idListKey, executionProcessesRaw, emitEntries, isLoading, isConnected]);
+  }, [
+    closeRunningStream,
+    idListKey,
+    executionProcessesRaw,
+    emitEntries,
+    isLoading,
+    isConnected,
+  ]);
 
   useEffect(() => {
     scopeGenerationRef.current += 1;
+    closeAllRunningStreams();
     displayedExecutionProcesses.current = {};
     loadedInitialEntries.current = false;
     emittedEmptyInitialRef.current = false;
     streamingProcessIdsRef.current.clear();
     previousStatusMapRef.current.clear();
+    setIsLoadingHistory(false);
     setFailedHistoricProcessIds(new Set());
     emitEntries(displayedExecutionProcesses.current, 'initial', true);
-  }, [scopeKey, emitEntries]);
+  }, [closeAllRunningStreams, scopeKey, emitEntries]);
 
   useEffect(() => {
     let cancelled = false;
@@ -559,6 +597,7 @@ export const useConversationHistory = ({
       if (executionProcesses.current.length === 0) {
         if (emittedEmptyInitialRef.current) return;
         emittedEmptyInitialRef.current = true;
+        setLoadingHistoryForGeneration(generation, false);
         emitEntriesForGeneration(
           generation,
           displayedExecutionProcesses.current,
@@ -571,12 +610,18 @@ export const useConversationHistory = ({
       emittedEmptyInitialRef.current = false;
 
       const allInitialEntries = await loadHistoricEntries(MIN_INITIAL_ENTRIES);
-      if (cancelled || !isCurrentGeneration(generation)) return;
+      if (cancelled || !isCurrentGeneration(generation)) {
+        setLoadingHistoryForGeneration(generation, false);
+        return;
+      }
       loadedInitialEntries.current = true;
       const didMerge = mergeIntoDisplayedForGeneration(generation, (state) => {
         Object.assign(state, allInitialEntries);
       });
-      if (!didMerge) return;
+      if (!didMerge) {
+        setLoadingHistoryForGeneration(generation, false);
+        return;
+      }
       emitEntriesForGeneration(
         generation,
         displayedExecutionProcesses.current,
@@ -584,12 +629,15 @@ export const useConversationHistory = ({
         false
       );
 
-      setIsLoadingHistory(true);
+      setLoadingHistoryForGeneration(generation, true);
       while (
         !cancelled &&
         (await loadRemainingEntriesInBatches(REMAINING_BATCH_SIZE))
       ) {
-        if (cancelled || !isCurrentGeneration(generation)) return;
+        if (cancelled || !isCurrentGeneration(generation)) {
+          setLoadingHistoryForGeneration(generation, false);
+          return;
+        }
         emitEntriesForGeneration(
           generation,
           displayedExecutionProcesses.current,
@@ -598,7 +646,7 @@ export const useConversationHistory = ({
         );
       }
       if (!cancelled && isCurrentGeneration(generation)) {
-        setIsLoadingHistory(false);
+        setLoadingHistoryForGeneration(generation, false);
       }
     })();
     return () => {
@@ -613,6 +661,7 @@ export const useConversationHistory = ({
     loadHistoricEntries,
     loadRemainingEntriesInBatches,
     mergeIntoDisplayedForGeneration,
+    setLoadingHistoryForGeneration,
   ]); // include idListKey so new processes trigger reload
 
   useEffect(() => {
@@ -642,6 +691,7 @@ export const useConversationHistory = ({
         streamingProcessIdsRef.current.add(activeProcess.id);
         void loadRunningAndEmitWithBackoff(activeProcess, generation).finally(
           () => {
+            closeRunningStream(activeProcess.id);
             if (!isCurrentGeneration(generation)) return;
             streamingProcessIdsRef.current.delete(activeProcess.id);
           }
@@ -654,6 +704,7 @@ export const useConversationHistory = ({
     emitEntriesForGeneration,
     ensureProcessVisible,
     isCurrentGeneration,
+    closeRunningStream,
     loadRunningAndEmitWithBackoff,
   ]);
 
