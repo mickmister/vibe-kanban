@@ -683,73 +683,95 @@ export function SessionChatBox<TExecutor extends string = string>({
       modelSelector={isMinimalZen ? undefined : modelSelector}
       headerLeft={
         shouldHideZenHeader ? undefined : (
-        <>
-          {/* New session mode: agent icon + executor dropdown */}
-          {isNewSessionMode && executor && (
-            <>
-              {renderAgentIcon?.(agent, 'size-icon-xl')}
-              <ToolbarDropdown
-                label={
-                  executor.selected
-                    ? formatExecutorLabel(executor.selected)
-                    : emptyExecutorLabel
-                }
-              >
-                <DropdownMenuLabel>
-                  {t('conversation.executors')}
-                </DropdownMenuLabel>
-                {executor.options.map((exec) => (
-                  <DropdownMenuItem
-                    key={exec}
-                    icon={executor.selected === exec ? CheckIcon : undefined}
-                    onClick={() => executor.onChange(exec)}
-                  >
-                    {formatExecutorLabel(exec)}
-                  </DropdownMenuItem>
-                ))}
-              </ToolbarDropdown>
-            </>
-          )}
-          {/* Existing session mode: show in-progress todo when running, otherwise file stats */}
-          {!isNewSessionMode && (
-            <>
-              {isRunning && inProgressTodo ? (
-                <span className="text-sm flex items-center gap-1 min-w-0">
-                  <SpinnerIcon className="size-icon-sm animate-spin flex-shrink-0" />
-                  <span className="truncate">{inProgressTodo.content}</span>
-                </span>
-              ) : (
-                <>
-                  {stats?.hasConflicts && (
-                    <button
-                      type="button"
-                      className="flex items-center gap-1 text-warning text-sm min-w-0 cursor-pointer hover:underline"
-                      title={t('conversation.approval.conflictWarning')}
-                      onClick={stats.onResolveConflicts}
+          <>
+            {/* New session mode: agent icon + executor dropdown */}
+            {isNewSessionMode && executor && (
+              <>
+                {renderAgentIcon?.(agent, 'size-icon-xl')}
+                <ToolbarDropdown
+                  label={
+                    executor.selected
+                      ? formatExecutorLabel(executor.selected)
+                      : emptyExecutorLabel
+                  }
+                >
+                  <DropdownMenuLabel>
+                    {t('conversation.executors')}
+                  </DropdownMenuLabel>
+                  {executor.options.map((exec) => (
+                    <DropdownMenuItem
+                      key={exec}
+                      icon={executor.selected === exec ? CheckIcon : undefined}
+                      onClick={() => executor.onChange(exec)}
                     >
-                      <WarningIcon className="size-icon-sm flex-shrink-0" />
-                      <span className="truncate">
-                        {t('conversation.approval.conflicts', {
-                          count: stats.conflictedFilesCount,
-                        })}
-                      </span>
-                    </button>
-                  )}
-                  {onOpenWorkspace ? (
-                    <PrimaryButton
-                      variant="secondary"
-                      onClick={onOpenWorkspace}
-                      value="Open Workspace"
-                      actionIcon={ArrowsOutIcon}
-                      className="min-w-0"
-                    />
-                  ) : onViewCode ? (
-                    <PrimaryButton
-                      variant="tertiary"
-                      onClick={onViewCode}
-                      className="min-w-0"
-                    >
-                      <span className="text-sm space-x-half whitespace-nowrap truncate">
+                      {formatExecutorLabel(exec)}
+                    </DropdownMenuItem>
+                  ))}
+                </ToolbarDropdown>
+              </>
+            )}
+            {/* Existing session mode: show in-progress todo when running, otherwise file stats */}
+            {!isNewSessionMode && (
+              <>
+                {isRunning && inProgressTodo ? (
+                  <span className="text-sm flex items-center gap-1 min-w-0">
+                    <SpinnerIcon className="size-icon-sm animate-spin flex-shrink-0" />
+                    <span className="truncate">{inProgressTodo.content}</span>
+                  </span>
+                ) : (
+                  <>
+                    {stats?.hasConflicts && (
+                      <button
+                        type="button"
+                        className="flex items-center gap-1 text-warning text-sm min-w-0 cursor-pointer hover:underline"
+                        title={t('conversation.approval.conflictWarning')}
+                        onClick={stats.onResolveConflicts}
+                      >
+                        <WarningIcon className="size-icon-sm flex-shrink-0" />
+                        <span className="truncate">
+                          {t('conversation.approval.conflicts', {
+                            count: stats.conflictedFilesCount,
+                          })}
+                        </span>
+                      </button>
+                    )}
+                    {onOpenWorkspace ? (
+                      <PrimaryButton
+                        variant="secondary"
+                        onClick={onOpenWorkspace}
+                        value="Open Workspace"
+                        actionIcon={ArrowsOutIcon}
+                        className="min-w-0"
+                      />
+                    ) : onViewCode ? (
+                      <PrimaryButton
+                        variant="tertiary"
+                        onClick={onViewCode}
+                        className="min-w-0"
+                      >
+                        <span className="text-sm space-x-half whitespace-nowrap truncate">
+                          <span>
+                            {t('diff.filesChanged', { count: filesChanged })}
+                          </span>
+                          {(linesAdded !== undefined ||
+                            linesRemoved !== undefined) && (
+                            <span className="space-x-half">
+                              {linesAdded !== undefined && (
+                                <span className="text-success">
+                                  +{linesAdded}
+                                </span>
+                              )}
+                              {linesRemoved !== undefined && (
+                                <span className="text-error">
+                                  -{linesRemoved}
+                                </span>
+                              )}
+                            </span>
+                          )}
+                        </span>
+                      </PrimaryButton>
+                    ) : (
+                      <span className="text-sm text-low space-x-half whitespace-nowrap truncate min-w-0">
                         <span>
                           {t('diff.filesChanged', { count: filesChanged })}
                         </span>
@@ -769,30 +791,12 @@ export function SessionChatBox<TExecutor extends string = string>({
                           </span>
                         )}
                       </span>
-                    </PrimaryButton>
-                  ) : (
-                    <span className="text-sm text-low space-x-half whitespace-nowrap truncate min-w-0">
-                      <span>
-                        {t('diff.filesChanged', { count: filesChanged })}
-                      </span>
-                      {(linesAdded !== undefined ||
-                        linesRemoved !== undefined) && (
-                        <span className="space-x-half">
-                          {linesAdded !== undefined && (
-                            <span className="text-success">+{linesAdded}</span>
-                          )}
-                          {linesRemoved !== undefined && (
-                            <span className="text-error">-{linesRemoved}</span>
-                          )}
-                        </span>
-                      )}
-                    </span>
-                  )}
-                </>
-              )}
-            </>
-          )}
-        </>
+                    )}
+                  </>
+                )}
+              </>
+            )}
+          </>
         )
       }
       headerRight={
