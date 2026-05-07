@@ -370,7 +370,13 @@ export function WorkspacesLayout() {
         setChatViewMode(value as 'full' | 'mostly-zen' | 'zen')
       }
     >
-      <SelectTrigger className="h-9 w-[112px] rounded-sm border-border bg-secondary text-sm text-normal">
+      <SelectTrigger
+        className={cn(
+          'h-9 w-[112px] rounded-sm border-border bg-secondary text-sm text-normal',
+          effectiveChatViewMode === 'zen' &&
+            'opacity-0 transition-opacity duration-150 hover:opacity-100 focus:opacity-100 data-[state=open]:opacity-100'
+        )}
+      >
         <SelectValue
           placeholder={t('workspaces.chatViewMode.label', {
             defaultValue: 'Chat View',
