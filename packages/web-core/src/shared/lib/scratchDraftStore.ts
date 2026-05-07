@@ -94,6 +94,21 @@ export function writeStoredScratchDraft<T>(
   }
 }
 
+export function acknowledgeStoredScratchDraft<T>(
+  scratchType: ScratchType,
+  id: string,
+  authoritativeValue: T | null | undefined
+): boolean {
+  const cachedDraft = readStoredScratchDraft<T>(scratchType, id);
+  if (!cachedDraft?.dirty) return false;
+  if (!areScratchDraftValuesEqual(cachedDraft.value, authoritativeValue)) {
+    return false;
+  }
+
+  writeStoredScratchDraft(scratchType, id, cachedDraft.value, false);
+  return true;
+}
+
 export function clearStoredScratchDraft(
   scratchType: ScratchType,
   id: string

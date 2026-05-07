@@ -55,6 +55,7 @@ export const useConversationHistory = ({
   const previousStatusMapRef = useRef<Map<string, ExecutionProcessStatus>>(
     new Map()
   );
+  const previousConnectionStateRef = useRef<boolean | null>(null);
   const [isLoadingHistoryState, setIsLoadingHistory] = useState(false);
   const scopeGenerationRef = useRef(0);
   const [failedHistoricProcessIds, setFailedHistoricProcessIds] = useState<
@@ -592,6 +593,76 @@ export const useConversationHistory = ({
     idStatusKey,
     executionProcessesRaw,
     emitEntries,
+    loadEntriesForHistoricExecutionProcess,
+    setHistoricProcessFailure,
+  ]);
+
+  useEffect(() => {
+    const wasConnected = previousConnectionStateRef.current;
+    previousConnectionStateRef.current = isConnected;
+
+    const didReconnect = wasConnected === false && isConnected;
+    if (!didReconnect || failedHistoricProcessIds.size === 0) return;
+
+    let cancelled = false;
+    const generation = scopeGenerationRef.current;
+    const failedIds = [...failedHistoricProcessIds];
+
+    (async () => {
+      let anyUpdated = false;
+
+      for (const processId of failedIds) {
+        if (cancelled || scopeGenerationRef.current !== generation) return;
+
+        const process = executionProcesses.current.find(
+          (p) => p.id === processId
+        );
+        if (!process || process.status === ExecutionProcessStatus.running) {
+          continue;
+        }
+
+        const entries = await loadEntriesForHistoricExecutionProcess(
+          process,
+          generation
+        );
+
+        if (cancelled || scopeGenerationRef.current !== generation) return;
+
+        if (entries === null) {
+          setHistoricProcessFailure(generation, process.id, true);
+          continue;
+        }
+        setHistoricProcessFailure(generation, process.id, false);
+
+        const entriesWithKey = entries.map((e, idx) =>
+          patchWithKey(e, process.id, idx)
+        );
+
+        mergeIntoDisplayed((state) => {
+          state[process.id] = {
+            executionProcess: process,
+            entries: entriesWithKey,
+          };
+        });
+        anyUpdated = true;
+      }
+
+      if (
+        !cancelled &&
+        anyUpdated &&
+        scopeGenerationRef.current === generation
+      ) {
+        emitEntries(displayedExecutionProcesses.current, 'historic', false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    emitEntries,
+    failedHistoricProcessIds,
+    isConnected,
     loadEntriesForHistoricExecutionProcess,
     setHistoricProcessFailure,
   ]);

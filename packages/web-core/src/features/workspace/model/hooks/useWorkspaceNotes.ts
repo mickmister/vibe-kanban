@@ -2,8 +2,8 @@ import { useCallback, useState, useEffect, useRef } from 'react';
 import { ScratchType, type WorkspaceNotesData } from 'shared/types';
 import { useScratch } from '@/shared/hooks/useScratch';
 import { useDebouncedCallback } from '@/shared/hooks/useDebouncedCallback';
-import { scratchApi } from '@/shared/lib/api';
 import {
+  acknowledgeStoredScratchDraft,
   areScratchDraftValuesEqual,
   readStoredScratchDraft,
   writeStoredScratchDraft,
@@ -29,6 +29,7 @@ export function useWorkspaceNotes(
     isLoading: isScratchLoading,
     isConnected,
     error,
+    updateScratchForId,
   } = useScratch(ScratchType.WORKSPACE_NOTES, workspaceId ?? '', {
     enabled: !!workspaceId,
   });
@@ -49,30 +50,23 @@ export function useWorkspaceNotes(
 
   const { debounced: saveContent, flush: flushSaveContent } =
     useDebouncedCallback(
-      useCallback(async (targetWorkspaceId: string, content: string) => {
-        if (!targetWorkspaceId) return;
-        const payload = { content };
-        try {
-          await scratchApi.update(
-            ScratchType.WORKSPACE_NOTES,
-            targetWorkspaceId,
-            {
+      useCallback(
+        async (targetWorkspaceId: string, content: string) => {
+          if (!targetWorkspaceId) return;
+          const payload = { content };
+          try {
+            await updateScratchForId(targetWorkspaceId, {
               payload: {
                 type: 'WORKSPACE_NOTES',
                 data: payload,
               },
-            }
-          );
-          writeStoredScratchDraft(
-            ScratchType.WORKSPACE_NOTES,
-            targetWorkspaceId,
-            payload,
-            false
-          );
-        } catch (e) {
-          console.error('Failed to save workspace notes', e);
-        }
-      }, []),
+            });
+          } catch (e) {
+            console.error('Failed to save workspace notes', e);
+          }
+        },
+        [updateScratchForId]
+      ),
       500
     );
 
@@ -113,12 +107,9 @@ export function useWorkspaceNotes(
       areScratchDraftValuesEqual(cachedDraft.value, { content: serverContent })
     ) {
       hasPendingLocalChangesRef.current = false;
-      writeStoredScratchDraft(
-        ScratchType.WORKSPACE_NOTES,
-        workspaceId,
-        { content: serverContent },
-        false
-      );
+      acknowledgeStoredScratchDraft(ScratchType.WORKSPACE_NOTES, workspaceId, {
+        content: serverContent,
+      });
     }
 
     if (cachedDraft?.dirty) {
@@ -148,25 +139,15 @@ export function useWorkspaceNotes(
     );
     if (!cachedDraft?.dirty) return;
 
-    void scratchApi
-      .update(ScratchType.WORKSPACE_NOTES, workspaceId, {
-        payload: {
-          type: 'WORKSPACE_NOTES',
-          data: cachedDraft.value,
-        },
-      })
-      .then(() => {
-        writeStoredScratchDraft(
-          ScratchType.WORKSPACE_NOTES,
-          workspaceId,
-          cachedDraft.value,
-          false
-        );
-      })
-      .catch((e) => {
-        console.error('Failed to retry workspace notes save', e);
-      });
-  }, [isConnected, workspaceId]);
+    void updateScratchForId(workspaceId, {
+      payload: {
+        type: 'WORKSPACE_NOTES',
+        data: cachedDraft.value,
+      },
+    }).catch((e) => {
+      console.error('Failed to retry workspace notes save', e);
+    });
+  }, [isConnected, updateScratchForId, workspaceId]);
 
   const setContent = useCallback(
     (content: string) => {

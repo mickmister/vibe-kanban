@@ -21,8 +21,9 @@ import { useScratch } from '@/shared/hooks/useScratch';
 import { useDebouncedCallback } from '@/shared/hooks/useDebouncedCallback';
 import { useUserSystem } from '@/shared/hooks/useUserSystem';
 import { useShape } from '@/shared/integrations/electric/hooks';
-import { repoApi, scratchApi } from '@/shared/lib/api';
+import { repoApi } from '@/shared/lib/api';
 import {
+  acknowledgeStoredScratchDraft,
   clearStoredScratchDraft,
   readStoredScratchDraft,
   writeStoredScratchDraft,
@@ -267,6 +268,7 @@ export function useCreateModeState({
     deleteScratch,
     isLoading: scratchLoading,
     isConnected: isScratchConnected,
+    updateScratchForId,
   } = useScratch(ScratchType.DRAFT_WORKSPACE, scratchId);
 
   const [state, dispatch] = useReducer(draftReducer, draftInitialState);
@@ -508,39 +510,46 @@ export function useCreateModeState({
   // ============================================================================
   const { debounced: debouncedSave, flush: flushDebouncedSave } =
     useDebouncedCallback(
-      async (
-        targetScratchId: string,
-        data: DraftWorkspaceData,
-        scratchExists: boolean
-      ) => {
-        const isEmpty =
-          !data.message.trim() &&
-          data.repos.length === 0 &&
-          !data.executor_config &&
-          data.attachments.length === 0;
+      useCallback(
+        async (
+          targetScratchId: string,
+          data: DraftWorkspaceData,
+          scratchExists: boolean
+        ) => {
+          const isEmpty =
+            !data.message.trim() &&
+            data.repos.length === 0 &&
+            !data.executor_config &&
+            data.attachments.length === 0;
 
-        if (isEmpty && !scratchExists) return;
+          if (isEmpty && !scratchExists) return;
 
-        try {
-          await scratchApi.update(
-            ScratchType.DRAFT_WORKSPACE,
-            targetScratchId,
-            {
+          try {
+            await updateScratchForId(targetScratchId, {
               payload: { type: 'DRAFT_WORKSPACE', data },
-            }
-          );
-          writeStoredScratchDraft(
-            ScratchType.DRAFT_WORKSPACE,
-            targetScratchId,
-            data,
-            false
-          );
-        } catch (e) {
-          console.error('[useCreateModeState] Failed to save:', e);
-        }
-      },
+            });
+          } catch (e) {
+            console.error('[useCreateModeState] Failed to save:', e);
+          }
+        },
+        [updateScratchForId]
+      ),
       500
     );
+
+  useEffect(() => {
+    const scratchData =
+      scratch?.payload?.type === 'DRAFT_WORKSPACE'
+        ? scratch.payload.data
+        : undefined;
+    if (!scratchData) return;
+
+    acknowledgeStoredScratchDraft(
+      ScratchType.DRAFT_WORKSPACE,
+      scratchId,
+      scratchData
+    );
+  }, [scratch, scratchId]);
 
   useEffect(() => {
     if (state.phase !== 'ready') return;
@@ -603,22 +612,12 @@ export function useCreateModeState({
     );
     if (!cachedDraft?.dirty) return;
 
-    void scratchApi
-      .update(ScratchType.DRAFT_WORKSPACE, scratchId, {
-        payload: { type: 'DRAFT_WORKSPACE', data: cachedDraft.value },
-      })
-      .then(() => {
-        writeStoredScratchDraft(
-          ScratchType.DRAFT_WORKSPACE,
-          scratchId,
-          cachedDraft.value,
-          false
-        );
-      })
-      .catch((e) => {
-        console.error('[useCreateModeState] Failed to retry save:', e);
-      });
-  }, [isScratchConnected, scratchId]);
+    void updateScratchForId(scratchId, {
+      payload: { type: 'DRAFT_WORKSPACE', data: cachedDraft.value },
+    }).catch((e) => {
+      console.error('[useCreateModeState] Failed to retry save:', e);
+    });
+  }, [isScratchConnected, scratchId, updateScratchForId]);
 
   useEffect(() => {
     return () => {

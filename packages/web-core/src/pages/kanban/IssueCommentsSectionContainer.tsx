@@ -20,7 +20,6 @@ import {
   commitCommentAttachments,
   deleteAttachment,
 } from '@/shared/lib/remoteApi';
-import { scratchApi } from '@/shared/lib/api';
 import {
   extractAttachmentIds,
   removeAttachmentMarkdownBySource,
@@ -38,6 +37,7 @@ import WYSIWYGEditor, {
 import { MemberRole } from 'shared/remote-types';
 import { ScratchType } from 'shared/types';
 import {
+  acknowledgeStoredScratchDraft,
   areScratchDraftValuesEqual,
   clearStoredScratchDraft,
   readStoredScratchDraft,
@@ -85,8 +85,10 @@ function IssueCommentsSectionContent() {
   const {
     scratch: commentDraftScratch,
     deleteScratch: deleteCommentDraft,
+    deleteScratchForId,
     isLoading: isCommentDraftLoading,
     isConnected: isCommentDraftConnected,
+    updateScratchForId,
   } = useScratch(ScratchType.DRAFT_TASK, commentDraftId);
   const commentDraft =
     commentDraftScratch?.payload?.type === 'DRAFT_TASK'
@@ -99,28 +101,22 @@ function IssueCommentsSectionContent() {
     async (targetDraftId: string, value: string) => {
       try {
         if (!value.trim()) {
-          await scratchApi.delete(ScratchType.DRAFT_TASK, targetDraftId);
+          await deleteScratchForId(targetDraftId);
           clearStoredScratchDraft(ScratchType.DRAFT_TASK, targetDraftId);
           return;
         }
 
-        await scratchApi.update(ScratchType.DRAFT_TASK, targetDraftId, {
+        await updateScratchForId(targetDraftId, {
           payload: {
             type: 'DRAFT_TASK',
             data: value,
           },
         });
-        writeStoredScratchDraft(
-          ScratchType.DRAFT_TASK,
-          targetDraftId,
-          value,
-          false
-        );
       } catch (e) {
         console.error('[IssueCommentsSection] Failed to persist draft:', e);
       }
     },
-    []
+    [deleteScratchForId, updateScratchForId]
   );
 
   const {
@@ -147,6 +143,14 @@ function IssueCommentsSectionContent() {
   }, [commentDraftId, cancelDebouncedPersistCommentDraft]);
 
   useEffect(() => {
+    acknowledgeStoredScratchDraft(
+      ScratchType.DRAFT_TASK,
+      commentDraftId,
+      commentDraft ?? ''
+    );
+  }, [commentDraft, commentDraftId]);
+
+  useEffect(() => {
     if (isCommentDraftLoading) return;
     if (hydratedCommentDraftIdRef.current === commentDraftId) return;
 
@@ -158,11 +162,10 @@ function IssueCommentsSectionContent() {
       cachedDraft &&
       areScratchDraftValuesEqual(cachedDraft.value, commentDraft ?? '')
     ) {
-      writeStoredScratchDraft(
+      acknowledgeStoredScratchDraft(
         ScratchType.DRAFT_TASK,
         commentDraftId,
-        commentDraft ?? '',
-        false
+        commentDraft ?? ''
       );
     }
 

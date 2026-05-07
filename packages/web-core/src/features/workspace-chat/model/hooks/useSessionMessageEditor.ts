@@ -6,8 +6,8 @@ import {
 } from 'shared/types';
 import { useScratch } from '@/shared/hooks/useScratch';
 import { useDebouncedCallback } from '@/shared/hooks/useDebouncedCallback';
-import { scratchApi } from '@/shared/lib/api';
 import {
+  acknowledgeStoredScratchDraft,
   areScratchDraftValuesEqual,
   clearStoredScratchDraft,
   readStoredScratchDraft,
@@ -53,6 +53,7 @@ export function useSessionMessageEditor({
   const {
     scratch,
     deleteScratch,
+    updateScratchForId,
     isLoading: isScratchLoading,
     isConnected: isScratchConnected,
   } = useScratch(ScratchType.DRAFT_FOLLOW_UP, scratchId ?? '');
@@ -77,23 +78,17 @@ export function useSessionMessageEditor({
         executor_config: executorConfig,
       };
       try {
-        await scratchApi.update(ScratchType.DRAFT_FOLLOW_UP, targetScratchId, {
+        await updateScratchForId(targetScratchId, {
           payload: {
             type: 'DRAFT_FOLLOW_UP',
             data: payload,
           },
         });
-        writeStoredScratchDraft(
-          ScratchType.DRAFT_FOLLOW_UP,
-          targetScratchId,
-          payload,
-          false
-        );
       } catch (e) {
         console.error('Failed to save follow-up draft', e);
       }
     },
-    []
+    [updateScratchForId]
   );
 
   const {
@@ -157,6 +152,16 @@ export function useSessionMessageEditor({
     setLocalMessage(preferredDraft?.message ?? serverData?.message ?? '');
     setHasInitialValue(true);
   }, [isScratchLoading, scratchData, scratchId]);
+
+  useEffect(() => {
+    if (!scratchId || !scratchData) return;
+
+    acknowledgeStoredScratchDraft(
+      ScratchType.DRAFT_FOLLOW_UP,
+      scratchId,
+      scratchData
+    );
+  }, [scratchData, scratchId]);
 
   useEffect(() => {
     if (!scratchId || !isScratchConnected) return;

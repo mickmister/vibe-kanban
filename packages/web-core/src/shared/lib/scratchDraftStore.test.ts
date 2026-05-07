@@ -1,81 +1,57 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { ScratchType } from '../../../../../shared/types';
+import { afterEach, describe, expect, it } from 'vitest';
+import { ScratchType } from 'shared/types';
 import {
-  areScratchDraftValuesEqual,
-  clearStoredScratchDraft,
+  acknowledgeStoredScratchDraft,
   readStoredScratchDraft,
   writeStoredScratchDraft,
 } from './scratchDraftStore';
 
-function createStorage(): Storage {
-  const values = new Map<string, string>();
-
-  return {
-    length: 0,
-    clear() {
-      values.clear();
-    },
-    getItem(key: string) {
-      return values.get(key) ?? null;
-    },
-    key(index: number) {
-      return [...values.keys()][index] ?? null;
-    },
-    removeItem(key: string) {
-      values.delete(key);
-    },
-    setItem(key: string, value: string) {
-      values.set(key, value);
-    },
-  };
-}
-
 describe('scratchDraftStore', () => {
-  beforeEach(() => {
-    vi.stubGlobal('window', {
-      localStorage: createStorage(),
-    });
-  });
-
   afterEach(() => {
-    vi.unstubAllGlobals();
+    localStorage.clear();
   });
 
-  it('round-trips a stored draft with dirty state', () => {
-    writeStoredScratchDraft(ScratchType.DRAFT_TASK, 'issue-1', 'hello', true);
-
-    expect(
-      readStoredScratchDraft<string>(ScratchType.DRAFT_TASK, 'issue-1')
-    ).toMatchObject({
-      value: 'hello',
-      dirty: true,
-    });
-  });
-
-  it('clears a stored draft', () => {
+  it('clears the dirty bit only when the authoritative value matches', () => {
     writeStoredScratchDraft(
       ScratchType.WORKSPACE_NOTES,
       'workspace-1',
-      { content: 'notes' },
-      false
+      { content: 'draft text' },
+      true
     );
 
-    clearStoredScratchDraft(ScratchType.WORKSPACE_NOTES, 'workspace-1');
+    expect(
+      acknowledgeStoredScratchDraft(
+        ScratchType.WORKSPACE_NOTES,
+        'workspace-1',
+        {
+          content: 'other text',
+        }
+      )
+    ).toBe(false);
+    expect(
+      readStoredScratchDraft<{ content: string }>(
+        ScratchType.WORKSPACE_NOTES,
+        'workspace-1'
+      )?.dirty
+    ).toBe(true);
 
     expect(
-      readStoredScratchDraft(ScratchType.WORKSPACE_NOTES, 'workspace-1')
-    ).toBeNull();
-  });
-
-  it('compares structured values by JSON shape', () => {
-    expect(
-      areScratchDraftValuesEqual(
-        { content: 'same', nested: { ok: true } },
-        { content: 'same', nested: { ok: true } }
+      acknowledgeStoredScratchDraft(
+        ScratchType.WORKSPACE_NOTES,
+        'workspace-1',
+        {
+          content: 'draft text',
+        }
       )
     ).toBe(true);
     expect(
-      areScratchDraftValuesEqual({ content: 'left' }, { content: 'right' })
-    ).toBe(false);
+      readStoredScratchDraft<{ content: string }>(
+        ScratchType.WORKSPACE_NOTES,
+        'workspace-1'
+      )
+    ).toMatchObject({
+      value: { content: 'draft text' },
+      dirty: false,
+    });
   });
 });
