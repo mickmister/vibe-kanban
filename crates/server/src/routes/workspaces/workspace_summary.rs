@@ -171,7 +171,7 @@ async fn get_cached_workspace_summaries(
                 notify.notify_waiters();
                 return compute_result;
             }
-            WorkspaceSummaryCacheState::Computing { cached, notify } => {
+            WorkspaceSummaryCacheState::Computing { cached: _, notify } => {
                 let notify = notify.clone();
                 drop(cache_guard);
 

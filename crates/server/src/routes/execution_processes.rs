@@ -1,7 +1,6 @@
 use std::{
     collections::HashMap,
     sync::{Arc, OnceLock},
-    time::{Duration, Instant},
 };
 
 use anyhow;
@@ -17,11 +16,15 @@ use db::models::{
     execution_process_repo_state::ExecutionProcessRepoState,
 };
 use deployment::Deployment;
-use futures_util::{StreamExt, TryStreamExt};
+use futures_util::{
+    FutureExt, StreamExt, TryStreamExt,
+    future::{BoxFuture, Shared},
+    stream::{self, BoxStream},
+};
 use serde::Deserialize;
 use services::services::container::ContainerService;
-use tokio::sync::{Mutex, Notify};
-use utils::response::ApiResponse;
+use tokio::sync::Mutex;
+use utils::{log_msg::LogMsg, msg_store::MsgStore, response::ApiResponse};
 use uuid::Uuid;
 
 use crate::{
@@ -41,34 +44,12 @@ struct SessionExecutionProcessQuery {
     pub show_soft_deleted: Option<bool>,
 }
 
-const NORMALIZED_LOG_HISTORY_CACHE_TTL: Duration = Duration::from_secs(15);
+type SharedNormalizedLogHistoryFuture = Shared<BoxFuture<'static, Option<Arc<Vec<String>>>>>;
+type NormalizedLogHistoryInflight = Arc<Mutex<HashMap<Uuid, SharedNormalizedLogHistoryFuture>>>;
 
-#[derive(Clone)]
-struct CachedNormalizedLogHistory {
-    messages: Arc<Vec<String>>,
-    computed_at: Instant,
-}
-
-enum NormalizedLogHistoryCacheState {
-    Ready(Option<CachedNormalizedLogHistory>),
-    Computing { notify: Arc<Notify> },
-}
-
-impl Default for NormalizedLogHistoryCacheState {
-    fn default() -> Self {
-        Self::Ready(None)
-    }
-}
-
-type NormalizedLogHistoryCache = Arc<Mutex<HashMap<Uuid, NormalizedLogHistoryCacheState>>>;
-
-fn normalized_log_history_cache() -> &'static NormalizedLogHistoryCache {
-    static CACHE: OnceLock<NormalizedLogHistoryCache> = OnceLock::new();
-    CACHE.get_or_init(|| Arc::new(Mutex::new(HashMap::new())))
-}
-
-fn normalized_log_history_fresh(entry: &CachedNormalizedLogHistory) -> bool {
-    entry.computed_at.elapsed() < NORMALIZED_LOG_HISTORY_CACHE_TTL
+fn normalized_log_history_inflight() -> &'static NormalizedLogHistoryInflight {
+    static INFLIGHT: OnceLock<NormalizedLogHistoryInflight> = OnceLock::new();
+    INFLIGHT.get_or_init(|| Arc::new(Mutex::new(HashMap::new())))
 }
 
 async fn get_execution_process_by_id(
@@ -178,38 +159,15 @@ async fn stream_normalized_logs_ws(
     Path(exec_id): Path<Uuid>,
 ) -> impl IntoResponse {
     ws.on_upgrade(move |socket| async move {
-        if deployment
-            .container()
-            .get_msg_store_by_id(&exec_id)
-            .await
-            .is_some()
-        {
-            let stream = deployment
-                .container()
-                .stream_normalized_logs(&exec_id)
-                .await;
-            match stream {
-                Some(stream) => {
-                    let stream = stream
-                        .map_ok(|msg| msg.to_ws_message_unchecked())
-                        .err_into::<anyhow::Error>()
-                        .into_stream();
-                    if let Err(e) = handle_normalized_logs_ws(socket, stream).await {
-                        tracing::warn!("normalized logs WS closed: {}", e);
-                    }
-                }
-                None => {
-                    let mut socket = socket;
-                    let _ = socket
-                        .send(utils::log_msg::LogMsg::Finished.to_ws_message_unchecked())
-                        .await;
-                    let _ = socket.close().await;
-                }
+        if let Some(store) = deployment.container().get_msg_store_by_id(&exec_id).await {
+            let stream = build_live_normalized_logs_stream(exec_id, store).await;
+            if let Err(e) = handle_normalized_logs_ws(socket, stream).await {
+                tracing::warn!("normalized logs WS closed: {}", e);
             }
             return;
         }
 
-        match get_cached_historic_normalized_log_messages(&deployment, exec_id).await {
+        match get_historic_normalized_log_messages_single_flight(&deployment, exec_id).await {
             Some(messages) => {
                 let payloads = (*messages).clone();
                 let stream = futures_util::stream::iter(
@@ -232,58 +190,114 @@ async fn stream_normalized_logs_ws(
     })
 }
 
-async fn get_cached_historic_normalized_log_messages(
+async fn build_live_normalized_logs_stream(
+    exec_id: Uuid,
+    store: Arc<MsgStore>,
+) -> BoxStream<'static, anyhow::Result<Message>> {
+    let receiver = store.get_receiver();
+    let payloads = get_live_normalized_log_messages_single_flight(exec_id, store).await;
+    let history_stream = stream::iter(
+        (*payloads)
+            .clone()
+            .into_iter()
+            .map(|payload| Ok::<_, anyhow::Error>(Message::Text(payload.into()))),
+    );
+
+    let live_stream = stream::unfold(receiver, move |mut receiver| async move {
+        loop {
+            match receiver.recv().await {
+                Ok(LogMsg::JsonPatch(patch)) => {
+                    return Some((
+                        Ok::<_, anyhow::Error>(LogMsg::JsonPatch(patch).to_ws_message_unchecked()),
+                        receiver,
+                    ));
+                }
+                Ok(LogMsg::Finished) => return None,
+                Ok(_) => continue,
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                    tracing::error!(
+                        skipped = n,
+                        execution_process_id = %exec_id,
+                        "normalized log stream lagged for subscriber"
+                    );
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => return None,
+            }
+        }
+    });
+
+    history_stream
+        .chain(live_stream)
+        .chain(stream::once(async {
+            Ok::<_, anyhow::Error>(LogMsg::Finished.to_ws_message_unchecked())
+        }))
+        .boxed()
+}
+
+async fn get_live_normalized_log_messages_single_flight(
+    exec_id: Uuid,
+    store: Arc<MsgStore>,
+) -> Arc<Vec<String>> {
+    get_normalized_log_messages_single_flight(
+        exec_id,
+        async move { Some(collect_live_normalized_log_messages(&store)) }.boxed(),
+    )
+    .await
+    .unwrap_or_else(|| Arc::new(Vec::new()))
+}
+
+async fn get_historic_normalized_log_messages_single_flight(
     deployment: &DeploymentImpl,
     exec_id: Uuid,
 ) -> Option<Arc<Vec<String>>> {
-    let cache = normalized_log_history_cache();
+    get_normalized_log_messages_single_flight(exec_id, {
+        let deployment = deployment.clone();
+        async move { collect_historic_normalized_log_messages(&deployment, exec_id).await }.boxed()
+    })
+    .await
+}
 
-    loop {
-        let mut cache_guard = cache.lock().await;
-        let state = cache_guard.entry(exec_id).or_default();
-
-        match state {
-            NormalizedLogHistoryCacheState::Ready(Some(entry))
-                if normalized_log_history_fresh(entry) =>
-            {
-                return Some(entry.messages.clone());
-            }
-            NormalizedLogHistoryCacheState::Ready(_) => {
-                let notify = Arc::new(Notify::new());
-                *state = NormalizedLogHistoryCacheState::Computing {
-                    notify: notify.clone(),
-                };
-                drop(cache_guard);
-
-                let compute_result =
-                    collect_historic_normalized_log_messages(deployment, exec_id).await;
-
-                let mut cache_guard = cache.lock().await;
-                let state = cache_guard.entry(exec_id).or_default();
-                match &compute_result {
-                    Some(messages) => {
-                        *state = NormalizedLogHistoryCacheState::Ready(Some(
-                            CachedNormalizedLogHistory {
-                                messages: messages.clone(),
-                                computed_at: Instant::now(),
-                            },
-                        ));
-                    }
-                    None => {
-                        *state = NormalizedLogHistoryCacheState::Ready(None);
-                    }
-                }
-                drop(cache_guard);
-                notify.notify_waiters();
-                return compute_result;
-            }
-            NormalizedLogHistoryCacheState::Computing { notify } => {
-                let notify = notify.clone();
-                drop(cache_guard);
-                notify.notified().await;
-            }
+async fn get_normalized_log_messages_single_flight(
+    exec_id: Uuid,
+    future: BoxFuture<'static, Option<Arc<Vec<String>>>>,
+) -> Option<Arc<Vec<String>>> {
+    let inflight = normalized_log_history_inflight();
+    let (future, created_here) = {
+        let mut guard = inflight.lock().await;
+        if let Some(future) = guard.get(&exec_id) {
+            (future.clone(), false)
+        } else {
+            let future = future.shared();
+            guard.insert(exec_id, future.clone());
+            (future, true)
         }
+    };
+
+    let result = future.await;
+
+    if created_here {
+        let mut guard = inflight.lock().await;
+        guard.remove(&exec_id);
     }
+
+    result
+}
+
+fn collect_live_normalized_log_messages(store: &MsgStore) -> Arc<Vec<String>> {
+    let messages = store
+        .get_history()
+        .into_iter()
+        .take_while(|msg| !matches!(msg, LogMsg::Finished))
+        .filter_map(|msg| match msg {
+            LogMsg::JsonPatch(patch) => match LogMsg::JsonPatch(patch).to_ws_message_unchecked() {
+                Message::Text(payload) => Some(payload.to_string()),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect();
+
+    Arc::new(messages)
 }
 
 async fn collect_historic_normalized_log_messages(
