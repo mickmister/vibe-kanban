@@ -21,7 +21,7 @@ use futures_util::{StreamExt, TryStreamExt};
 use serde::Deserialize;
 use services::services::container::ContainerService;
 use tokio::sync::{Mutex, Notify};
-use utils::{log_msg::LogMsg, response::ApiResponse};
+use utils::response::ApiResponse;
 use uuid::Uuid;
 
 use crate::{
@@ -190,7 +190,10 @@ async fn stream_normalized_logs_ws(
                 .await;
             match stream {
                 Some(stream) => {
-                    let stream = stream.err_into::<anyhow::Error>().into_stream();
+                    let stream = stream
+                        .map_ok(|msg| msg.to_ws_message_unchecked())
+                        .err_into::<anyhow::Error>()
+                        .into_stream();
                     if let Err(e) = handle_normalized_logs_ws(socket, stream).await {
                         tracing::warn!("normalized logs WS closed: {}", e);
                     }
@@ -208,10 +211,10 @@ async fn stream_normalized_logs_ws(
 
         match get_cached_historic_normalized_log_messages(&deployment, exec_id).await {
             Some(messages) => {
+                let payloads = (*messages).clone();
                 let stream = futures_util::stream::iter(
-                    messages
-                        .iter()
-                        .cloned()
+                    payloads
+                        .into_iter()
                         .map(|payload| Ok::<_, anyhow::Error>(Message::Text(payload.into()))),
                 );
                 if let Err(e) = handle_normalized_logs_ws(socket, stream).await {

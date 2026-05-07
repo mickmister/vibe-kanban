@@ -132,6 +132,12 @@ fn git_status_cache_fresh(entry: &CachedGitStatusResponse) -> bool {
     entry.computed_at.elapsed() < GIT_STATUS_CACHE_TTL
 }
 
+async fn invalidate_git_status_cache(workspace_id: Uuid) {
+    let cache = git_status_cache();
+    let mut cache_guard = cache.lock().await;
+    cache_guard.remove(&workspace_id);
+}
+
 #[derive(Deserialize, Debug, TS)]
 pub struct ChangeTargetBranchRequest {
     pub repo_id: Uuid,
@@ -286,6 +292,8 @@ pub async fn merge_workspace(
         tracing::error!("Failed to archive workspace {}: {}", workspace.id, e);
     }
 
+    invalidate_git_status_cache(workspace.id).await;
+
     deployment
         .track_if_analytics_allowed(
             "task_attempt_merged",
@@ -326,6 +334,7 @@ pub async fn push_workspace_branch(
         .push_to_remote(&worktree_path, &workspace.branch, false)
     {
         Ok(_) => {
+            invalidate_git_status_cache(workspace.id).await;
             if let Ok(client) = deployment.remote_client() {
                 let pool = deployment.db().pool.clone();
                 let git = deployment.git().clone();
@@ -378,6 +387,8 @@ pub async fn force_push_workspace_branch(
     deployment
         .git()
         .push_to_remote(&worktree_path, &workspace.branch, true)?;
+
+    invalidate_git_status_cache(workspace.id).await;
 
     if let Ok(client) = deployment.remote_client() {
         let pool = deployment.db().pool.clone();
@@ -625,6 +636,8 @@ pub async fn change_target_branch(
             .git()
             .get_branch_status(&repo.path, &workspace.branch, &new_target_branch)?;
 
+    invalidate_git_status_cache(workspace.id).await;
+
     deployment
         .track_if_analytics_allowed(
             "task_attempt_target_branch_changed",
@@ -767,6 +780,8 @@ pub async fn rename_branch(
         );
     }
 
+    invalidate_git_status_cache(workspace.id).await;
+
     deployment
         .track_if_analytics_allowed(
             "task_attempt_branch_renamed",
@@ -878,6 +893,8 @@ pub async fn rebase_workspace(
         )
         .await;
 
+    invalidate_git_status_cache(workspace.id).await;
+
     Ok(ResponseJson(ApiResponse::success(())))
 }
 
@@ -902,6 +919,8 @@ pub async fn abort_workspace_conflicts(
 
     deployment.git().abort_conflicts(&worktree_path)?;
 
+    invalidate_git_status_cache(workspace.id).await;
+
     Ok(ResponseJson(ApiResponse::success(())))
 }
 
@@ -925,6 +944,8 @@ pub async fn continue_workspace_rebase(
     let worktree_path = workspace_path.join(&repo.name);
 
     deployment.git().continue_rebase(&worktree_path)?;
+
+    invalidate_git_status_cache(workspace.id).await;
 
     Ok(ResponseJson(ApiResponse::success(())))
 }
