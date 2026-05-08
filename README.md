@@ -124,7 +124,7 @@ The following environment variables can be configured at build time or runtime:
 | `MCP_HOST` | Runtime | Value of `HOST` | MCP server connection host (use `127.0.0.1` when `HOST=0.0.0.0` on Windows) |
 | `MCP_PORT` | Runtime | Value of `BACKEND_PORT` | MCP server connection port |
 | `DISABLE_WORKTREE_CLEANUP` | Runtime | Not set | Disable all git worktree cleanup including orphan and expired workspace cleanup (for debugging) |
-| `VK_ALLOWED_ORIGINS` | Runtime | Not set | Comma-separated list of origins that are allowed to make backend API requests (e.g., `https://my-vibekanban-frontend.com`) |
+| `VK_ALLOWED_ORIGINS` | Runtime | Not set | Comma-separated list of origins that are allowed to make backend API requests; supports exact origins plus wildcard entries like `*`, `https://*.example.com`, or `https://port-*.example.com:8443` |
 | `VK_SHARED_API_BASE` | Runtime | Not set | Base URL for the remote/cloud API used by the local desktop app |
 | `VK_SHARED_RELAY_API_BASE` | Runtime | Not set | Base URL for the relay API used by tunnel-mode connections |
 | `VK_TUNNEL` | Runtime | Not set | Enable relay tunnel mode when set (requires relay API base URL) |
@@ -143,6 +143,15 @@ VK_ALLOWED_ORIGINS=https://vk.example.com
 
 # Multiple origins (comma-separated)
 VK_ALLOWED_ORIGINS=https://vk.example.com,https://vk-staging.example.com
+
+# Allow any origin
+VK_ALLOWED_ORIGINS=*
+
+# Allow wildcard subdomains
+VK_ALLOWED_ORIGINS=https://*.example.com
+
+# Allow partial wildcard hostnames
+VK_ALLOWED_ORIGINS=https://port-*.example.com:8443
 ```
 
 ### Remote Deployment

@@ -37,6 +37,86 @@ impl OriginKey {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum AllowedOrigin {
+    Any,
+    Exact(OriginKey),
+    Pattern(OriginPattern),
+}
+
+impl AllowedOrigin {
+    fn from_env_entry(origin: &str) -> Option<Self> {
+        let origin = origin.trim();
+        if origin.is_empty() {
+            return None;
+        }
+        if origin == "*" {
+            return Some(Self::Any);
+        }
+        if origin.contains('*') {
+            return OriginPattern::from_allowed_origin(origin).map(Self::Pattern);
+        }
+        OriginKey::from_origin(origin).map(Self::Exact)
+    }
+
+    fn matches(&self, origin: &OriginKey) -> bool {
+        match self {
+            Self::Any => true,
+            Self::Exact(allowed) => allowed == origin,
+            Self::Pattern(pattern) => pattern.matches(origin),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct OriginPattern {
+    https: bool,
+    host_pattern: String,
+    port: u16,
+}
+
+impl OriginPattern {
+    fn from_allowed_origin(origin: &str) -> Option<Self> {
+        let (scheme, remainder) = origin.split_once("://")?;
+        let https = match scheme {
+            "http" => false,
+            "https" => true,
+            _ => return None,
+        };
+
+        let authority = remainder
+            .split(['/', '?', '#'])
+            .next()
+            .filter(|authority| !authority.is_empty())?;
+
+        if authority.starts_with('[') {
+            return None;
+        }
+
+        let (host_pattern, port) = match authority.rsplit_once(':') {
+            Some((host, port))
+                if !host.is_empty()
+                    && port.chars().all(|ch| ch.is_ascii_digit()) =>
+            {
+                (host, port.parse().ok()?)
+            }
+            _ => (authority, default_port(https)),
+        };
+
+        Some(Self {
+            https,
+            host_pattern: normalize_host(host_pattern),
+            port,
+        })
+    }
+
+    fn matches(&self, origin: &OriginKey) -> bool {
+        self.https == origin.https
+            && self.port == origin.port
+            && wildcard_matches(&self.host_pattern, &origin.host)
+    }
+}
+
 #[allow(clippy::result_large_err)]
 pub fn validate_origin<B>(req: &mut Request<B>) -> Result<(), Response> {
     // Relay-proxied requests are authenticated through the relay's own session
@@ -64,10 +144,7 @@ pub fn validate_origin<B>(req: &mut Request<B>) -> Result<(), Response> {
         return Err(forbidden());
     };
 
-    if allowed_origins()
-        .iter()
-        .any(|allowed| allowed == &origin_key)
-    {
+    if origin_allowed(&origin_key, allowed_origins()) {
         return Ok(());
     }
 
@@ -136,8 +213,47 @@ fn default_port(https: bool) -> u16 {
     if https { 443 } else { 80 }
 }
 
-fn allowed_origins() -> &'static Vec<OriginKey> {
-    static ALLOWED: OnceLock<Vec<OriginKey>> = OnceLock::new();
+fn origin_allowed(origin: &OriginKey, allowed_origins: &[AllowedOrigin]) -> bool {
+    allowed_origins.iter().any(|allowed| allowed.matches(origin))
+}
+
+fn wildcard_matches(pattern: &str, input: &str) -> bool {
+    let pattern = pattern.as_bytes();
+    let input = input.as_bytes();
+    let (mut pattern_idx, mut input_idx) = (0usize, 0usize);
+    let mut star_idx = None;
+    let mut star_match_idx = 0usize;
+
+    while input_idx < input.len() {
+        if pattern_idx < pattern.len()
+            && (pattern[pattern_idx] == b'*' || pattern[pattern_idx] == input[input_idx])
+        {
+            if pattern[pattern_idx] == b'*' {
+                star_idx = Some(pattern_idx);
+                star_match_idx = input_idx;
+                pattern_idx += 1;
+            } else {
+                pattern_idx += 1;
+                input_idx += 1;
+            }
+        } else if let Some(star_idx_value) = star_idx {
+            pattern_idx = star_idx_value + 1;
+            star_match_idx += 1;
+            input_idx = star_match_idx;
+        } else {
+            return false;
+        }
+    }
+
+    while pattern_idx < pattern.len() && pattern[pattern_idx] == b'*' {
+        pattern_idx += 1;
+    }
+
+    pattern_idx == pattern.len()
+}
+
+fn allowed_origins() -> &'static Vec<AllowedOrigin> {
+    static ALLOWED: OnceLock<Vec<AllowedOrigin>> = OnceLock::new();
     ALLOWED.get_or_init(|| {
         let value = match std::env::var("VK_ALLOWED_ORIGINS") {
             Ok(value) => value,
@@ -146,7 +262,7 @@ fn allowed_origins() -> &'static Vec<OriginKey> {
 
         value
             .split(',')
-            .filter_map(|origin| OriginKey::from_origin(origin.trim()))
+            .filter_map(AllowedOrigin::from_env_entry)
             .collect()
     })
 }
@@ -256,5 +372,61 @@ mod tests {
         // Explicit default port matches implicit
         let mut req = make_request(Some("http://example.com:80"), Some("example.com"));
         assert!(validate_origin(&mut req).is_ok());
+    }
+
+    #[test]
+    fn wildcard_entry_allows_any_origin() {
+        let origin = OriginKey::from_origin("https://example.com").unwrap();
+        assert!(origin_allowed(&origin, &[AllowedOrigin::Any]));
+    }
+
+    #[test]
+    fn wildcard_subdomain_entry_matches_expected_hosts() {
+        let allowed = AllowedOrigin::from_env_entry("https://*.mydomain.com")
+            .unwrap();
+
+        assert!(allowed.matches(
+            &OriginKey::from_origin("https://api.mydomain.com").unwrap()
+        ));
+        assert!(allowed.matches(
+            &OriginKey::from_origin("https://deep.api.mydomain.com").unwrap()
+        ));
+        assert!(!allowed.matches(
+            &OriginKey::from_origin("https://mydomain.com").unwrap()
+        ));
+        assert!(!allowed.matches(
+            &OriginKey::from_origin("http://api.mydomain.com").unwrap()
+        ));
+    }
+
+    #[test]
+    fn wildcard_partial_host_entry_matches_expected_hosts() {
+        let allowed = AllowedOrigin::from_env_entry(
+            "https://port-*.mydomain.com:8443",
+        )
+        .unwrap();
+
+        assert!(allowed.matches(
+            &OriginKey::from_origin("https://port-preview.mydomain.com:8443")
+                .unwrap()
+        ));
+        assert!(!allowed.matches(
+            &OriginKey::from_origin("https://preview.mydomain.com:8443").unwrap()
+        ));
+        assert!(!allowed.matches(
+            &OriginKey::from_origin("https://port-preview.mydomain.com").unwrap()
+        ));
+    }
+
+    #[test]
+    fn wildcard_matcher_supports_multiple_stars() {
+        assert!(wildcard_matches(
+            "port-*-preview-*.mydomain.com",
+            "port-123-preview-abc.mydomain.com"
+        ));
+        assert!(!wildcard_matches(
+            "port-*-preview-*.mydomain.com",
+            "port-123.mydomain.com"
+        ));
     }
 }
