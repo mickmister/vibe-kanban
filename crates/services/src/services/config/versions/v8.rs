@@ -32,10 +32,60 @@ pub enum SendMessageShortcut {
     Enter,
 }
 
+#[derive(Clone, Debug, Default, Serialize, Deserialize, TS, PartialEq, Eq)]
+pub enum AppFontFamily {
+    #[default]
+    IbmPlexSans,
+    Inter,
+    SpaceGrotesk,
+    SystemUi,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, TS, PartialEq, Eq)]
+pub enum MonospaceFontFamily {
+    #[default]
+    IbmPlexMono,
+    JetBrainsMono,
+    FiraCode,
+    SourceCodePro,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, TS, PartialEq, Eq)]
+pub struct ThemePalette {
+    #[serde(default)]
+    pub bg_primary: Option<String>,
+    #[serde(default)]
+    pub bg_secondary: Option<String>,
+    #[serde(default)]
+    pub bg_panel: Option<String>,
+    #[serde(default)]
+    pub text_high: Option<String>,
+    #[serde(default)]
+    pub text_normal: Option<String>,
+    #[serde(default)]
+    pub text_low: Option<String>,
+    #[serde(default)]
+    pub brand: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, TS, PartialEq, Eq)]
+pub struct AppearanceSettings {
+    #[serde(default)]
+    pub sans_font: AppFontFamily,
+    #[serde(default)]
+    pub mono_font: MonospaceFontFamily,
+    #[serde(default)]
+    pub light_palette: ThemePalette,
+    #[serde(default)]
+    pub dark_palette: ThemePalette,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, TS)]
 pub struct Config {
     pub config_version: String,
     pub theme: ThemeMode,
+    #[serde(default)]
+    pub appearance: AppearanceSettings,
     pub executor_profile: ExecutorProfileId,
     pub disclaimer_acknowledged: bool,
     pub onboarding_acknowledged: bool,
@@ -78,6 +128,7 @@ impl Config {
         Self {
             config_version: "v8".to_string(),
             theme: old_config.theme,
+            appearance: AppearanceSettings::default(),
             executor_profile: old_config.executor_profile,
             disclaimer_acknowledged: old_config.disclaimer_acknowledged,
             onboarding_acknowledged: old_config.onboarding_acknowledged,
@@ -134,6 +185,7 @@ impl Default for Config {
         Self {
             config_version: "v8".to_string(),
             theme: ThemeMode::System,
+            appearance: AppearanceSettings::default(),
             executor_profile: ExecutorProfileId::new(BaseCodingAgent::ClaudeCode),
             disclaimer_acknowledged: false,
             onboarding_acknowledged: false,
