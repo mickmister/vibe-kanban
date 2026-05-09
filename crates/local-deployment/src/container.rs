@@ -565,7 +565,7 @@ impl LocalContainerService {
                     ExecutionProcessStatus::Running
                 );
 
-                let mut already_finalized = false;
+                let mut skipped_cleanup_no_changes = false;
 
                 if success || cleanup_done {
                     // Commit changes (if any) and get feedback about whether changes were made
@@ -602,14 +602,13 @@ impl LocalContainerService {
                             "Skipping cleanup script for workspace {} - no changes made by coding agent",
                             ctx.workspace.id
                         );
-
-                        // Manually finalize task since we're bypassing normal execution flow
-                        container.finalize_task(&ctx).await;
-                        already_finalized = true;
+                        // Force the finalize block below to run so any queued
+                        // follow-up still gets consumed even when cleanup is skipped.
+                        skipped_cleanup_no_changes = true;
                     }
                 }
 
-                if !already_finalized && container.should_finalize(&ctx) {
+                if skipped_cleanup_no_changes || container.should_finalize(&ctx) {
                     let has_chained_follow_up = ctx
                         .execution_process
                         .executor_action()
