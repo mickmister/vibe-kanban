@@ -135,9 +135,8 @@ pub async fn start_with_bind(
 pub async fn initialize_deployment(
     shutdown: CancellationToken,
 ) -> Result<DeploymentImpl, DeploymentError> {
-    validate_allowed_origins_config().map_err(|error| {
-        DeploymentError::Other(anyhow::anyhow!(error))
-    })?;
+    validate_allowed_origins_config()
+        .map_err(|error| DeploymentError::Other(anyhow::anyhow!(error)))?;
 
     // Create asset directory if it doesn't exist
     if !asset_dir().exists() {

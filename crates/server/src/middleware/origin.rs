@@ -408,41 +408,32 @@ mod tests {
             .unwrap()
             .unwrap();
 
-        assert!(allowed.matches(
-            &OriginKey::from_origin("https://api.mydomain.com").unwrap()
-        ));
+        assert!(allowed.matches(&OriginKey::from_origin("https://api.mydomain.com").unwrap()));
         assert!(allowed.matches(
             &OriginKey::from_origin("https://deep.api.mydomain.com").unwrap()
         ));
-        assert!(!allowed.matches(
-            &OriginKey::from_origin("https://mydomain.com").unwrap()
-        ));
-        assert!(!allowed.matches(
-            &OriginKey::from_origin("https://api.mydomain.co").unwrap()
-        ));
-        assert!(!allowed.matches(
-            &OriginKey::from_origin("http://api.mydomain.com").unwrap()
-        ));
+        assert!(!allowed.matches(&OriginKey::from_origin("https://mydomain.com").unwrap()));
+        assert!(!allowed.matches(&OriginKey::from_origin("https://api.mydomain.co").unwrap()));
+        assert!(!allowed.matches(&OriginKey::from_origin("http://api.mydomain.com").unwrap()));
     }
 
     #[test]
     fn wildcard_partial_host_entry_matches_expected_hosts() {
-        let allowed = AllowedOrigin::from_env_entry(
-            "https://port-*.mydomain.com:8443",
-        )
-        .unwrap()
-        .unwrap();
+        let allowed = AllowedOrigin::from_env_entry("https://port-*.mydomain.com:8443")
+            .unwrap()
+            .unwrap();
 
-        assert!(allowed.matches(
-            &OriginKey::from_origin("https://port-preview.mydomain.com:8443")
-                .unwrap()
-        ));
-        assert!(!allowed.matches(
-            &OriginKey::from_origin("https://preview.mydomain.com:8443").unwrap()
-        ));
-        assert!(!allowed.matches(
-            &OriginKey::from_origin("https://port-preview.mydomain.com").unwrap()
-        ));
+        assert!(
+            allowed.matches(
+                &OriginKey::from_origin("https://port-preview.mydomain.com:8443").unwrap()
+            )
+        );
+        assert!(
+            !allowed.matches(&OriginKey::from_origin("https://preview.mydomain.com:8443").unwrap())
+        );
+        assert!(
+            !allowed.matches(&OriginKey::from_origin("https://port-preview.mydomain.com").unwrap())
+        );
     }
 
     #[test]
@@ -459,20 +450,17 @@ mod tests {
 
     #[test]
     fn parse_allowed_origins_rejects_invalid_entries() {
-        let error = parse_allowed_origins(
-            "https://vk.example.com,https://port-*.example.com:abc",
-        )
-        .unwrap_err();
+        let error = parse_allowed_origins("https://vk.example.com,https://port-*.example.com:abc")
+            .unwrap_err();
 
         assert!(error.contains("https://port-*.example.com:abc"));
     }
 
     #[test]
     fn parse_allowed_origins_allows_empty_entries_between_commas() {
-        let origins = parse_allowed_origins(
-            "https://vk.example.com, ,https://port-*.example.com:8443",
-        )
-        .unwrap();
+        let origins =
+            parse_allowed_origins("https://vk.example.com, ,https://port-*.example.com:8443")
+                .unwrap();
 
         assert_eq!(origins.len(), 2);
     }
