@@ -151,9 +151,11 @@ VK_ALLOWED_ORIGINS=https://*.example.com
 VK_ALLOWED_ORIGINS=https://port-*.example.com:8443
 ```
 
-Wildcard matching is applied to the full hostname portion of the origin. For example,
-`https://*.example.com` matches both `https://api.example.com` and
-`https://deep.api.example.com`, but not `https://example.com`.
+Wildcard matching is label-scoped within the hostname. For example,
+`https://*.example.com` matches `https://api.example.com`, but not
+`https://deep.api.example.com` or `https://example.com`. Origins must not include
+paths, queries, fragments, or userinfo. Bare `*` and overly broad wildcard
+patterns like `https://*` or `https://*.com` are rejected.
 
 ### Remote Deployment
 
