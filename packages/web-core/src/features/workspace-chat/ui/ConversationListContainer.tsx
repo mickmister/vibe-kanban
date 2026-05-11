@@ -3,6 +3,7 @@ import {
   useCallback,
   useEffect,
   useImperativeHandle,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -18,6 +19,7 @@ import {
 } from '../model/conversation-row-model';
 import { deriveConversationEntries } from '../model/deriveConversationEntries';
 import { deriveConversationTimeline } from '../model/deriveConversationTimeline';
+import { NEAR_BOTTOM_THRESHOLD_PX } from '../model/conversation-scroll-commands';
 import { useConversationVirtualizer } from '../model/useConversationVirtualizer';
 import { useScrollCommandExecutor } from '../model/useScrollCommandExecutor';
 
@@ -65,6 +67,17 @@ export interface ConversationListHandle {
 
 const ALWAYS_UNVIRTUALIZED_TAIL_ROWS = 8;
 const STREAMING_UNVIRTUALIZED_BUFFER_ROWS = 24;
+
+type PendingViewportAnchor =
+  | {
+      mode: 'bottom';
+      distanceFromBottom: number;
+    }
+  | {
+      mode: 'row';
+      semanticKey: string;
+      top: number;
+    };
 
 function renderRowContent(
   entry: DisplayEntry,
@@ -193,6 +206,9 @@ export const ConversationList = forwardRef<
   } | null>(null);
   const pendingInteractionAnchorFrameRef = useRef<number | null>(null);
   const pendingInteractionAnchorDeadlineRef = useRef(0);
+  const pendingViewportAnchorRef = useRef<PendingViewportAnchor | null>(null);
+  const pendingViewportAnchorFrameRef = useRef<number | null>(null);
+  const pendingViewportAnchorDeadlineRef = useRef(0);
 
   // Use ref to access current repos without causing callback recreation
   const reposRef = useRef(repos);
@@ -240,6 +256,12 @@ export const ConversationList = forwardRef<
     if (planRevealSpacerRef.current) {
       planRevealSpacerRef.current.style.height = '0px';
     }
+    if (pendingViewportAnchorFrameRef.current !== null) {
+      cancelAnimationFrame(pendingViewportAnchorFrameRef.current);
+      pendingViewportAnchorFrameRef.current = null;
+    }
+    pendingViewportAnchorRef.current = null;
+    pendingViewportAnchorDeadlineRef.current = 0;
     setLoading(true);
     setHasSetupScriptRun(false);
     setHasCleanupScriptRun(false);
@@ -254,6 +276,9 @@ export const ConversationList = forwardRef<
     return () => {
       if (rafIdRef.current !== null) {
         cancelAnimationFrame(rafIdRef.current);
+      }
+      if (pendingViewportAnchorFrameRef.current !== null) {
+        cancelAnimationFrame(pendingViewportAnchorFrameRef.current);
       }
     };
   }, []);
@@ -275,10 +300,72 @@ export const ConversationList = forwardRef<
   const shouldSuppressInteractionDrivenSizeAdjustment = useCallback(
     () =>
       performance.now() < programmaticScrollDeadlineRef.current ||
+      performance.now() < pendingViewportAnchorDeadlineRef.current ||
       (pendingInteractionAnchorRef.current !== null &&
         performance.now() < pendingInteractionAnchorDeadlineRef.current),
     []
   );
+
+  const clearPendingViewportAnchor = useCallback(() => {
+    if (pendingViewportAnchorFrameRef.current !== null) {
+      cancelAnimationFrame(pendingViewportAnchorFrameRef.current);
+      pendingViewportAnchorFrameRef.current = null;
+    }
+    pendingViewportAnchorRef.current = null;
+    pendingViewportAnchorDeadlineRef.current = 0;
+  }, []);
+
+  const findRowNodeBySemanticKey = useCallback(
+    (semanticKey: string): HTMLElement | null => {
+      const scrollContainer = tanstackScrollRef.current;
+      if (!scrollContainer) return null;
+
+      return (
+        Array.from(
+          scrollContainer.querySelectorAll<HTMLElement>('[data-semantic-key]')
+        ).find((node) => node.dataset.semanticKey === semanticKey) ?? null
+      );
+    },
+    []
+  );
+
+  const captureHistoricViewportAnchor = useCallback(() => {
+    const scrollContainer = tanstackScrollRef.current;
+    if (!scrollContainer) return;
+
+    const { scrollTop, clientHeight, scrollHeight } = scrollContainer;
+    const distanceFromBottom = scrollHeight - clientHeight - scrollTop;
+
+    if (distanceFromBottom <= NEAR_BOTTOM_THRESHOLD_PX) {
+      pendingViewportAnchorRef.current = {
+        mode: 'bottom',
+        distanceFromBottom: Math.max(0, distanceFromBottom),
+      };
+      pendingViewportAnchorDeadlineRef.current = performance.now() + 250;
+      return;
+    }
+
+    const containerTop = scrollContainer.getBoundingClientRect().top;
+    const firstVisibleRow =
+      Array.from(
+        scrollContainer.querySelectorAll<HTMLElement>('[data-semantic-key]')
+      ).find(
+        (node) => node.getBoundingClientRect().bottom > containerTop + 1
+      ) ?? null;
+
+    if (!firstVisibleRow?.dataset.semanticKey) {
+      pendingViewportAnchorRef.current = null;
+      pendingViewportAnchorDeadlineRef.current = 0;
+      return;
+    }
+
+    pendingViewportAnchorRef.current = {
+      mode: 'row',
+      semanticKey: firstVisibleRow.dataset.semanticKey,
+      top: firstVisibleRow.getBoundingClientRect().top,
+    };
+    pendingViewportAnchorDeadlineRef.current = performance.now() + 250;
+  }, []);
 
   const runInteractionAnchorCorrection = useCallback(() => {
     pendingInteractionAnchorFrameRef.current = null;
@@ -337,6 +424,12 @@ export const ConversationList = forwardRef<
     rafIdRef.current = null;
     const pending = pendingUpdateRef.current;
     if (!pending) return;
+
+    if (pending.addType === 'historic') {
+      captureHistoricViewportAnchor();
+    } else {
+      clearPendingViewportAnchor();
+    }
 
     const derivedEntries = deriveConversationEntries({
       source: pending.source,
@@ -537,9 +630,10 @@ export const ConversationList = forwardRef<
       if (planRevealSpacerRef.current) {
         planRevealSpacerRef.current.style.height = '0px';
       }
+      clearPendingViewportAnchor();
       conversationVirtualizer.scrollToBottom(behavior);
     },
-    [conversationVirtualizer]
+    [clearPendingViewportAnchor, conversationVirtualizer]
   );
 
   const scrollExecutor = useScrollCommandExecutor({
@@ -752,8 +846,92 @@ export const ConversationList = forwardRef<
   useEffect(() => {
     return () => {
       clearPendingInteractionAnchor();
+      clearPendingViewportAnchor();
     };
-  }, [clearPendingInteractionAnchor]);
+  }, [clearPendingInteractionAnchor, clearPendingViewportAnchor]);
+
+  useLayoutEffect(() => {
+    const anchor = pendingViewportAnchorRef.current;
+    if (!anchor) return;
+
+    const runViewportAnchorCorrection = () => {
+      pendingViewportAnchorFrameRef.current = null;
+
+      const scrollContainer = tanstackScrollRef.current;
+      const activeAnchor = pendingViewportAnchorRef.current;
+      if (!scrollContainer || !activeAnchor) {
+        clearPendingViewportAnchor();
+        return;
+      }
+
+      programmaticScrollDeadlineRef.current = Math.max(
+        programmaticScrollDeadlineRef.current,
+        performance.now() + 150
+      );
+
+      if (activeAnchor.mode === 'bottom') {
+        const maxScrollTop = Math.max(
+          0,
+          scrollContainer.scrollHeight - scrollContainer.clientHeight
+        );
+        const targetScrollTop = Math.max(
+          0,
+          maxScrollTop - activeAnchor.distanceFromBottom
+        );
+        const delta = targetScrollTop - scrollContainer.scrollTop;
+
+        if (Math.abs(delta) >= 0.5) {
+          scrollContainer.scrollTop = targetScrollTop;
+        }
+
+        if (performance.now() < pendingViewportAnchorDeadlineRef.current) {
+          pendingViewportAnchorFrameRef.current = requestAnimationFrame(
+            runViewportAnchorCorrection
+          );
+          return;
+        }
+
+        clearPendingViewportAnchor();
+        return;
+      }
+
+      const anchorNode = findRowNodeBySemanticKey(activeAnchor.semanticKey);
+      if (!anchorNode) {
+        if (performance.now() < pendingViewportAnchorDeadlineRef.current) {
+          pendingViewportAnchorFrameRef.current = requestAnimationFrame(
+            runViewportAnchorCorrection
+          );
+          return;
+        }
+
+        clearPendingViewportAnchor();
+        return;
+      }
+
+      const delta = anchorNode.getBoundingClientRect().top - activeAnchor.top;
+      if (Math.abs(delta) >= 0.5) {
+        scrollContainer.scrollTop += delta;
+      }
+
+      if (performance.now() < pendingViewportAnchorDeadlineRef.current) {
+        pendingViewportAnchorFrameRef.current = requestAnimationFrame(
+          runViewportAnchorCorrection
+        );
+        return;
+      }
+
+      clearPendingViewportAnchor();
+    };
+
+    runViewportAnchorCorrection();
+  }, [
+    clearPendingViewportAnchor,
+    dataVersion,
+    findRowNodeBySemanticKey,
+    firstUnvirtualizedRowIndex,
+    totalSize,
+    virtualItems,
+  ]);
 
   return (
     <ApprovalFormProvider>
