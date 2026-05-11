@@ -1,5 +1,5 @@
-import type { KeyboardEvent, ReactNode } from 'react';
-import { useEffect, useRef } from 'react';
+import type { KeyboardEvent, ReactNode, RefObject } from 'react';
+import { Virtuoso, VirtuosoHandle } from 'react-virtuoso';
 import { cn } from '../lib/cn';
 import {
   DropdownMenu,
@@ -42,6 +42,9 @@ interface SearchableDropdownProps<T> {
   /** Keyboard handler */
   onKeyDown: (e: KeyboardEvent) => void;
 
+  /** Virtuoso ref for scrolling */
+  virtuosoRef: RefObject<VirtuosoHandle | null>;
+
   /** Class name for dropdown content */
   contentClassName?: string;
   /** Placeholder text for search input */
@@ -70,22 +73,13 @@ export function SearchableDropdown<T>({
   open,
   onOpenChange,
   onKeyDown,
+  virtuosoRef,
   contentClassName,
   placeholder = 'Search',
   emptyMessage = 'No items found',
   getItemBadge,
   getItemIcon,
 }: SearchableDropdownProps<T>) {
-  const itemRefs = useRef<Array<HTMLElement | null>>([]);
-
-  useEffect(() => {
-    if (highlightedIndex == null) return;
-    itemRefs.current[highlightedIndex]?.scrollIntoView({
-      block: 'nearest',
-      inline: 'nearest',
-    });
-  }, [highlightedIndex]);
-
   return (
     <DropdownMenu open={open} onOpenChange={onOpenChange}>
       <DropdownMenuTrigger asChild>{trigger}</DropdownMenuTrigger>
@@ -102,17 +96,20 @@ export function SearchableDropdown<T>({
             {emptyMessage}
           </div>
         ) : (
-          <div className="max-h-64 overflow-y-auto">
-            {filteredItems.map((item, idx) => {
+          <Virtuoso
+            ref={virtuosoRef as RefObject<VirtuosoHandle>}
+            style={{ height: '16rem' }}
+            totalCount={filteredItems.length}
+            computeItemKey={(idx: number) =>
+              getItemKey(filteredItems[idx]) ?? String(idx)
+            }
+            itemContent={(idx: number) => {
+              const item = filteredItems[idx];
               const key = getItemKey(item);
               const isHighlighted = idx === highlightedIndex;
               const isSelected = selectedValue === key;
               return (
                 <DropdownMenuItem
-                  key={key || String(idx)}
-                  ref={(element) => {
-                    itemRefs.current[idx] = element;
-                  }}
                   onSelect={() => onSelect(item)}
                   onMouseEnter={() => onHighlightedIndexChange(idx)}
                   preventFocusOnHover
@@ -126,8 +123,8 @@ export function SearchableDropdown<T>({
                   {getItemLabel(item)}
                 </DropdownMenuItem>
               );
-            })}
-          </div>
+            }}
+          />
         )}
       </DropdownMenuContent>
     </DropdownMenu>

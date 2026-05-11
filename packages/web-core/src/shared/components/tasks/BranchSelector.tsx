@@ -1,4 +1,5 @@
 import { useState, useMemo, useRef, useEffect, useCallback, memo } from 'react';
+import { Virtuoso, VirtuosoHandle } from 'react-virtuoso';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@vibe/ui/components/Button';
 import { ArrowDown, GitBranch as GitBranchIcon, Search } from 'lucide-react';
@@ -36,7 +37,6 @@ type RowProps = {
   onHover: () => void;
   onSelect: () => void;
   disabledTooltip?: string;
-  itemRef?: (element: HTMLDivElement | null) => void;
 };
 
 const BranchRow = memo(function BranchRow({
@@ -47,7 +47,6 @@ const BranchRow = memo(function BranchRow({
   onHover,
   onSelect,
   disabledTooltip,
-  itemRef,
 }: RowProps) {
   const { t } = useTranslation(['common']);
   const classes =
@@ -60,7 +59,6 @@ const BranchRow = memo(function BranchRow({
 
   const item = (
     <DropdownMenuItem
-      ref={itemRef}
       onMouseEnter={onHover}
       onSelect={onSelect}
       disabled={isDisabled}
@@ -116,7 +114,7 @@ function BranchSelector({
   const [highlightedIndex, setHighlightedIndex] = useState<number | null>(null);
   const [open, setOpen] = useState(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
-  const itemRefs = useRef<Array<HTMLDivElement | null>>([]);
+  const virtuosoRef = useRef<VirtuosoHandle>(null);
 
   const effectivePlaceholder = placeholder ?? t('branchSelector.placeholder');
   const defaultDisabledTooltip = t('branchSelector.currentDisabled');
@@ -159,14 +157,6 @@ function BranchSelector({
     setHighlightedIndex(null);
   }, [branchSearchTerm]);
 
-  useEffect(() => {
-    if (highlightedIndex == null) return;
-    itemRefs.current[highlightedIndex]?.scrollIntoView({
-      block: 'nearest',
-      inline: 'nearest',
-    });
-  }, [highlightedIndex]);
-
   const moveHighlight = useCallback(
     (delta: 1 | -1) => {
       if (filteredBranches.length === 0) return;
@@ -179,6 +169,10 @@ function BranchSelector({
           (next + delta + filteredBranches.length) % filteredBranches.length;
         if (!isBranchDisabled(filteredBranches[next])) {
           setHighlightedIndex(next);
+          virtuosoRef.current?.scrollIntoView({
+            index: next,
+            behavior: 'auto',
+          });
           return;
         }
       }
@@ -275,15 +269,19 @@ function BranchSelector({
               {t('branchSelector.empty')}
             </div>
           ) : (
-            <div className="max-h-64 overflow-y-auto">
-              {filteredBranches.map((branch, idx) => {
+            <Virtuoso
+              ref={virtuosoRef}
+              style={{ height: '16rem' }}
+              totalCount={filteredBranches.length}
+              computeItemKey={(idx) => filteredBranches[idx]?.name ?? idx}
+              itemContent={(idx) => {
+                const branch = filteredBranches[idx];
                 const isDisabled = isBranchDisabled(branch);
                 const isHighlighted = idx === highlightedIndex;
                 const isSelected = selectedBranch === branch.name;
 
                 return (
                   <BranchRow
-                    key={branch.name}
                     branch={branch}
                     isSelected={isSelected}
                     isDisabled={isDisabled}
@@ -295,13 +293,10 @@ function BranchSelector({
                         ? (disabledTooltip ?? defaultDisabledTooltip)
                         : undefined
                     }
-                    itemRef={(element) => {
-                      itemRefs.current[idx] = element;
-                    }}
                   />
                 );
-              })}
-            </div>
+              }}
+            />
           )}
         </DropdownMenuContent>
       </TooltipProvider>

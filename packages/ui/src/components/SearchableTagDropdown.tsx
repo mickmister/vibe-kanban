@@ -1,4 +1,5 @@
-import { useEffect, useRef, type RefObject } from 'react';
+import type { RefObject } from 'react';
+import { Virtuoso, VirtuosoHandle } from 'react-virtuoso';
 import { cn } from '../lib/cn';
 import { useTranslation } from 'react-i18next';
 import { PlusIcon, CheckIcon } from '@phosphor-icons/react';
@@ -41,6 +42,9 @@ interface SearchableTagDropdownProps {
   // Keyboard handler
   onKeyDown: (e: React.KeyboardEvent) => void;
 
+  // Virtuoso ref
+  virtuosoRef: RefObject<VirtuosoHandle | null>;
+
   // Create flow
   showCreateOption: boolean;
   createOptionHighlighted: boolean;
@@ -70,6 +74,7 @@ export function SearchableTagDropdown({
   open,
   onOpenChange,
   onKeyDown,
+  virtuosoRef,
   showCreateOption,
   createOptionHighlighted,
   isCreating,
@@ -83,15 +88,6 @@ export function SearchableTagDropdown({
   disabled,
 }: SearchableTagDropdownProps) {
   const { t } = useTranslation('common');
-  const itemRefs = useRef<Array<HTMLButtonElement | null>>([]);
-
-  useEffect(() => {
-    if (highlightedIndex == null) return;
-    itemRefs.current[highlightedIndex]?.scrollIntoView({
-      block: 'nearest',
-      inline: 'nearest',
-    });
-  }, [highlightedIndex]);
 
   return (
     <DropdownMenu open={open} onOpenChange={onOpenChange}>
@@ -156,21 +152,19 @@ export function SearchableTagDropdown({
             ) : (
               <>
                 {filteredTags.length > 0 && (
-                  <div
-                    className="overflow-y-auto"
-                    style={{
-                      maxHeight: Math.min(filteredTags.length * 36, 200),
-                    }}
-                  >
-                    {filteredTags.map((tag, idx) => {
+                  <Virtuoso
+                    ref={virtuosoRef as React.RefObject<VirtuosoHandle>}
+                    style={{ height: Math.min(filteredTags.length * 36, 200) }}
+                    totalCount={filteredTags.length}
+                    computeItemKey={(idx) =>
+                      filteredTags[idx]?.id ?? String(idx)
+                    }
+                    itemContent={(idx) => {
+                      const tag = filteredTags[idx];
                       const isSelected = selectedTagIds.includes(tag.id);
                       const isHighlighted = idx === highlightedIndex;
                       return (
                         <button
-                          key={tag.id}
-                          ref={(element) => {
-                            itemRefs.current[idx] = element;
-                          }}
                           type="button"
                           onClick={() => onTagToggle(tag.id)}
                           onMouseEnter={() => onHighlightedIndexChange(idx)}
@@ -193,8 +187,8 @@ export function SearchableTagDropdown({
                           )}
                         </button>
                       );
-                    })}
-                  </div>
+                    }}
+                  />
                 )}
                 {showCreateOption && (
                   <>

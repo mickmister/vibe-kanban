@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react';
-import { useState, useMemo, useCallback } from 'react';
+import { useState, useMemo, useCallback, useRef } from 'react';
+import { VirtuosoHandle } from 'react-virtuoso';
 import { SearchableDropdown } from '@vibe/ui/components/SearchableDropdown';
 
 interface SearchableDropdownContainerProps<T> {
@@ -52,6 +53,7 @@ export function SearchableDropdownContainer<T>({
   const [searchTerm, setSearchTerm] = useState('');
   const [highlightedIndex, setHighlightedIndex] = useState<number | null>(null);
   const [dropdownOpen, setDropdownOpen] = useState(false);
+  const virtuosoRef = useRef<VirtuosoHandle>(null);
 
   const filteredItems = useMemo(() => {
     if (!searchTerm.trim()) return items;
@@ -83,8 +85,9 @@ export function SearchableDropdownContainer<T>({
       const next =
         (start + delta + filteredItems.length) % filteredItems.length;
       setHighlightedIndex(next);
+      virtuosoRef.current?.scrollIntoView({ index: next, behavior: 'auto' });
     },
-    [filteredItems.length, safeHighlightedIndex]
+    [filteredItems, safeHighlightedIndex]
   );
 
   const attemptSelect = useCallback(() => {
@@ -158,6 +161,7 @@ export function SearchableDropdownContainer<T>({
       open={dropdownOpen}
       onOpenChange={handleOpenChange}
       onKeyDown={handleKeyDown}
+      virtuosoRef={virtuosoRef}
       contentClassName={contentClassName}
       placeholder={placeholder}
       emptyMessage={emptyMessage}

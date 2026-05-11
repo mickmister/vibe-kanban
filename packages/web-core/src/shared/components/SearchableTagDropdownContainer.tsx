@@ -1,4 +1,5 @@
 import { useState, useMemo, useCallback, useRef, useEffect } from 'react';
+import { VirtuosoHandle } from 'react-virtuoso';
 import type { Tag } from 'shared/remote-types';
 import {
   SearchableTagDropdown,
@@ -29,6 +30,7 @@ export function SearchableTagDropdownContainer({
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [isCreating, setIsCreating] = useState(false);
   const [colorIndex, setColorIndex] = useState(0);
+  const virtuosoRef = useRef<VirtuosoHandle>(null);
   const colorPickerRef = useRef<HTMLDivElement>(null);
 
   // Auto-focus color picker when entering create mode
@@ -81,8 +83,9 @@ export function SearchableTagDropdownContainer({
       const start = safeHighlightedIndex ?? -1;
       const next = (start + delta + filteredTags.length) % filteredTags.length;
       setHighlightedIndex(next);
+      virtuosoRef.current?.scrollIntoView({ index: next, behavior: 'auto' });
     },
-    [filteredTags.length, safeHighlightedIndex]
+    [filteredTags, safeHighlightedIndex]
   );
 
   const attemptToggle = useCallback(() => {
@@ -225,6 +228,7 @@ export function SearchableTagDropdownContainer({
       open={dropdownOpen}
       onOpenChange={handleOpenChange}
       onKeyDown={handleKeyDown}
+      virtuosoRef={virtuosoRef}
       showCreateOption={showCreateOption}
       createOptionHighlighted={createOptionHighlighted}
       isCreating={isCreating}
