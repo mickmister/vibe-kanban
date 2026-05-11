@@ -265,10 +265,7 @@ fn parse_allowed_origins(value: &str) -> Result<Vec<AllowedOrigin>, String> {
     value
         .split(',')
         .map(AllowedOrigin::from_env_entry)
-        .filter_map(|result| match result {
-            Ok(None) => None,
-            other => Some(other),
-        })
+        .filter_map(Result::transpose)
         .collect()
 }
 
@@ -408,6 +405,7 @@ mod tests {
     #[test]
     fn wildcard_subdomain_entry_matches_expected_hosts() {
         let allowed = AllowedOrigin::from_env_entry("https://*.mydomain.com")
+            .unwrap()
             .unwrap();
 
         assert!(allowed.matches(
@@ -432,6 +430,7 @@ mod tests {
         let allowed = AllowedOrigin::from_env_entry(
             "https://port-*.mydomain.com:8443",
         )
+        .unwrap()
         .unwrap();
 
         assert!(allowed.matches(
