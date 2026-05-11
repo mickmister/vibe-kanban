@@ -39,7 +39,6 @@ impl OriginKey {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum AllowedOrigin {
-    Any,
     Exact(OriginKey),
     Pattern(OriginPattern),
 }
@@ -50,9 +49,6 @@ impl AllowedOrigin {
         if origin.is_empty() {
             return None;
         }
-        if origin == "*" {
-            return Some(Self::Any);
-        }
         if origin.contains('*') {
             return OriginPattern::from_allowed_origin(origin).map(Self::Pattern);
         }
@@ -61,7 +57,6 @@ impl AllowedOrigin {
 
     fn matches(&self, origin: &OriginKey) -> bool {
         match self {
-            Self::Any => true,
             Self::Exact(allowed) => allowed == origin,
             Self::Pattern(pattern) => pattern.matches(origin),
         }
@@ -375,9 +370,8 @@ mod tests {
     }
 
     #[test]
-    fn wildcard_entry_allows_any_origin() {
-        let origin = OriginKey::from_origin("https://example.com").unwrap();
-        assert!(origin_allowed(&origin, &[AllowedOrigin::Any]));
+    fn bare_star_entry_is_rejected() {
+        assert_eq!(AllowedOrigin::from_env_entry("*"), None);
     }
 
     #[test]
@@ -393,6 +387,9 @@ mod tests {
         ));
         assert!(!allowed.matches(
             &OriginKey::from_origin("https://mydomain.com").unwrap()
+        ));
+        assert!(!allowed.matches(
+            &OriginKey::from_origin("https://api.mydomain.co").unwrap()
         ));
         assert!(!allowed.matches(
             &OriginKey::from_origin("http://api.mydomain.com").unwrap()
