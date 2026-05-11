@@ -52,8 +52,7 @@ async fn main() -> Result<(), VibeKanbanError> {
         .with(sentry_layer())
         .init();
 
-    validate_allowed_origins_config()
-        .map_err(|error| AnyhowError::msg(error))?;
+    validate_allowed_origins_config().map_err(AnyhowError::msg)?;
 
     // Create asset directory if it doesn't exist
     if !asset_dir().exists() {

@@ -95,13 +95,13 @@ impl OriginPattern {
         }
 
         let (host_pattern, port) = match authority.rsplit_once(':') {
-            Some((host, port))
-                if !host.is_empty()
-                    && port.chars().all(|ch| ch.is_ascii_digit()) =>
-            {
+            Some((host, port)) => {
+                if host.is_empty() || !port.chars().all(|ch| ch.is_ascii_digit()) {
+                    return None;
+                }
                 (host, port.parse().ok()?)
             }
-            _ => (authority, default_port(https)),
+            None => (authority, default_port(https)),
         };
 
         Some(Self {
