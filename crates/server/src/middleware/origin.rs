@@ -223,7 +223,9 @@ fn default_port(https: bool) -> u16 {
 }
 
 fn origin_allowed(origin: &OriginKey, allowed_origins: &[AllowedOrigin]) -> bool {
-    allowed_origins.iter().any(|allowed| allowed.matches(origin))
+    allowed_origins
+        .iter()
+        .any(|allowed| allowed.matches(origin))
 }
 
 fn wildcard_matches(pattern: &str, input: &str) -> bool {
@@ -409,9 +411,7 @@ mod tests {
             .unwrap();
 
         assert!(allowed.matches(&OriginKey::from_origin("https://api.mydomain.com").unwrap()));
-        assert!(allowed.matches(
-            &OriginKey::from_origin("https://deep.api.mydomain.com").unwrap()
-        ));
+        assert!(allowed.matches(&OriginKey::from_origin("https://deep.api.mydomain.com").unwrap()));
         assert!(!allowed.matches(&OriginKey::from_origin("https://mydomain.com").unwrap()));
         assert!(!allowed.matches(&OriginKey::from_origin("https://api.mydomain.co").unwrap()));
         assert!(!allowed.matches(&OriginKey::from_origin("http://api.mydomain.com").unwrap()));
