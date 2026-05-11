@@ -314,9 +314,9 @@ export function CreateChatBoxContainer({
   }
 
   return (
-    <div className="relative flex flex-1 flex-col bg-primary h-full">
-      <div className="flex flex-1 items-center justify-center px-base">
-        <div className="flex w-chat max-w-full flex-col gap-base">
+    <div className="relative flex h-full flex-1 flex-col bg-primary">
+      <div className="flex flex-1 overflow-y-auto px-base py-base sm:items-center sm:justify-center sm:py-0">
+        <div className="flex w-chat max-w-full flex-col gap-base sm:my-0">
           {showRepoPickerStep && (
             <>
               <h2 className="mb-double text-center text-4xl font-medium tracking-tight text-high">
@@ -359,7 +359,7 @@ export function CreateChatBoxContainer({
                       onChange={onChange}
                       onCmdEnter={onCmdEnter}
                       disabled={disabled}
-                      className="min-h-double max-h-[50vh] overflow-y-auto"
+                      className="min-h-double max-h-[min(28dvh,12rem)] overflow-y-auto sm:max-h-[50vh]"
                       repoIds={repoIds}
                       repoId={repoId}
                       executor={executor}
