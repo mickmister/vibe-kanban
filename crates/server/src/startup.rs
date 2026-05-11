@@ -11,7 +11,10 @@ use tower_http::validate_request::ValidateRequestHeaderLayer;
 use utils::assets::asset_dir;
 
 use crate::{
-    DeploymentImpl, middleware::origin::validate_origin, routes, runtime::relay_registration,
+    DeploymentImpl,
+    middleware::origin::{validate_allowed_origins_config, validate_origin},
+    routes,
+    runtime::relay_registration,
 };
 
 /// A running server instance. Callers can read the port, then call `serve()`
@@ -132,6 +135,10 @@ pub async fn start_with_bind(
 pub async fn initialize_deployment(
     shutdown: CancellationToken,
 ) -> Result<DeploymentImpl, DeploymentError> {
+    validate_allowed_origins_config().map_err(|error| {
+        DeploymentError::Other(anyhow::anyhow!(error))
+    })?;
+
     // Create asset directory if it doesn't exist
     if !asset_dir().exists() {
         std::fs::create_dir_all(asset_dir()).map_err(|e| {

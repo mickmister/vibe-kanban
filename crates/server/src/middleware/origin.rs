@@ -44,15 +44,21 @@ enum AllowedOrigin {
 }
 
 impl AllowedOrigin {
-    fn from_env_entry(origin: &str) -> Option<Self> {
+    fn from_env_entry(origin: &str) -> Result<Option<Self>, String> {
         let origin = origin.trim();
         if origin.is_empty() {
-            return None;
+            return Ok(None);
         }
         if origin.contains('*') {
-            return OriginPattern::from_allowed_origin(origin).map(Self::Pattern);
+            return OriginPattern::from_allowed_origin(origin)
+                .map(Self::Pattern)
+                .map(Some)
+                .ok_or_else(|| invalid_allowed_origin(origin));
         }
-        OriginKey::from_origin(origin).map(Self::Exact)
+        OriginKey::from_origin(origin)
+            .map(Self::Exact)
+            .map(Some)
+            .ok_or_else(|| invalid_allowed_origin(origin))
     }
 
     fn matches(&self, origin: &OriginKey) -> bool {
@@ -110,6 +116,14 @@ impl OriginPattern {
             && self.port == origin.port
             && wildcard_matches(&self.host_pattern, &origin.host)
     }
+}
+
+fn invalid_allowed_origin(origin: &str) -> String {
+    format!(
+        "Invalid VK_ALLOWED_ORIGINS entry `{origin}`. Expected an exact http(s) origin like \
+         `https://app.example.com` or a hostname wildcard pattern like \
+         `https://port-*.example.com:8443`."
+    )
 }
 
 #[allow(clippy::result_large_err)]
@@ -247,6 +261,25 @@ fn wildcard_matches(pattern: &str, input: &str) -> bool {
     pattern_idx == pattern.len()
 }
 
+fn parse_allowed_origins(value: &str) -> Result<Vec<AllowedOrigin>, String> {
+    value
+        .split(',')
+        .map(AllowedOrigin::from_env_entry)
+        .filter_map(|result| match result {
+            Ok(None) => None,
+            other => Some(other),
+        })
+        .collect()
+}
+
+pub fn validate_allowed_origins_config() -> Result<(), String> {
+    let Ok(value) = std::env::var("VK_ALLOWED_ORIGINS") else {
+        return Ok(());
+    };
+
+    parse_allowed_origins(&value).map(|_| ())
+}
+
 fn allowed_origins() -> &'static Vec<AllowedOrigin> {
     static ALLOWED: OnceLock<Vec<AllowedOrigin>> = OnceLock::new();
     ALLOWED.get_or_init(|| {
@@ -255,10 +288,8 @@ fn allowed_origins() -> &'static Vec<AllowedOrigin> {
             Err(_) => return Vec::new(),
         };
 
-        value
-            .split(',')
-            .filter_map(AllowedOrigin::from_env_entry)
-            .collect()
+        parse_allowed_origins(&value)
+            .expect("VK_ALLOWED_ORIGINS should have been validated at startup")
     })
 }
 
@@ -371,7 +402,7 @@ mod tests {
 
     #[test]
     fn bare_star_entry_is_rejected() {
-        assert_eq!(AllowedOrigin::from_env_entry("*"), None);
+        assert!(AllowedOrigin::from_env_entry("*").is_err());
     }
 
     #[test]
@@ -425,5 +456,25 @@ mod tests {
             "port-*-preview-*.mydomain.com",
             "port-123.mydomain.com"
         ));
+    }
+
+    #[test]
+    fn parse_allowed_origins_rejects_invalid_entries() {
+        let error = parse_allowed_origins(
+            "https://vk.example.com,https://port-*.example.com:abc",
+        )
+        .unwrap_err();
+
+        assert!(error.contains("https://port-*.example.com:abc"));
+    }
+
+    #[test]
+    fn parse_allowed_origins_allows_empty_entries_between_commas() {
+        let origins = parse_allowed_origins(
+            "https://vk.example.com, ,https://port-*.example.com:8443",
+        )
+        .unwrap();
+
+        assert_eq!(origins.len(), 2);
     }
 }

@@ -2,7 +2,10 @@ use anyhow::{self, Error as AnyhowError};
 use axum::Router;
 use deployment::{Deployment, DeploymentError};
 use server::{
-    DeploymentImpl, middleware::origin::validate_origin, routes, runtime::relay_registration,
+    DeploymentImpl,
+    middleware::origin::{validate_allowed_origins_config, validate_origin},
+    routes,
+    runtime::relay_registration,
 };
 use services::services::container::ContainerService;
 use sqlx::Error as SqlxError;
@@ -48,6 +51,9 @@ async fn main() -> Result<(), VibeKanbanError> {
         .with(tracing_subscriber::fmt::layer().with_filter(env_filter))
         .with(sentry_layer())
         .init();
+
+    validate_allowed_origins_config()
+        .map_err(|error| AnyhowError::msg(error))?;
 
     // Create asset directory if it doesn't exist
     if !asset_dir().exists() {
