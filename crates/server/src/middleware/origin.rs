@@ -454,9 +454,11 @@ mod tests {
 
     #[test]
     fn exact_allowed_origin_entries_must_be_origins() {
-        assert!(AllowedOrigin::from_env_entry("https://vk.example.com/")
-            .unwrap()
-            .is_some());
+        assert!(
+            AllowedOrigin::from_env_entry("https://vk.example.com/")
+                .unwrap()
+                .is_some()
+        );
 
         for origin in [
             "https://vk.example.com/path",
@@ -470,9 +472,11 @@ mod tests {
 
     #[test]
     fn wildcard_allowed_origin_entries_must_be_origins() {
-        assert!(AllowedOrigin::from_env_entry("https://*.example.com/")
-            .unwrap()
-            .is_some());
+        assert!(
+            AllowedOrigin::from_env_entry("https://*.example.com/")
+                .unwrap()
+                .is_some()
+        );
 
         for origin in [
             "https://*.example.com/path",
@@ -508,9 +512,7 @@ mod tests {
         assert!(
             allowed.matches(&OriginKey::from_origin("https://preview.mydomain.com:8443").unwrap())
         );
-        assert!(
-            !allowed.matches(&OriginKey::from_origin("https://preview.mydomain.com").unwrap())
-        );
+        assert!(!allowed.matches(&OriginKey::from_origin("https://preview.mydomain.com").unwrap()));
     }
 
     #[test]
@@ -530,16 +532,16 @@ mod tests {
 
     #[test]
     fn parse_allowed_origins_rejects_invalid_entries() {
-        let error = parse_allowed_origins("https://vk.example.com,https://port-*.example.com")
-            .unwrap_err();
+        let error =
+            parse_allowed_origins("https://vk.example.com,https://port-*.example.com").unwrap_err();
 
         assert!(error.contains("https://port-*.example.com"));
     }
 
     #[test]
     fn parse_allowed_origins_allows_empty_entries_between_commas() {
-        let origins = parse_allowed_origins("https://vk.example.com, ,https://*.example.com:8443")
-            .unwrap();
+        let origins =
+            parse_allowed_origins("https://vk.example.com, ,https://*.example.com:8443").unwrap();
 
         assert_eq!(origins.len(), 2);
     }
