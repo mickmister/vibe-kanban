@@ -37,6 +37,10 @@ impl OriginKey {
         {
             return None;
         }
+        let host = url.host_str()?;
+        if host.split('.').any(str::is_empty) {
+            return None;
+        }
         Self::from_url(&url)
     }
 
@@ -523,11 +527,9 @@ mod tests {
         assert!(
             !allowed.matches(&OriginKey::from_origin("https://preview.mydomain.com:8443").unwrap())
         );
-        assert!(
-            !allowed.matches(
-                &OriginKey::from_origin("https://port-preview.deep.mydomain.com:8443").unwrap()
-            )
-        );
+        assert!(!allowed.matches(
+            &OriginKey::from_origin("https://port-preview.deep.mydomain.com:8443").unwrap()
+        ));
         assert!(
             !allowed.matches(&OriginKey::from_origin("https://port-preview.mydomain.com").unwrap())
         );
