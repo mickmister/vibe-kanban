@@ -24,7 +24,10 @@ impl OriginKey {
 
     fn from_allowed_origin(origin: &str) -> Option<Self> {
         let (_, remainder) = origin.split_once("://")?;
-        if remainder.contains(['/', '?', '#']) || remainder.contains('@') {
+        if remainder.contains(['?', '#']) || remainder.contains('@') {
+            return None;
+        }
+        if remainder.contains('/') && !remainder.ends_with('/') {
             return None;
         }
 
@@ -98,24 +101,19 @@ impl AllowedOrigin {
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct OriginPattern {
     https: bool,
-    host_pattern: String,
+    suffix: String,
     port: u16,
 }
 
 impl OriginPattern {
     fn from_allowed_origin(origin: &str) -> Option<Self> {
-        let (scheme, remainder) = origin.split_once("://")?;
+        let (scheme, authority) = split_allowed_origin_authority(origin)?;
         let https = match scheme {
             "http" => false,
             "https" => true,
             _ => return None,
         };
 
-        if remainder.contains(['/', '?', '#']) {
-            return None;
-        }
-
-        let authority = remainder;
         if authority.is_empty() || authority.starts_with('[') || authority.contains('@') {
             return None;
         }
@@ -131,13 +129,14 @@ impl OriginPattern {
         };
 
         let host_pattern = normalize_host(host_pattern);
-        if !valid_wildcard_host_pattern(&host_pattern) {
+        let suffix = host_pattern.strip_prefix("*.")?;
+        if !valid_wildcard_suffix(suffix) {
             return None;
         }
 
         Some(Self {
             https,
-            host_pattern,
+            suffix: suffix.to_string(),
             port,
         })
     }
@@ -145,16 +144,16 @@ impl OriginPattern {
     fn matches(&self, origin: &OriginKey) -> bool {
         self.https == origin.https
             && self.port == origin.port
-            && wildcard_matches(&self.host_pattern, &origin.host)
+            && wildcard_subdomain_matches(&self.suffix, &origin.host)
     }
 }
 
 fn invalid_allowed_origin(origin: &str) -> String {
     format!(
         "Invalid VK_ALLOWED_ORIGINS entry `{origin}`. Expected an exact http(s) origin like \
-         `https://app.example.com` or a label-scoped hostname wildcard pattern like \
-         `https://port-*.example.com:8443`. Paths, queries, fragments, userinfo, bare `*`, \
-         and overly broad wildcard suffixes are not allowed."
+         `https://app.example.com` or a single-label wildcard origin like \
+         `https://*.example.com`. Paths, queries, fragments, userinfo, bare `*`, and partial \
+         wildcards such as `https://port-*.example.com` are not allowed."
     )
 }
 
@@ -260,66 +259,47 @@ fn origin_allowed(origin: &OriginKey, allowed_origins: &[AllowedOrigin]) -> bool
         .any(|allowed| allowed.matches(origin))
 }
 
-fn valid_wildcard_host_pattern(pattern: &str) -> bool {
-    if pattern == "*" || !pattern.contains('*') {
-        return false;
+fn split_allowed_origin_authority(origin: &str) -> Option<(&str, &str)> {
+    let (scheme, remainder) = origin.split_once("://")?;
+    if remainder.contains(['?', '#']) {
+        return None;
     }
 
-    let labels: Vec<&str> = pattern.split('.').collect();
-    if labels.len() < 3 || labels.iter().any(|label| label.is_empty()) {
-        return false;
+    let authority = match remainder.strip_suffix('/') {
+        Some(authority) => authority,
+        None => remainder,
+    };
+    if authority.contains('/') {
+        return None;
     }
 
-    // Keep the registrable-looking suffix fixed. This rejects broad or ambiguous
-    // patterns like `https://*`, `https://*.com`, and `https://example.*`.
-    let suffix = &labels[labels.len() - 2..];
-    if suffix.iter().any(|label| label.contains('*')) {
+    Some((scheme, authority))
+}
+
+fn valid_wildcard_suffix(suffix: &str) -> bool {
+    let labels: Vec<&str> = suffix.split('.').collect();
+    if labels.len() < 2 || labels.iter().any(|label| label.is_empty()) {
         return false;
     }
 
     labels.iter().all(|label| {
-        label
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'*')
+        !label.starts_with('-')
+            && !label.ends_with('-')
+            && label
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
     })
 }
 
-fn wildcard_matches(pattern: &str, input: &str) -> bool {
-    let pattern = pattern.as_bytes();
-    let input = input.as_bytes();
-    let (mut pattern_idx, mut input_idx) = (0usize, 0usize);
-    let mut star_idx = None;
-    let mut star_match_idx = 0usize;
+fn wildcard_subdomain_matches(suffix: &str, host: &str) -> bool {
+    let Some(prefix) = host.strip_suffix(suffix) else {
+        return false;
+    };
+    let Some(label) = prefix.strip_suffix('.') else {
+        return false;
+    };
 
-    while input_idx < input.len() {
-        if pattern_idx < pattern.len()
-            && (pattern[pattern_idx] == b'*' || pattern[pattern_idx] == input[input_idx])
-        {
-            if pattern[pattern_idx] == b'*' {
-                star_idx = Some(pattern_idx);
-                star_match_idx = input_idx;
-                pattern_idx += 1;
-            } else {
-                pattern_idx += 1;
-                input_idx += 1;
-            }
-        } else if let Some(star_idx_value) = star_idx {
-            if input.get(star_match_idx) == Some(&b'.') {
-                return false;
-            }
-            pattern_idx = star_idx_value + 1;
-            star_match_idx += 1;
-            input_idx = star_match_idx;
-        } else {
-            return false;
-        }
-    }
-
-    while pattern_idx < pattern.len() && pattern[pattern_idx] == b'*' {
-        pattern_idx += 1;
-    }
-
-    pattern_idx == pattern.len()
+    !label.is_empty() && !label.contains('.')
 }
 
 fn parse_allowed_origins(value: &str) -> Result<Vec<AllowedOrigin>, String> {
@@ -474,8 +454,11 @@ mod tests {
 
     #[test]
     fn exact_allowed_origin_entries_must_be_origins() {
+        assert!(AllowedOrigin::from_env_entry("https://vk.example.com/")
+            .unwrap()
+            .is_some());
+
         for origin in [
-            "https://vk.example.com/",
             "https://vk.example.com/path",
             "https://vk.example.com?preview=1",
             "https://vk.example.com#fragment",
@@ -487,12 +470,15 @@ mod tests {
 
     #[test]
     fn wildcard_allowed_origin_entries_must_be_origins() {
+        assert!(AllowedOrigin::from_env_entry("https://*.example.com/")
+            .unwrap()
+            .is_some());
+
         for origin in [
-            "https://port-*.example.com/",
-            "https://port-*.example.com/path",
-            "https://port-*.example.com?preview=1",
-            "https://port-*.example.com#fragment",
-            "https://user:password@port-*.example.com",
+            "https://*.example.com/path",
+            "https://*.example.com?preview=1",
+            "https://*.example.com#fragment",
+            "https://user:password@*.example.com",
         ] {
             assert!(AllowedOrigin::from_env_entry(origin).is_err(), "{origin}");
         }
@@ -514,56 +500,46 @@ mod tests {
     }
 
     #[test]
-    fn wildcard_partial_host_entry_matches_expected_hosts() {
-        let allowed = AllowedOrigin::from_env_entry("https://port-*.mydomain.com:8443")
+    fn wildcard_entry_matches_with_explicit_port() {
+        let allowed = AllowedOrigin::from_env_entry("https://*.mydomain.com:8443")
             .unwrap()
             .unwrap();
 
         assert!(
-            allowed.matches(
-                &OriginKey::from_origin("https://port-preview.mydomain.com:8443").unwrap()
-            )
+            allowed.matches(&OriginKey::from_origin("https://preview.mydomain.com:8443").unwrap())
         );
         assert!(
-            !allowed.matches(&OriginKey::from_origin("https://preview.mydomain.com:8443").unwrap())
-        );
-        assert!(!allowed.matches(
-            &OriginKey::from_origin("https://port-preview.deep.mydomain.com:8443").unwrap()
-        ));
-        assert!(
-            !allowed.matches(&OriginKey::from_origin("https://port-preview.mydomain.com").unwrap())
+            !allowed.matches(&OriginKey::from_origin("https://preview.mydomain.com").unwrap())
         );
     }
 
     #[test]
-    fn wildcard_matcher_supports_multiple_stars_within_one_label() {
-        assert!(wildcard_matches(
-            "port-*-preview-*.mydomain.com",
-            "port-123-preview-abc.mydomain.com"
-        ));
-        assert!(!wildcard_matches(
-            "port-*-preview-*.mydomain.com",
-            "port-123.mydomain.com"
-        ));
-        assert!(!wildcard_matches(
-            "port-*-preview-*.mydomain.com",
-            "port-123-preview-a.b.mydomain.com"
-        ));
+    fn partial_and_nested_wildcard_entries_are_rejected() {
+        for origin in [
+            "https://port-*.example.com",
+            "https://*foo.example.com",
+            "https://foo.*.example.com",
+            "https://*.*.example.com",
+            "https://**.example.com",
+            "https://*.bad-.example.com",
+            "https://*.-bad.example.com",
+        ] {
+            assert!(AllowedOrigin::from_env_entry(origin).is_err(), "{origin}");
+        }
     }
 
     #[test]
     fn parse_allowed_origins_rejects_invalid_entries() {
-        let error = parse_allowed_origins("https://vk.example.com,https://port-*.example.com:abc")
+        let error = parse_allowed_origins("https://vk.example.com,https://port-*.example.com")
             .unwrap_err();
 
-        assert!(error.contains("https://port-*.example.com:abc"));
+        assert!(error.contains("https://port-*.example.com"));
     }
 
     #[test]
     fn parse_allowed_origins_allows_empty_entries_between_commas() {
-        let origins =
-            parse_allowed_origins("https://vk.example.com, ,https://port-*.example.com:8443")
-                .unwrap();
+        let origins = parse_allowed_origins("https://vk.example.com, ,https://*.example.com:8443")
+            .unwrap();
 
         assert_eq!(origins.len(), 2);
     }
