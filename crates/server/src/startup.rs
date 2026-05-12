@@ -17,7 +17,10 @@ use utils::{
 };
 
 use crate::{
-    DeploymentImpl, middleware::origin::validate_origin, routes, runtime::relay_registration,
+    DeploymentImpl,
+    middleware::origin::{validate_allowed_origins_config, validate_origin},
+    routes,
+    runtime::relay_registration,
 };
 
 /// A running server instance. Callers can read the port, then call `serve()`
@@ -144,6 +147,8 @@ pub async fn initialize_deployment(
     shutdown: CancellationToken,
 ) -> Result<DeploymentImpl, DeploymentError> {
     begin_startup_diagnostics();
+    validate_allowed_origins_config()
+        .map_err(|error| DeploymentError::Other(anyhow::anyhow!(error)))?;
 
     // Create asset directory if it doesn't exist
     if !asset_dir().exists() {
