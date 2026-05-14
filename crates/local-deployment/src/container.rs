@@ -299,6 +299,18 @@ impl LocalContainerService {
     fn spawn_workspace_cleanup(&self) {
         let container = self.clone();
         tokio::spawn(async move {
+            if runtime_diagnostics_enabled() {
+                let snapshot = utils::process_diag::sample_current_process();
+                tracing::info!(
+                    rss_mb = utils::process_diag::bytes_to_mb(snapshot.rss_bytes),
+                    vm_size_mb = utils::process_diag::bytes_to_mb(snapshot.virtual_bytes),
+                    threads = snapshot.thread_count,
+                    fds = snapshot.open_fd_count,
+                    child_processes = snapshot.child_process_count,
+                    elapsed_ms = utils::process_diag::elapsed_since_start().as_millis() as u64,
+                    "runtime_diag_workspace_cleanup_loop_started"
+                );
+            }
             container
                 .workspace_manager
                 .cleanup_orphan_workspaces()
@@ -309,12 +321,30 @@ impl LocalContainerService {
             loop {
                 cleanup_interval.tick().await;
                 tracing::info!("Starting periodic workspace cleanup...");
+                let before = utils::process_diag::sample_current_process();
                 container
                     .cleanup_expired_workspaces()
                     .await
                     .unwrap_or_else(|e| {
                         tracing::error!("Failed to clean up expired workspaces: {}", e)
                     });
+                if runtime_diagnostics_enabled() {
+                    let after = utils::process_diag::sample_current_process();
+                    tracing::info!(
+                        rss_mb_before = utils::process_diag::bytes_to_mb(before.rss_bytes),
+                        rss_mb_after = utils::process_diag::bytes_to_mb(after.rss_bytes),
+                        vm_size_mb_before = utils::process_diag::bytes_to_mb(before.virtual_bytes),
+                        vm_size_mb_after = utils::process_diag::bytes_to_mb(after.virtual_bytes),
+                        threads_before = before.thread_count,
+                        threads_after = after.thread_count,
+                        fds_before = before.open_fd_count,
+                        fds_after = after.open_fd_count,
+                        child_processes_before = before.child_process_count,
+                        child_processes_after = after.child_process_count,
+                        elapsed_ms = utils::process_diag::elapsed_since_start().as_millis() as u64,
+                        "runtime_diag_workspace_cleanup_iteration"
+                    );
+                }
             }
         });
     }
@@ -1491,6 +1521,7 @@ impl ContainerService for LocalContainerService {
 
         let repositories =
             WorkspaceRepo::find_repos_for_workspace(&self.db.pool, workspace.id).await?;
+        let repo_count = repositories.len();
 
         let mut streams = Vec::new();
 
@@ -1544,7 +1575,42 @@ impl ContainerService for LocalContainerService {
         }
 
         if streams.is_empty() {
+            if runtime_diagnostics_enabled() {
+                let snapshot = utils::process_diag::sample_current_process();
+                tracing::info!(
+                    workspace_id = %workspace.id,
+                    stats_only,
+                    repo_count,
+                    target_branch_count = target_branches.len(),
+                    created_stream_count = 0,
+                    rss_mb = utils::process_diag::bytes_to_mb(snapshot.rss_bytes),
+                    vm_size_mb = utils::process_diag::bytes_to_mb(snapshot.virtual_bytes),
+                    threads = snapshot.thread_count,
+                    fds = snapshot.open_fd_count,
+                    child_processes = snapshot.child_process_count,
+                    elapsed_ms = utils::process_diag::elapsed_since_start().as_millis() as u64,
+                    "runtime_diag_stream_diff"
+                );
+            }
             return Ok(Box::pin(futures::stream::empty()));
+        }
+
+        if runtime_diagnostics_enabled() {
+            let snapshot = utils::process_diag::sample_current_process();
+            tracing::info!(
+                workspace_id = %workspace.id,
+                stats_only,
+                repo_count,
+                target_branch_count = target_branches.len(),
+                created_stream_count = streams.len(),
+                rss_mb = utils::process_diag::bytes_to_mb(snapshot.rss_bytes),
+                vm_size_mb = utils::process_diag::bytes_to_mb(snapshot.virtual_bytes),
+                threads = snapshot.thread_count,
+                fds = snapshot.open_fd_count,
+                child_processes = snapshot.child_process_count,
+                elapsed_ms = utils::process_diag::elapsed_since_start().as_millis() as u64,
+                "runtime_diag_stream_diff"
+            );
         }
 
         // Merge all streams into one
@@ -1631,6 +1697,10 @@ impl ContainerService for LocalContainerService {
 
         Ok(())
     }
+}
+
+fn runtime_diagnostics_enabled() -> bool {
+    std::env::var("VK_DEBUG_MEMORY_LOGS").is_ok()
 }
 fn success_exit_status() -> std::process::ExitStatus {
     #[cfg(unix)]
