@@ -332,6 +332,5 @@ impl EventService {
 }
 
 fn runtime_diagnostics_enabled() -> bool {
-    std::env::var("VK_RUNTIME_DIAGNOSTICS").is_ok()
-        || std::env::var("VK_STARTUP_DIAGNOSTICS_INTERVAL_MS").is_ok()
+    std::env::var("VK_DEBUG_MEMORY_LOGS").is_ok()
 }

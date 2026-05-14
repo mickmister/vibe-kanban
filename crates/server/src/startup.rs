@@ -210,6 +210,10 @@ static STARTUP_DIAGNOSTICS_SAMPLER: OnceLock<()> = OnceLock::new();
 pub fn begin_startup_diagnostics() {
     process_diag::mark_process_start();
 
+    if !debug_memory_logs_enabled() {
+        return;
+    }
+
     let initialized = STARTUP_DIAGNOSTICS_INIT.get().is_some();
     STARTUP_DIAGNOSTICS_INIT.get_or_init(|| ());
     if !initialized {
@@ -236,12 +240,15 @@ pub fn begin_startup_diagnostics() {
 }
 
 pub fn log_startup_phase(phase: &str) {
+    if !debug_memory_logs_enabled() {
+        return;
+    }
     let snapshot = process_diag::sample_current_process();
     emit_startup_diag_log("startup_diag", phase, &snapshot);
 }
 
 pub fn runtime_diagnostics_enabled() -> bool {
-    env_flag("VK_RUNTIME_DIAGNOSTICS") || startup_sampling_config().is_some()
+    debug_memory_logs_enabled()
 }
 
 fn log_startup_skip(phase: &str, env_var: &str) {
@@ -328,6 +335,10 @@ async fn run_startup_backfills(deployment: &DeploymentImpl) -> Result<(), Deploy
 }
 
 fn startup_sampling_config() -> Option<(Duration, Duration)> {
+    if !debug_memory_logs_enabled() {
+        return None;
+    }
+
     let interval_ms = std::env::var("VK_STARTUP_DIAGNOSTICS_INTERVAL_MS")
         .ok()
         .and_then(|value| value.parse::<u64>().ok())
@@ -341,6 +352,10 @@ fn startup_sampling_config() -> Option<(Duration, Duration)> {
         Duration::from_millis(interval_ms),
         Duration::from_secs(duration_secs),
     ))
+}
+
+fn debug_memory_logs_enabled() -> bool {
+    env_flag("VK_DEBUG_MEMORY_LOGS")
 }
 
 fn env_flag(name: &str) -> bool {
