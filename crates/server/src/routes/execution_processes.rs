@@ -498,11 +498,14 @@ mod tests {
     async fn single_flight_shares_same_mode_requests() {
         let exec_id = Uuid::new_v4();
         let call_count = Arc::new(AtomicUsize::new(0));
-        let (tx, rx) = oneshot::channel::<()>();
-        let shared_rx = Arc::new(Mutex::new(Some(rx)));
+        let (started_tx, started_rx) = oneshot::channel::<()>();
+        let (release_tx, release_rx) = oneshot::channel::<()>();
+        let started_tx = Arc::new(Mutex::new(Some(started_tx)));
+        let shared_rx = Arc::new(Mutex::new(Some(release_rx)));
 
         let task1 = {
             let call_count = call_count.clone();
+            let started_tx = started_tx.clone();
             let shared_rx = shared_rx.clone();
             tokio::spawn(async move {
                 get_normalized_log_messages_single_flight(
@@ -510,6 +513,9 @@ mod tests {
                     exec_id,
                     async move {
                         call_count.fetch_add(1, Ordering::SeqCst);
+                        if let Some(tx) = started_tx.lock().await.take() {
+                            let _ = tx.send(());
+                        }
                         if let Some(rx) = shared_rx.lock().await.take() {
                             let _ = rx.await;
                         }
@@ -520,6 +526,8 @@ mod tests {
                 .await
             })
         };
+
+        started_rx.await.unwrap();
 
         let task2 = {
             let call_count = call_count.clone();
@@ -537,7 +545,7 @@ mod tests {
             })
         };
 
-        tx.send(()).unwrap();
+        release_tx.send(()).unwrap();
 
         let result1 = task1.await.unwrap().unwrap();
         let result2 = task2.await.unwrap().unwrap();
