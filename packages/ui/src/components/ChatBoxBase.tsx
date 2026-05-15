@@ -82,7 +82,7 @@ export function ChatBoxBase({
     <div
       {...(dropzone?.getRootProps() ?? {})}
       className={cn(
-        'relative flex w-chat max-w-full flex-col rounded-sm border border-border bg-secondary',
+        'relative flex w-chat max-w-full shrink-0 flex-col rounded-sm border border-border bg-secondary',
         (visualVariant === VisualVariant.FEEDBACK ||
           visualVariant === VisualVariant.EDIT ||
           visualVariant === VisualVariant.PLAN) &&

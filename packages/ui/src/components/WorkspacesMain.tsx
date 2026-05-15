@@ -39,10 +39,7 @@ export function WorkspacesMain({
   return (
     <main
       ref={containerRef}
-      className={cn(
-        'relative flex flex-1 flex-col bg-primary',
-        isMobile ? 'min-h-0' : 'h-full'
-      )}
+      className={cn('relative flex h-full min-h-0 flex-1 flex-col bg-primary')}
     >
       {/* Conversation content - conditional based on loading/workspace state */}
       {isLoading ? (
@@ -81,7 +78,7 @@ export function WorkspacesMain({
       )}
       {/* Chat box - always rendered to prevent flash during workspace switch */}
       <div
-        className="flex justify-center @container pl-px"
+        className="shrink-0 flex justify-center @container pl-px"
         data-chatbox-container="true"
       >
         {chatBoxContent}

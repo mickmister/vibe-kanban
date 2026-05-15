@@ -319,7 +319,7 @@ export function CreateChatBoxContainer({
         <div className="flex w-chat max-w-full flex-col gap-base sm:my-0">
           {showRepoPickerStep && (
             <>
-              <h2 className="mb-double text-center text-4xl font-medium tracking-tight text-high">
+              <h2 className="mb-base text-center text-3xl font-medium tracking-tight text-high sm:mb-double sm:text-4xl">
                 {t('createMode.headings.repoStep')}
               </h2>
               <CreateModeRepoPickerBar
@@ -330,7 +330,7 @@ export function CreateChatBoxContainer({
 
           {showChatStep && (
             <>
-              <h2 className="mb-double text-center text-4xl font-medium tracking-tight text-high">
+              <h2 className="mb-base text-center text-3xl font-medium tracking-tight text-high sm:mb-double sm:text-4xl">
                 {t('createMode.headings.chatStep')}
               </h2>
 
@@ -359,7 +359,7 @@ export function CreateChatBoxContainer({
                       onChange={onChange}
                       onCmdEnter={onCmdEnter}
                       disabled={disabled}
-                      className="min-h-double max-h-[min(28dvh,12rem)] overflow-y-auto sm:max-h-[50vh]"
+                      className="min-h-double max-h-[clamp(4.5rem,24dvh,14rem)] overflow-y-auto"
                       repoIds={repoIds}
                       repoId={repoId}
                       executor={executor}
