@@ -5,6 +5,7 @@ import {
   type AppNavigation,
   type NavigationTransition,
 } from '@/shared/lib/routes/appNavigation';
+import { postWorkspaceNavigationToIframeHost } from '@/shared/lib/iframeHostBridge';
 
 type LocalRouteId = FileRouteTypes['id'];
 
@@ -312,6 +313,10 @@ export function createLocalAppNavigation(): AppNavigation {
     destination: AppDestination,
     transition?: NavigationTransition
   ) => {
+    if (postWorkspaceNavigationToIframeHost(destination)) {
+      return;
+    }
+
     const currentHostId =
       typeof window === 'undefined'
         ? null

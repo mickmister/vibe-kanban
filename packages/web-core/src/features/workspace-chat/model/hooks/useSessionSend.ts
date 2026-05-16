@@ -1,6 +1,7 @@
 import { useCallback, useState } from 'react';
 import type { ExecutorConfig } from 'shared/types';
 import { sessionsApi } from '@/shared/lib/api';
+import { postWorkspaceMessageSubmittedToIframeHost } from '@/shared/lib/iframeHostBridge';
 import { useCreateSession } from './useCreateSession';
 
 interface UseSessionSendOptions {
@@ -71,6 +72,11 @@ export function useSessionSend({
             prompt: trimmed,
             executorConfig,
           });
+          postWorkspaceMessageSubmittedToIframeHost({
+            workspaceId,
+            sessionId: session.id,
+            isNewSessionMode: true,
+          });
           onSelectSession?.(session.id);
           return true;
         } catch (e: unknown) {
@@ -92,6 +98,13 @@ export function useSessionSend({
             force_when_dirty: null,
             perform_git_reset: null,
           });
+          if (workspaceId) {
+            postWorkspaceMessageSubmittedToIframeHost({
+              workspaceId,
+              sessionId,
+              isNewSessionMode: false,
+            });
+          }
           return true;
         } catch (e: unknown) {
           const err = e as { message?: string };
