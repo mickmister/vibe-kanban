@@ -422,3 +422,60 @@ jobs:
           overwrite_files: true
           files: |
             release-assets/*
+
+  dispatch-vd-publish:
+    needs: [prepare, publish-release]
+    if: >-
+      ${{
+        always() &&
+        needs.prepare.outputs.should_run == 'true' &&
+        (needs.prepare.outputs.assets_exist == 'true' || needs.publish-release.result == 'success')
+      }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Dispatch VD VK/VD Docker publish
+        env:
+          GH_TOKEN: ${{ secrets.VD_REPOSITORY_DISPATCH_TOKEN }}
+          VD_REPOSITORY: ${{ vars.VD_REPOSITORY || 'mickmister/vibe-dashboard' }}
+          VK_REPO_URL: ${{ github.server_url }}/${{ github.repository }}.git
+          VK_SHA: ${{ needs.prepare.outputs.vk_sha }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
+          RELEASE_URL: ${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ needs.prepare.outputs.release_tag }}
+          WORKFLOW_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+
+          if [[ -z "${GH_TOKEN:-}" ]]; then
+            echo "Missing VD_REPOSITORY_DISPATCH_TOKEN secret; cannot dispatch VD publish workflow." >&2
+            exit 1
+          fi
+
+          jq -n \
+            --arg event_type "vk-release-assets-ready" \
+            --arg vk_sha "$VK_SHA" \
+            --arg vk_ref "$VK_SHA" \
+            --arg vk_repo_url "$VK_REPO_URL" \
+            --arg release_tag "$RELEASE_TAG" \
+            --arg release_url "$RELEASE_URL" \
+            --arg workflow_run_url "$WORKFLOW_RUN_URL" \
+            '{
+              event_type: $event_type,
+              client_payload: {
+                vk_sha: $vk_sha,
+                vk_ref: $vk_ref,
+                vk_repo_url: $vk_repo_url,
+                release_tag: $release_tag,
+                release_url: $release_url,
+                workflow_run_url: $workflow_run_url
+              }
+            }' > dispatch-payload.json
+
+          gh api \
+            --method POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "/repos/${VD_REPOSITORY}/dispatches" \
+            --input dispatch-payload.json
+
+          echo "Dispatched vk-release-assets-ready to ${VD_REPOSITORY} for ${VK_SHA}."
