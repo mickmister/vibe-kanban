@@ -1,6 +1,7 @@
 use axum::{Extension, Router, extract::State, response::Json as ResponseJson, routing::post};
 use db::models::{
     execution_process::{ExecutionProcess, ExecutionProcessRunReason, ExecutionProcessStatus},
+    scratch::{Scratch, ScratchPayload, ScratchType},
     session::{CreateSession, Session},
     workspace::Workspace,
     workspace_repo::WorkspaceRepo,
@@ -24,6 +25,47 @@ use crate::{DeploymentImpl, error::ApiError};
 pub enum RunScriptError {
     NoScriptConfigured,
     ProcessAlreadyRunning,
+}
+
+fn repo_has_dev_server(repo: &db::models::repo::Repo) -> bool {
+    if !repo.dev_server_scripts.is_empty() {
+        return true;
+    }
+
+    repo.dev_server_script
+        .as_ref()
+        .is_some_and(|script| !script.trim().is_empty())
+}
+
+fn default_dev_server_request(repo: &db::models::repo::Repo) -> Option<ScriptRequest> {
+    if let Some(script) = repo.dev_server_scripts.iter().find(|script| script.is_default) {
+        let working_dir = script
+            .working_dir
+            .as_ref()
+            .map(|dir| format!("{}/{}", repo.name, dir))
+            .or_else(|| Some(repo.name.clone()));
+
+        return Some(ScriptRequest {
+            script: script.script.clone(),
+            language: ScriptRequestLanguage::Bash,
+            context: ScriptContext::DevServer,
+            working_dir,
+        });
+    }
+
+    repo.dev_server_script.as_ref().and_then(|script| {
+        let trimmed = script.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+
+        Some(ScriptRequest {
+            script: trimmed.to_string(),
+            language: ScriptRequestLanguage::Bash,
+            context: ScriptContext::DevServer,
+            working_dir: Some(repo.name.clone()),
+        })
+    })
 }
 
 pub fn router() -> Router<DeploymentImpl> {
@@ -73,9 +115,26 @@ pub async fn start_dev_server(
     }
 
     let repos = WorkspaceRepo::find_repos_for_workspace(pool, workspace.id).await?;
+    let selected_repo_ids = Scratch::find_by_id(
+        pool,
+        workspace.id,
+        &ScratchType::WorkspaceDevServerSelection,
+    )
+    .await?
+    .and_then(|scratch| match scratch.payload {
+        ScratchPayload::WorkspaceDevServerSelection(data) => Some(data.selected_repo_ids),
+        _ => None,
+    });
+
     let repos_with_dev_script: Vec<_> = repos
         .iter()
-        .filter(|r| r.dev_server_script.as_ref().is_some_and(|s| !s.is_empty()))
+        .filter(|repo| repo_has_dev_server(repo))
+        .filter(|repo| {
+            selected_repo_ids
+                .as_ref()
+                .map(|ids| ids.is_empty() || ids.contains(&repo.id))
+                .unwrap_or(true)
+        })
         .collect();
 
     if repos_with_dev_script.is_empty() {
@@ -102,13 +161,12 @@ pub async fn start_dev_server(
 
     let mut execution_processes = Vec::new();
     for repo in repos_with_dev_script {
+        let Some(script_request) = default_dev_server_request(repo) else {
+            continue;
+        };
+
         let executor_action = ExecutorAction::new(
-            ExecutorActionType::ScriptRequest(ScriptRequest {
-                script: repo.dev_server_script.clone().unwrap(),
-                language: ScriptRequestLanguage::Bash,
-                context: ScriptContext::DevServer,
-                working_dir: Some(repo.name.clone()),
-            }),
+            ExecutorActionType::ScriptRequest(script_request),
             None,
         );
 

@@ -7,6 +7,7 @@ pub mod merge;
 pub mod project;
 pub mod pull_request;
 pub mod repo;
+pub mod repo_dev_server_script;
 pub mod requests;
 pub mod scratch;
 pub mod session;
