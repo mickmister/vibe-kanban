@@ -70,7 +70,7 @@ const parseWildcardAllowedOrigin = (
 
   const host = normalizeOriginHost(hostPattern);
   const suffix = host.startsWith('*.') ? host.slice(2) : '';
-  if (!suffix || suffix.split('.').length < 2) {
+  if (!validWildcardSuffix(suffix)) {
     return null;
   }
 
@@ -80,6 +80,23 @@ const parseWildcardAllowedOrigin = (
     port,
     wildcard: true,
   };
+};
+
+const validOriginHost = (host: string): boolean =>
+  host.length > 0 && !host.split('.').some((label) => label.length === 0);
+
+const validWildcardSuffix = (suffix: string): boolean => {
+  const labels = suffix.split('.');
+  if (labels.length < 2 || labels.some((label) => label.length === 0)) {
+    return false;
+  }
+
+  return labels.every(
+    (label) =>
+      !label.startsWith('-') &&
+      !label.endsWith('-') &&
+      /^[A-Za-z0-9-]+$/.test(label)
+  );
 };
 
 const parseAllowedPreviewOrigin = (
@@ -108,9 +125,14 @@ const parseAllowedPreviewOrigin = (
     }
 
     const scheme = parsed.protocol === 'https:' ? 'https' : 'http';
+    const host = normalizeOriginHost(parsed.hostname);
+    if (!validOriginHost(host)) {
+      return null;
+    }
+
     return {
       scheme,
-      host: normalizeOriginHost(parsed.hostname),
+      host,
       port: parsed.port ? Number(parsed.port) : defaultPort(scheme),
       wildcard: false,
     };
@@ -309,7 +331,7 @@ export const detectPreviewUrl = (
         parsed.hostname = normalizedHost;
 
         if (vibeKanbanPort && parsed.port === vibeKanbanPort) {
-          return null;
+          continue;
         }
 
         const scheme = parsed.protocol === 'https:' ? 'https' : 'http';
@@ -397,14 +419,11 @@ export function usePreviewUrl(
   const lastIndexRef = useRef(0);
   const logBufferRef = useRef('');
   const allowedDevServerOriginsKey = allowedDevServerOrigins.join('\0');
-  const lastAllowedDevServerOriginsKeyRef = useRef(
-    allowedDevServerOriginsKey
-  );
+  const lastAllowedDevServerOriginsKeyRef = useRef(allowedDevServerOriginsKey);
 
   useEffect(() => {
     const allowedOriginsChanged =
-      lastAllowedDevServerOriginsKeyRef.current !==
-      allowedDevServerOriginsKey;
+      lastAllowedDevServerOriginsKeyRef.current !== allowedDevServerOriginsKey;
     lastAllowedDevServerOriginsKeyRef.current = allowedDevServerOriginsKey;
 
     if (!logs) {

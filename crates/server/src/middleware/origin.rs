@@ -348,8 +348,14 @@ pub fn allowed_dev_server_origin_entries() -> Vec<String> {
 
     // Configuration is validated at startup. Parse here too so callers never
     // receive malformed entries if this is used in tests or a partial startup.
-    parse_allowed_origins_for_env(VK_ALLOWED_DEV_SERVER_ORIGINS_ENV, &value)
-        .expect("VK_ALLOWED_DEV_SERVER_ORIGINS should have been validated at startup");
+    if let Err(error) = parse_allowed_origins_for_env(VK_ALLOWED_DEV_SERVER_ORIGINS_ENV, &value) {
+        tracing::warn!(
+            error = %error,
+            env = VK_ALLOWED_DEV_SERVER_ORIGINS_ENV,
+            "ignoring invalid allowed dev server origins configuration"
+        );
+        return Vec::new();
+    }
 
     value
         .split(',')
