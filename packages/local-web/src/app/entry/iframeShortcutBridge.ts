@@ -1,6 +1,7 @@
 type IframeShortcut = 'session-next' | 'session-prev';
 
 const INSTALL_FLAG = '__vkIframeShortcutBridgeInstalled';
+const CAPTURE_PHASE = { capture: true } as const;
 
 declare global {
   interface Window {
@@ -57,10 +58,17 @@ export function installIframeShortcutBridge() {
   if (window[INSTALL_FLAG] || !isInIframe()) return;
   window[INSTALL_FLAG] = true;
 
-  window.addEventListener('keydown', (event) => {
+  const handledEvents = new WeakSet<KeyboardEvent>();
+  const onKeyDown = (event: KeyboardEvent) => {
+    if (handledEvents.has(event)) return;
+    handledEvents.add(event);
+
     const shortcut = getIframeShortcut(event);
     if (!shortcut) return;
 
     window.parent.postMessage({ type: 'vk-iframe-shortcut', shortcut }, '*');
-  });
+  };
+
+  window.addEventListener('keydown', onKeyDown, CAPTURE_PHASE);
+  document.addEventListener('keydown', onKeyDown, CAPTURE_PHASE);
 }
