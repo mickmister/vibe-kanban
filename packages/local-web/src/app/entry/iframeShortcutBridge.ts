@@ -1,4 +1,4 @@
-type IframeShortcut = 'session-next' | 'session-prev';
+type IframeShortcutAction = 'cycle-next' | 'cycle-prev';
 
 const INSTALL_FLAG = '__vkIframeShortcutBridgeInstalled';
 const CAPTURE_PHASE = { capture: true } as const;
@@ -30,7 +30,9 @@ function isTextEditingTarget(target: EventTarget | null) {
   );
 }
 
-function getIframeShortcut(event: KeyboardEvent): IframeShortcut | null {
+function getIframeShortcutAction(
+  event: KeyboardEvent
+): IframeShortcutAction | null {
   if (
     event.defaultPrevented ||
     event.isComposing ||
@@ -44,11 +46,11 @@ function getIframeShortcut(event: KeyboardEvent): IframeShortcut | null {
   }
 
   if (event.key === ']' || event.code === 'BracketRight') {
-    return 'session-next';
+    return 'cycle-next';
   }
 
   if (event.key === '[' || event.code === 'BracketLeft') {
-    return 'session-prev';
+    return 'cycle-prev';
   }
 
   return null;
@@ -63,10 +65,10 @@ export function installIframeShortcutBridge() {
     if (handledEvents.has(event)) return;
     handledEvents.add(event);
 
-    const shortcut = getIframeShortcut(event);
-    if (!shortcut) return;
+    const action = getIframeShortcutAction(event);
+    if (!action) return;
 
-    window.parent.postMessage({ type: 'vk-iframe-shortcut', shortcut }, '*');
+    window.parent.postMessage({ type: 'vk-iframe-shortcut', action }, '*');
   };
 
   window.addEventListener('keydown', onKeyDown, CAPTURE_PHASE);
