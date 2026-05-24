@@ -47,6 +47,7 @@ function describeKeyEvent(event: KeyboardEvent) {
     repeat: event.repeat,
     defaultPrevented: event.defaultPrevented,
     isComposing: event.isComposing,
+    isTextEditingTarget: isTextEditingTarget(event.target),
     target: describeTarget(event.target),
   };
 }
@@ -115,10 +116,6 @@ function getIframeShortcutAction(event: KeyboardEvent): ShortcutDecision {
   if (event.shiftKey) {
     return { action: null, reason: 'Shift key is pressed' };
   }
-  if (isTextEditingTarget(event.target)) {
-    return { action: null, reason: 'target is text-editing element' };
-  }
-
   if (event.key === ']' || event.code === 'BracketRight') {
     return { action: 'cycle-next' };
   }
