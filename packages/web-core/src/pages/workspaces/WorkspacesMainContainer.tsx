@@ -24,6 +24,7 @@ import { RetryUiProvider } from '@/features/workspace-chat/model/contexts/RetryU
 import { ApprovalFeedbackProvider } from '@/features/workspace-chat/model/contexts/ApprovalFeedbackContext';
 import { forwardWheelToScroller } from '@/features/workspace-chat/ui/forwardWheelToScroller';
 import { useDiffStats } from '@/shared/stores/useWorkspaceDiffStore';
+import { useCompactHeight } from '@/shared/hooks/useCompactHeight';
 
 /**
  * Isolated component that reads diffStats from WorkspaceContext.
@@ -44,6 +45,7 @@ function ChatBoxWithDiffStats({
   onScrollToBottom,
   onScrollToUserMessage,
   getActiveTurnPatchKey,
+  isCompactHeight,
 }: {
   session: Session | undefined;
   workspaceId: string | undefined;
@@ -57,6 +59,7 @@ function ChatBoxWithDiffStats({
   onScrollToBottom: (behavior?: 'auto' | 'smooth') => void;
   onScrollToUserMessage: (patchKey: string) => void;
   getActiveTurnPatchKey: () => string | null;
+  isCompactHeight: boolean;
 }) {
   const diffStats = useDiffStats();
 
@@ -86,6 +89,7 @@ function ChatBoxWithDiffStats({
       chatViewModeSelector={chatViewModeSelector}
       disableViewCode={false}
       showOpenWorkspaceButton={false}
+      isCompactHeight={isCompactHeight}
       onScrollToPreviousMessage={onScrollToPreviousMessage}
       onScrollToBottom={onScrollToBottom}
       onScrollToUserMessage={onScrollToUserMessage}
@@ -135,6 +139,7 @@ export const WorkspacesMainContainer = forwardRef<
 ) {
   const containerRef = useRef<HTMLElement>(null);
   const conversationListRef = useRef<ConversationListHandle>(null);
+  const isCompactHeight = useCompactHeight(containerRef);
 
   const workspaceWithSession = useMemo(() => {
     if (!selectedWorkspace) return undefined;
@@ -246,6 +251,7 @@ export const WorkspacesMainContainer = forwardRef<
       onScrollToBottom={handleScrollToBottom}
       onScrollToUserMessage={handleScrollToUserMessage}
       getActiveTurnPatchKey={handleGetActiveTurnPatchKey}
+      isCompactHeight={isCompactHeight}
     />
   );
 
