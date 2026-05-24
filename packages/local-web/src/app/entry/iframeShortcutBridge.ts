@@ -22,21 +22,7 @@ function debugLog(message: string, details?: Record<string, unknown>) {
   }
 }
 
-function describeTarget(target: EventTarget | null) {
-  if (!(target instanceof Element)) return String(target);
-
-  return {
-    tagName: target.tagName,
-    id: target.id || undefined,
-    className:
-      typeof target.className === 'string' && target.className
-        ? target.className
-        : undefined,
-    isContentEditable: (target as HTMLElement).isContentEditable,
-  };
-}
-
-function describeKeyEvent(event: KeyboardEvent) {
+function describeShortcutEvent(event: KeyboardEvent) {
   return {
     key: event.key,
     code: event.code,
@@ -44,29 +30,16 @@ function describeKeyEvent(event: KeyboardEvent) {
     metaKey: event.metaKey,
     altKey: event.altKey,
     shiftKey: event.shiftKey,
-    repeat: event.repeat,
     defaultPrevented: event.defaultPrevented,
     isComposing: event.isComposing,
     isTextEditingTarget: isTextEditingTarget(event.target),
-    target: describeTarget(event.target),
   };
 }
 
 function isInIframe() {
   try {
-    const inIframe = window.self !== window.top;
-    debugLog('iframe check completed', {
-      inIframe,
-      origin: window.location.origin,
-      href: window.location.href,
-    });
-    return inIframe;
-  } catch (error) {
-    debugLog('iframe check treated as embedded after window.top access error', {
-      error,
-      origin: window.location.origin,
-      href: window.location.href,
-    });
+    return window.self !== window.top;
+  } catch {
     return true;
   }
 }
@@ -86,10 +59,6 @@ function isTextEditingTarget(target: EventTarget | null) {
 
 function isShortcutCandidate(event: KeyboardEvent) {
   return (
-    event.ctrlKey ||
-    event.metaKey ||
-    event.altKey ||
-    event.shiftKey ||
     event.key === '[' ||
     event.key === ']' ||
     event.code === 'BracketLeft' ||
@@ -128,16 +97,7 @@ function getIframeShortcutAction(event: KeyboardEvent): ShortcutDecision {
 }
 
 export function installIframeShortcutBridge() {
-  debugLog('install requested', {
-    alreadyInstalled: Boolean(window[INSTALL_FLAG]),
-    origin: window.location.origin,
-    href: window.location.href,
-  });
-
-  if (window[INSTALL_FLAG]) {
-    debugLog('install skipped because bridge is already installed');
-    return;
-  }
+  if (window[INSTALL_FLAG]) return;
 
   if (!isInIframe()) {
     debugLog('install skipped because window is not in an iframe');
@@ -145,16 +105,10 @@ export function installIframeShortcutBridge() {
   }
 
   window[INSTALL_FLAG] = true;
-  debugLog('installing keydown listeners');
 
   const handledEvents = new WeakSet<KeyboardEvent>();
   const onKeyDown = (event: KeyboardEvent) => {
-    if (handledEvents.has(event)) {
-      if (isShortcutCandidate(event)) {
-        debugLog('duplicate keydown ignored', describeKeyEvent(event));
-      }
-      return;
-    }
+    if (handledEvents.has(event)) return;
     handledEvents.add(event);
 
     const decision = getIframeShortcutAction(event);
@@ -162,7 +116,7 @@ export function installIframeShortcutBridge() {
       if (isShortcutCandidate(event)) {
         debugLog('shortcut candidate rejected', {
           reason: decision.reason,
-          event: describeKeyEvent(event),
+          event: describeShortcutEvent(event),
         });
       }
       return;
@@ -170,7 +124,7 @@ export function installIframeShortcutBridge() {
 
     debugLog('shortcut matched; posting message to parent', {
       action: decision.action,
-      event: describeKeyEvent(event),
+      event: describeShortcutEvent(event),
     });
 
     window.parent.postMessage(
@@ -181,5 +135,4 @@ export function installIframeShortcutBridge() {
 
   window.addEventListener('keydown', onKeyDown, CAPTURE_PHASE);
   document.addEventListener('keydown', onKeyDown, CAPTURE_PHASE);
-  debugLog('keydown listeners installed');
 }
