@@ -8,6 +8,7 @@ import {
   useRef,
   useEffect,
   type ReactNode,
+  type CSSProperties,
 } from 'react';
 import { LexicalComposer } from '@lexical/react/LexicalComposer';
 import { RichTextPlugin } from '@lexical/react/LexicalRichTextPlugin';
@@ -103,6 +104,7 @@ type WysiwygProps = {
   onPasteFiles?: (files: File[]) => void;
   className?: string;
   scrollContainerClassName?: string;
+  scrollContainerStyle?: CSSProperties;
   /** Repo IDs for file search in typeahead */
   repoIds?: string[];
   /** Enables `/` command autocomplete (agent-specific). */
@@ -259,6 +261,7 @@ const WYSIWYGEditor = forwardRef<WYSIWYGEditorRef, WysiwygProps>(
       onPasteFiles,
       className,
       scrollContainerClassName,
+      scrollContainerStyle,
       repoIds,
       executor = null,
       onCmdEnter,
@@ -508,8 +511,21 @@ const WYSIWYGEditor = forwardRef<WYSIWYGEditorRef, WysiwygProps>(
       [placeholder]
     );
 
+    const editableStyle = useMemo<CSSProperties | undefined>(() => {
+      if (!scrollContainerStyle) return undefined;
+      return {
+        maxHeight:
+          typeof scrollContainerStyle.maxHeight === 'number'
+            ? `${scrollContainerStyle.maxHeight}px`
+            : scrollContainerStyle.maxHeight,
+        overflowY:
+          (scrollContainerStyle.overflowY as CSSProperties['overflowY']) ??
+          'auto',
+      };
+    }, [scrollContainerStyle]);
+
     const editorContent = (
-      <div className="wysiwyg text-base relative border-2 border-fuchsia-500/90 bg-fuchsia-500/5">
+      <div className="wysiwyg text-base relative">
         <EditorWorkspaceContext.Provider value={workspaceId}>
           <SessionContext.Provider value={sessionId}>
             <LocalAttachmentsContext.Provider value={localAttachments ?? []}>
@@ -525,22 +541,14 @@ const WYSIWYGEditor = forwardRef<WYSIWYGEditorRef, WysiwygProps>(
                 {!disabled && !showStaticToolbar && <ToolbarPlugin />}
 
                 <div
-                  className={cn(
-                    'relative border-2 border-cyan-500/90 bg-cyan-500/5',
-                    scrollContainerClassName
-                  )}
-                  style={{
-                    maxHeight: '5rem',
-                    overflowY: 'auto',
-                  }}
+                  className={cn('relative', scrollContainerClassName)}
+                  style={scrollContainerStyle}
                 >
                   <RichTextPlugin
                     contentEditable={
                       <ContentEditable
-                        className={cn(
-                          'outline-none border-2 border-lime-500/90 bg-lime-500/5',
-                          className
-                        )}
+                        className={cn('outline-none', className)}
+                        style={editableStyle}
                         aria-label={
                           disabled ? 'Markdown content' : 'Markdown editor'
                         }
