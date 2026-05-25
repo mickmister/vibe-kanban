@@ -125,6 +125,7 @@ The following environment variables can be configured at build time or runtime:
 | `MCP_PORT` | Runtime | Value of `BACKEND_PORT` | MCP server connection port |
 | `DISABLE_WORKTREE_CLEANUP` | Runtime | Not set | Disable all git worktree cleanup including orphan and expired workspace cleanup (for debugging) |
 | `VK_ALLOWED_ORIGINS` | Runtime | Not set | Comma-separated list of origins that are allowed to make backend API requests; supports exact origins plus single-label subdomain wildcard entries like `https://*.example.com` |
+| `VK_ALLOWED_DEV_SERVER_ORIGINS` | Runtime | Not set | Comma-separated list of non-local dev server origins that may be auto-detected from preview logs; supports the same exact and single-label wildcard origin syntax as `VK_ALLOWED_ORIGINS` |
 | `VK_SHARED_API_BASE` | Runtime | Not set | Base URL for the remote/cloud API used by the local desktop app |
 | `VK_SHARED_RELAY_API_BASE` | Runtime | Not set | Base URL for the relay API used by tunnel-mode connections |
 | `VK_TUNNEL` | Runtime | Not set | Enable relay tunnel mode when set (requires relay API base URL) |
@@ -154,6 +155,26 @@ label. For example, `https://*.example.com` matches
 `https://example.com`, or `https://port-*.example.com`. Origins must not
 include paths, queries, fragments, or userinfo. Bare `*` and overly broad
 wildcard patterns like `https://*` or `https://*.com` are rejected.
+
+#### Auto-detecting non-local dev server URLs
+
+Preview log detection always supports local dev server URLs like
+`http://localhost:3000`, `http://127.0.0.1:3000`, and
+`http://0.0.0.0:5173`. To auto-detect dev server URLs on custom domains or
+tunnel providers, set `VK_ALLOWED_DEV_SERVER_ORIGINS`:
+
+```bash
+# Exact public preview URL
+VK_ALLOWED_DEV_SERVER_ORIGINS=https://preview.example.com
+
+# Tunnel or generated preview subdomains
+VK_ALLOWED_DEV_SERVER_ORIGINS=https://*.trycloudflare.com,https://*.ngrok-free.app
+```
+
+This variable uses the same strict origin syntax as `VK_ALLOWED_ORIGINS`:
+origins must include `http://` or `https://`, must not include paths, queries,
+fragments, or userinfo, and wildcard entries are limited to a single leading
+`*.` hostname label.
 
 ### Remote Deployment
 

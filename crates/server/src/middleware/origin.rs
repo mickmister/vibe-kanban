@@ -9,6 +9,9 @@ use axum::{
 use relay_client::RELAY_HEADER;
 use url::Url;
 
+const VK_ALLOWED_ORIGINS_ENV: &str = "VK_ALLOWED_ORIGINS";
+pub const VK_ALLOWED_DEV_SERVER_ORIGINS_ENV: &str = "VK_ALLOWED_DEV_SERVER_ORIGINS";
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct OriginKey {
     https: bool,
@@ -74,6 +77,10 @@ enum AllowedOrigin {
 
 impl AllowedOrigin {
     fn from_env_entry(origin: &str) -> Result<Option<Self>, String> {
+        Self::from_env_entry_for_env(VK_ALLOWED_ORIGINS_ENV, origin)
+    }
+
+    fn from_env_entry_for_env(env_name: &str, origin: &str) -> Result<Option<Self>, String> {
         let origin = origin.trim();
         if origin.is_empty() {
             return Ok(None);
@@ -82,12 +89,12 @@ impl AllowedOrigin {
             return OriginPattern::from_allowed_origin(origin)
                 .map(Self::Pattern)
                 .map(Some)
-                .ok_or_else(|| invalid_allowed_origin(origin));
+                .ok_or_else(|| invalid_allowed_origin(env_name, origin));
         }
         OriginKey::from_allowed_origin(origin)
             .map(Self::Exact)
             .map(Some)
-            .ok_or_else(|| invalid_allowed_origin(origin))
+            .ok_or_else(|| invalid_allowed_origin(env_name, origin))
     }
 
     fn matches(&self, origin: &OriginKey) -> bool {
@@ -148,9 +155,9 @@ impl OriginPattern {
     }
 }
 
-fn invalid_allowed_origin(origin: &str) -> String {
+fn invalid_allowed_origin(env_name: &str, origin: &str) -> String {
     format!(
-        "Invalid VK_ALLOWED_ORIGINS entry `{origin}`. Expected an exact http(s) origin like \
+        "Invalid {env_name} entry `{origin}`. Expected an exact http(s) origin like \
          `https://app.example.com` or a single-label wildcard origin like \
          `https://*.example.com`. Paths, queries, fragments, userinfo, bare `*`, and partial \
          wildcards such as `https://port-*.example.com` are not allowed."
@@ -303,25 +310,65 @@ fn wildcard_subdomain_matches(suffix: &str, host: &str) -> bool {
 }
 
 fn parse_allowed_origins(value: &str) -> Result<Vec<AllowedOrigin>, String> {
+    parse_allowed_origins_for_env(VK_ALLOWED_ORIGINS_ENV, value)
+}
+
+fn parse_allowed_origins_for_env(
+    env_name: &str,
+    value: &str,
+) -> Result<Vec<AllowedOrigin>, String> {
     value
         .split(',')
-        .map(AllowedOrigin::from_env_entry)
+        .map(|entry| AllowedOrigin::from_env_entry_for_env(env_name, entry))
         .filter_map(Result::transpose)
         .collect()
 }
 
 pub fn validate_allowed_origins_config() -> Result<(), String> {
-    let Ok(value) = std::env::var("VK_ALLOWED_ORIGINS") else {
+    validate_allowed_origin_env_config(VK_ALLOWED_ORIGINS_ENV)
+}
+
+pub fn validate_allowed_dev_server_origins_config() -> Result<(), String> {
+    validate_allowed_origin_env_config(VK_ALLOWED_DEV_SERVER_ORIGINS_ENV)
+}
+
+fn validate_allowed_origin_env_config(env_name: &str) -> Result<(), String> {
+    let Ok(value) = std::env::var(env_name) else {
         return Ok(());
     };
 
-    parse_allowed_origins(&value).map(|_| ())
+    parse_allowed_origins_for_env(env_name, &value).map(|_| ())
+}
+
+pub fn allowed_dev_server_origin_entries() -> Vec<String> {
+    let value = match std::env::var(VK_ALLOWED_DEV_SERVER_ORIGINS_ENV) {
+        Ok(value) => value,
+        Err(_) => return Vec::new(),
+    };
+
+    // Configuration is validated at startup. Parse here too so callers never
+    // receive malformed entries if this is used in tests or a partial startup.
+    if let Err(error) = parse_allowed_origins_for_env(VK_ALLOWED_DEV_SERVER_ORIGINS_ENV, &value) {
+        tracing::warn!(
+            error = %error,
+            env = VK_ALLOWED_DEV_SERVER_ORIGINS_ENV,
+            "ignoring invalid allowed dev server origins configuration"
+        );
+        return Vec::new();
+    }
+
+    value
+        .split(',')
+        .map(str::trim)
+        .filter(|entry| !entry.is_empty())
+        .map(ToOwned::to_owned)
+        .collect()
 }
 
 fn allowed_origins() -> &'static Vec<AllowedOrigin> {
     static ALLOWED: OnceLock<Vec<AllowedOrigin>> = OnceLock::new();
     ALLOWED.get_or_init(|| {
-        let value = match std::env::var("VK_ALLOWED_ORIGINS") {
+        let value = match std::env::var(VK_ALLOWED_ORIGINS_ENV) {
             Ok(value) => value,
             Err(_) => return Vec::new(),
         };
@@ -535,6 +582,18 @@ mod tests {
         let error =
             parse_allowed_origins("https://vk.example.com,https://port-*.example.com").unwrap_err();
 
+        assert!(error.contains("https://port-*.example.com"));
+    }
+
+    #[test]
+    fn parse_allowed_origins_reports_custom_env_name() {
+        let error = parse_allowed_origins_for_env(
+            VK_ALLOWED_DEV_SERVER_ORIGINS_ENV,
+            "https://port-*.example.com",
+        )
+        .unwrap_err();
+
+        assert!(error.contains(VK_ALLOWED_DEV_SERVER_ORIGINS_ENV));
         assert!(error.contains("https://port-*.example.com"));
     }
 
