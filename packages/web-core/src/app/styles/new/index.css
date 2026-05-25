@@ -296,6 +296,10 @@ html {
     [contenteditable='true'],
     [role='textbox'] {
       font-size: 16px;
+    }
+
+    .wysiwyg [contenteditable='true'],
+    .wysiwyg [role='textbox'] {
       line-height: 1.5;
     }
   }

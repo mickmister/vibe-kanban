@@ -1,4 +1,4 @@
-import { type RefObject, useEffect, useState } from 'react';
+import { type RefObject, useLayoutEffect, useState } from 'react';
 
 const DEFAULT_COMPACT_HEIGHT_THRESHOLD = 720;
 
@@ -12,7 +12,7 @@ export function useCompactHeight<T extends HTMLElement>(
 ): boolean {
   const [isCompactHeight, setIsCompactHeight] = useState(false);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const container = containerRef.current;
     if (!container) return;
 

@@ -337,9 +337,7 @@ export function CreateChatBoxContainer({
               <h2
                 className={cn(
                   'text-center font-medium tracking-tight text-high',
-                  isCompactHeight
-                    ? 'mb-base text-3xl'
-                    : 'mb-double text-4xl'
+                  isCompactHeight ? 'mb-base text-3xl' : 'mb-double text-4xl'
                 )}
               >
                 {t('createMode.headings.repoStep')}
@@ -355,9 +353,7 @@ export function CreateChatBoxContainer({
               <h2
                 className={cn(
                   'text-center font-medium tracking-tight text-high',
-                  isCompactHeight
-                    ? 'mb-base text-3xl'
-                    : 'mb-double text-4xl'
+                  isCompactHeight ? 'mb-base text-3xl' : 'mb-double text-4xl'
                 )}
               >
                 {t('createMode.headings.chatStep')}
@@ -390,7 +386,7 @@ export function CreateChatBoxContainer({
                       disabled={disabled}
                       className={
                         isCompactHeight
-                          ? 'min-h-[6rem] max-h-[6rem] overflow-y-auto'
+                          ? 'min-h-[6rem] max-h-[35dvh] overflow-y-auto'
                           : 'min-h-double max-h-[50dvh] overflow-y-auto'
                       }
                       repoIds={repoIds}
