@@ -359,13 +359,6 @@ export function CreateChatBoxContainer({
                       onChange={onChange}
                       onCmdEnter={onCmdEnter}
                       disabled={disabled}
-                      debugRenderLabel="create-composer"
-                      debugSurfaceClassName="bg-red-500/20"
-                      constrainedComposerStyle={{
-                        minHeight: '1rem',
-                        maxHeight: '24dvh',
-                        overflowY: 'auto',
-                      }}
                       repoIds={repoIds}
                       repoId={repoId}
                       executor={executor}

@@ -103,9 +103,6 @@ type WysiwygProps = {
   disabled?: boolean;
   onPasteFiles?: (files: File[]) => void;
   className?: string;
-  constrainedComposerStyle?: CSSProperties;
-  debugRenderLabel?: string;
-  debugSurfaceClassName?: string;
   /** Repo IDs for file search in typeahead */
   repoIds?: string[];
   /** Enables `/` command autocomplete (agent-specific). */
@@ -261,9 +258,6 @@ const WYSIWYGEditor = forwardRef<WYSIWYGEditorRef, WysiwygProps>(
       disabled = false,
       onPasteFiles,
       className,
-      constrainedComposerStyle,
-      debugRenderLabel,
-      debugSurfaceClassName,
       repoIds,
       executor = null,
       onCmdEnter,
@@ -513,6 +507,15 @@ const WYSIWYGEditor = forwardRef<WYSIWYGEditorRef, WysiwygProps>(
       [placeholder]
     );
 
+    const composerWrapperStyle = useMemo<CSSProperties | undefined>(() => {
+      if (!sendShortcut || disabled) return undefined;
+      return {
+        minHeight: '1rem',
+        maxHeight: '24dvh',
+        overflowY: 'auto',
+      };
+    }, [disabled, sendShortcut]);
+
     const editorContent = (
       <div className="wysiwyg text-base relative">
         <EditorWorkspaceContext.Provider value={workspaceId}>
@@ -529,18 +532,11 @@ const WYSIWYGEditor = forwardRef<WYSIWYGEditorRef, WysiwygProps>(
                 />
                 {!disabled && !showStaticToolbar && <ToolbarPlugin />}
 
-                <div
-                  className="relative"
-                  style={constrainedComposerStyle}
-                >
+                <div className="relative" style={composerWrapperStyle}>
                   <RichTextPlugin
                     contentEditable={
                       <ContentEditable
-                        className={cn(
-                          'outline-none',
-                          debugSurfaceClassName,
-                          className
-                        )}
+                        className={cn('outline-none', className)}
                         aria-label={
                           disabled ? 'Markdown content' : 'Markdown editor'
                         }
@@ -620,11 +616,6 @@ const WYSIWYGEditor = forwardRef<WYSIWYGEditorRef, WysiwygProps>(
             </LocalAttachmentsContext.Provider>
           </SessionContext.Provider>
         </EditorWorkspaceContext.Provider>
-        {debugRenderLabel && (
-          <div className="mt-1 text-[10px] text-low opacity-80">
-            debug-editor: {debugRenderLabel}
-          </div>
-        )}
       </div>
     );
 
