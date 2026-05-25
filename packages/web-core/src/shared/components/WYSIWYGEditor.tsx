@@ -103,8 +103,7 @@ type WysiwygProps = {
   disabled?: boolean;
   onPasteFiles?: (files: File[]) => void;
   className?: string;
-  scrollContainerClassName?: string;
-  scrollContainerStyle?: CSSProperties;
+  constrainedComposerStyle?: CSSProperties;
   /** Repo IDs for file search in typeahead */
   repoIds?: string[];
   /** Enables `/` command autocomplete (agent-specific). */
@@ -260,8 +259,7 @@ const WYSIWYGEditor = forwardRef<WYSIWYGEditorRef, WysiwygProps>(
       disabled = false,
       onPasteFiles,
       className,
-      scrollContainerClassName,
-      scrollContainerStyle,
+      constrainedComposerStyle,
       repoIds,
       executor = null,
       onCmdEnter,
@@ -511,19 +509,6 @@ const WYSIWYGEditor = forwardRef<WYSIWYGEditorRef, WysiwygProps>(
       [placeholder]
     );
 
-    const editableStyle = useMemo<CSSProperties | undefined>(() => {
-      if (!scrollContainerStyle) return undefined;
-      return {
-        maxHeight:
-          typeof scrollContainerStyle.maxHeight === 'number'
-            ? `${scrollContainerStyle.maxHeight}px`
-            : scrollContainerStyle.maxHeight,
-        overflowY:
-          (scrollContainerStyle.overflowY as CSSProperties['overflowY']) ??
-          'auto',
-      };
-    }, [scrollContainerStyle]);
-
     const editorContent = (
       <div className="wysiwyg text-base relative">
         <EditorWorkspaceContext.Provider value={workspaceId}>
@@ -541,14 +526,13 @@ const WYSIWYGEditor = forwardRef<WYSIWYGEditorRef, WysiwygProps>(
                 {!disabled && !showStaticToolbar && <ToolbarPlugin />}
 
                 <div
-                  className={cn('relative', scrollContainerClassName)}
-                  style={scrollContainerStyle}
+                  className="relative"
+                  style={constrainedComposerStyle}
                 >
                   <RichTextPlugin
                     contentEditable={
                       <ContentEditable
                         className={cn('outline-none', className)}
-                        style={editableStyle}
                         aria-label={
                           disabled ? 'Markdown content' : 'Markdown editor'
                         }

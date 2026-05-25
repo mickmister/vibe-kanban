@@ -928,8 +928,11 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
         onChange={onChange}
         onCmdEnter={onCmdEnter}
         disabled={disabled}
-        scrollContainerClassName="min-h-double"
-        scrollContainerStyle={{ height: '8rem', maxHeight: '8rem', overflowY: 'auto' }}
+        constrainedComposerStyle={{
+          minHeight: '1rem',
+          maxHeight: '24dvh',
+          overflowY: 'auto',
+        }}
         repoIds={repoIds}
         executor={executor}
         sessionId={sessionId}
