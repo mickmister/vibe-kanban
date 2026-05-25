@@ -102,6 +102,7 @@ type WysiwygProps = {
   disabled?: boolean;
   onPasteFiles?: (files: File[]) => void;
   className?: string;
+  scrollContainerClassName?: string;
   /** Repo IDs for file search in typeahead */
   repoIds?: string[];
   /** Enables `/` command autocomplete (agent-specific). */
@@ -257,6 +258,7 @@ const WYSIWYGEditor = forwardRef<WYSIWYGEditorRef, WysiwygProps>(
       disabled = false,
       onPasteFiles,
       className,
+      scrollContainerClassName,
       repoIds,
       executor = null,
       onCmdEnter,
@@ -498,15 +500,12 @@ const WYSIWYGEditor = forwardRef<WYSIWYGEditorRef, WysiwygProps>(
     const placeholderElement = useMemo(
       () => (
         <div
-          className={cn(
-            'absolute top-0 left-0 text-base text-secondary-foreground text-low pointer-events-none truncate',
-            className
-          )}
+          className="absolute top-0 left-0 text-base text-secondary-foreground text-low pointer-events-none truncate"
         >
           {placeholder}
         </div>
       ),
-      [placeholder, className]
+      [placeholder]
     );
 
     const editorContent = (
@@ -525,7 +524,7 @@ const WYSIWYGEditor = forwardRef<WYSIWYGEditorRef, WysiwygProps>(
                 />
                 {!disabled && !showStaticToolbar && <ToolbarPlugin />}
 
-                <div className="relative">
+                <div className={cn('relative', scrollContainerClassName)}>
                   <RichTextPlugin
                     contentEditable={
                       <ContentEditable
