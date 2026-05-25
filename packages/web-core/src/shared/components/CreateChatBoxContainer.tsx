@@ -360,6 +360,7 @@ export function CreateChatBoxContainer({
                       onCmdEnter={onCmdEnter}
                       disabled={disabled}
                       debugRenderLabel="create-composer"
+                      debugSurfaceClassName="bg-red-500/20"
                       constrainedComposerStyle={{
                         minHeight: '1rem',
                         maxHeight: '24dvh',

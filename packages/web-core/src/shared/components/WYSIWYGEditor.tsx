@@ -105,6 +105,7 @@ type WysiwygProps = {
   className?: string;
   constrainedComposerStyle?: CSSProperties;
   debugRenderLabel?: string;
+  debugSurfaceClassName?: string;
   /** Repo IDs for file search in typeahead */
   repoIds?: string[];
   /** Enables `/` command autocomplete (agent-specific). */
@@ -262,6 +263,7 @@ const WYSIWYGEditor = forwardRef<WYSIWYGEditorRef, WysiwygProps>(
       className,
       constrainedComposerStyle,
       debugRenderLabel,
+      debugSurfaceClassName,
       repoIds,
       executor = null,
       onCmdEnter,
@@ -534,7 +536,11 @@ const WYSIWYGEditor = forwardRef<WYSIWYGEditorRef, WysiwygProps>(
                   <RichTextPlugin
                     contentEditable={
                       <ContentEditable
-                        className={cn('outline-none', className)}
+                        className={cn(
+                          'outline-none',
+                          debugSurfaceClassName,
+                          className
+                        )}
                         aria-label={
                           disabled ? 'Markdown content' : 'Markdown editor'
                         }

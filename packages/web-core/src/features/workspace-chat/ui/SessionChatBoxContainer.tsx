@@ -929,6 +929,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
         onCmdEnter={onCmdEnter}
         disabled={disabled}
         debugRenderLabel="followup-composer"
+        debugSurfaceClassName="bg-blue-500/20"
         constrainedComposerStyle={{
           minHeight: '1rem',
           maxHeight: '24dvh',
