@@ -928,6 +928,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
         onChange={onChange}
         onCmdEnter={onCmdEnter}
         disabled={disabled}
+        debugRenderLabel="followup-composer"
         constrainedComposerStyle={{
           minHeight: '1rem',
           maxHeight: '24dvh',

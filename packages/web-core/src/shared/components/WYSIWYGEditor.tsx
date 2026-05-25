@@ -104,6 +104,7 @@ type WysiwygProps = {
   onPasteFiles?: (files: File[]) => void;
   className?: string;
   constrainedComposerStyle?: CSSProperties;
+  debugRenderLabel?: string;
   /** Repo IDs for file search in typeahead */
   repoIds?: string[];
   /** Enables `/` command autocomplete (agent-specific). */
@@ -260,6 +261,7 @@ const WYSIWYGEditor = forwardRef<WYSIWYGEditorRef, WysiwygProps>(
       onPasteFiles,
       className,
       constrainedComposerStyle,
+      debugRenderLabel,
       repoIds,
       executor = null,
       onCmdEnter,
@@ -612,6 +614,11 @@ const WYSIWYGEditor = forwardRef<WYSIWYGEditorRef, WysiwygProps>(
             </LocalAttachmentsContext.Provider>
           </SessionContext.Provider>
         </EditorWorkspaceContext.Provider>
+        {debugRenderLabel && (
+          <div className="mt-1 text-[10px] text-low opacity-80">
+            debug-editor: {debugRenderLabel}
+          </div>
+        )}
       </div>
     );
 

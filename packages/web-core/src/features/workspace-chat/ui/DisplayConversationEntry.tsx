@@ -495,6 +495,7 @@ function AppChatMarkdown({
         <WYSIWYGEditor
           value={content}
           disabled
+          debugRenderLabel="agent-response"
           className={className}
           workspaceId={workspaceId}
           sessionId={sessionId}
@@ -796,6 +797,7 @@ function UserFeedbackEntry({
         <WYSIWYGEditor
           value={content}
           disabled
+          debugRenderLabel="agent-response-denied-tool"
           className="whitespace-pre-wrap break-words flex flex-col gap-1 font-light py-3"
           workspaceId={workspaceId}
           sessionId={sessionId}

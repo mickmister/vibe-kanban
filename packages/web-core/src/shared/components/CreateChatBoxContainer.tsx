@@ -359,6 +359,7 @@ export function CreateChatBoxContainer({
                       onChange={onChange}
                       onCmdEnter={onCmdEnter}
                       disabled={disabled}
+                      debugRenderLabel="create-composer"
                       constrainedComposerStyle={{
                         minHeight: '1rem',
                         maxHeight: '24dvh',
