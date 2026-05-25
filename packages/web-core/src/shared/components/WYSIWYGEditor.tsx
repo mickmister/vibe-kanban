@@ -69,6 +69,7 @@ import { type EditorState, type LexicalEditor } from 'lexical';
 import { useLexicalComposerContext } from '@lexical/react/LexicalComposerContext';
 import { useDiffPaths } from '@/shared/stores/useWorkspaceDiffStore';
 import { useSlashCommands } from '@/shared/hooks/useExecutorDiscovery';
+import { useIsMobile } from '@/shared/hooks/useIsMobile';
 import { useUiPreferencesStore } from '@/shared/stores/useUiPreferencesStore';
 import { cn } from '@/shared/lib/utils';
 import { repoApi } from '@/shared/lib/api';
@@ -299,6 +300,7 @@ const WYSIWYGEditor = forwardRef<WYSIWYGEditorRef, WysiwygProps>(
     // Copy button state
     const [copied, setCopied] = useState(false);
     const diffPaths = useDiffPaths();
+    const isMobile = useIsMobile();
     const preferredRepoId = useUiPreferencesStore(
       (state) => state.fileSearchRepoId
     );
@@ -508,13 +510,13 @@ const WYSIWYGEditor = forwardRef<WYSIWYGEditorRef, WysiwygProps>(
     );
 
     const composerWrapperStyle = useMemo<CSSProperties | undefined>(() => {
-      if (!sendShortcut || disabled) return undefined;
+      if (!isMobile || !sendShortcut || disabled) return undefined;
       return {
         minHeight: '1rem',
         maxHeight: '24dvh',
         overflowY: 'auto',
       };
-    }, [disabled, sendShortcut]);
+    }, [disabled, isMobile, sendShortcut]);
 
     const editorContent = (
       <div className="wysiwyg text-base relative">
