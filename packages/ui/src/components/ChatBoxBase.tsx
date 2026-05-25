@@ -128,7 +128,7 @@ export function ChatBoxBase({
       )}
 
       {/* Editor area */}
-      <div className="flex flex-col gap-plusfifty px-base py-base rounded-md">
+      <div className="flex flex-col gap-plusfifty rounded-md border-2 border-amber-500/90 bg-amber-500/5 px-base py-base">
         {editor}
 
         {/* Footer - Controls */}

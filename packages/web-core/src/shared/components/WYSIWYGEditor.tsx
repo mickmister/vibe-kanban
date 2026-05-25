@@ -509,7 +509,7 @@ const WYSIWYGEditor = forwardRef<WYSIWYGEditorRef, WysiwygProps>(
     );
 
     const editorContent = (
-      <div className="wysiwyg text-base relative">
+      <div className="wysiwyg text-base relative border-2 border-fuchsia-500/90 bg-fuchsia-500/5">
         <EditorWorkspaceContext.Provider value={workspaceId}>
           <SessionContext.Provider value={sessionId}>
             <LocalAttachmentsContext.Provider value={localAttachments ?? []}>
@@ -524,11 +524,19 @@ const WYSIWYGEditor = forwardRef<WYSIWYGEditorRef, WysiwygProps>(
                 />
                 {!disabled && !showStaticToolbar && <ToolbarPlugin />}
 
-                <div className={cn('relative', scrollContainerClassName)}>
+                <div
+                  className={cn(
+                    'relative border-2 border-cyan-500/90 bg-cyan-500/5',
+                    scrollContainerClassName
+                  )}
+                >
                   <RichTextPlugin
                     contentEditable={
                       <ContentEditable
-                        className={cn('outline-none', className)}
+                        className={cn(
+                          'outline-none border-2 border-lime-500/90 bg-lime-500/5',
+                          className
+                        )}
                         aria-label={
                           disabled ? 'Markdown content' : 'Markdown editor'
                         }
