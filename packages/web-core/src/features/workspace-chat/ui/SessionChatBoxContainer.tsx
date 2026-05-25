@@ -928,6 +928,8 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
         onChange={onChange}
         onCmdEnter={onCmdEnter}
         disabled={disabled}
+        className="min-h-double max-h-[50vh] overflow-y-auto"
+        constrainMobileComposerHeight
         repoIds={repoIds}
         executor={executor}
         sessionId={sessionId}

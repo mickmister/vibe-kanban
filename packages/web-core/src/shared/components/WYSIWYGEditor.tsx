@@ -104,6 +104,7 @@ type WysiwygProps = {
   disabled?: boolean;
   onPasteFiles?: (files: File[]) => void;
   className?: string;
+  constrainMobileComposerHeight?: boolean;
   /** Repo IDs for file search in typeahead */
   repoIds?: string[];
   /** Enables `/` command autocomplete (agent-specific). */
@@ -259,6 +260,7 @@ const WYSIWYGEditor = forwardRef<WYSIWYGEditorRef, WysiwygProps>(
       disabled = false,
       onPasteFiles,
       className,
+      constrainMobileComposerHeight = false,
       repoIds,
       executor = null,
       onCmdEnter,
@@ -510,13 +512,15 @@ const WYSIWYGEditor = forwardRef<WYSIWYGEditorRef, WysiwygProps>(
     );
 
     const composerWrapperStyle = useMemo<CSSProperties | undefined>(() => {
-      if (!isMobile || !sendShortcut || disabled) return undefined;
+      if (!constrainMobileComposerHeight || !isMobile || disabled) {
+        return undefined;
+      }
       return {
         minHeight: '1rem',
         maxHeight: '24dvh',
         overflowY: 'auto',
       };
-    }, [disabled, isMobile, sendShortcut]);
+    }, [constrainMobileComposerHeight, disabled, isMobile]);
 
     const editorContent = (
       <div className="wysiwyg text-base relative">
