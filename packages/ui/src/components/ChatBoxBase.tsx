@@ -53,9 +53,6 @@ interface ChatBoxBaseProps {
 
   // Dropzone props for drag-and-drop image uploads
   dropzone?: DropzoneProps;
-
-  // Whether to collapse spacing to preserve vertical space
-  isCompact?: boolean;
 }
 
 /**
@@ -75,7 +72,6 @@ export function ChatBoxBase({
   visualVariant,
   isRunning,
   dropzone,
-  isCompact = false,
 }: ChatBoxBaseProps) {
   const { t } = useTranslation(['common', 'tasks']);
 
@@ -86,7 +82,7 @@ export function ChatBoxBase({
     <div
       {...(dropzone?.getRootProps() ?? {})}
       className={cn(
-        'relative flex w-chat max-w-full shrink-0 flex-col rounded-sm border border-border bg-secondary',
+        'relative flex w-chat max-w-full flex-col rounded-sm border border-border bg-secondary',
         (visualVariant === VisualVariant.FEEDBACK ||
           visualVariant === VisualVariant.EDIT ||
           visualVariant === VisualVariant.PLAN) &&
@@ -123,12 +119,7 @@ export function ChatBoxBase({
 
       {/* Header - Stats and selector */}
       {visualVariant === VisualVariant.NORMAL && hasHeaderContent && (
-        <div
-          className={cn(
-            'flex items-center border-b',
-            isCompact ? 'gap-half px-base py-half' : 'gap-base px-base py-base'
-          )}
-        >
+        <div className="flex items-center gap-base border-b px-base py-base">
           <div className="flex flex-1 items-center gap-base text-sm min-w-0 overflow-hidden">
             {headerLeft}
           </div>
@@ -137,21 +128,11 @@ export function ChatBoxBase({
       )}
 
       {/* Editor area */}
-      <div
-        className={cn(
-          'flex flex-col rounded-md px-base',
-          isCompact ? 'gap-half py-half' : 'gap-plusfifty py-base'
-        )}
-      >
+      <div className="flex flex-col gap-plusfifty px-base py-base rounded-md">
         {editor}
 
         {/* Footer - Controls */}
-        <div
-          className={cn(
-            'flex items-end justify-between',
-            isCompact ? 'gap-half' : 'gap-base'
-          )}
-        >
+        <div className="flex items-end justify-between gap-base">
           <Toolbar className="flex-1 min-w-0 flex-wrap !gap-half">
             {modelSelector}
             {footerLeft}

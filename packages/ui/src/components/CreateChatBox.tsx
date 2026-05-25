@@ -80,7 +80,6 @@ interface CreateChatBoxProps<TExecutor extends string = string> {
   repoSummaryLabel: string;
   repoSummaryTitle: string;
   linkedIssue?: LinkedIssueBadgeProps | null;
-  isCompact?: boolean;
 }
 
 function defaultExecutorLabel(executor: string) {
@@ -114,7 +113,6 @@ export function CreateChatBox<TExecutor extends string = string>({
   repoSummaryLabel,
   repoSummaryTitle,
   linkedIssue,
-  isCompact = false,
 }: CreateChatBoxProps<TExecutor>) {
   const { t } = useTranslation(['common', 'tasks']);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -184,7 +182,6 @@ export function CreateChatBox<TExecutor extends string = string>({
       error={error}
       visualVariant={VisualVariant.NORMAL}
       dropzone={dropzone}
-      isCompact={isCompact}
       modelSelector={isMinimalZen ? undefined : modelSelector}
       headerLeft={
         isMinimalZen ? undefined : (

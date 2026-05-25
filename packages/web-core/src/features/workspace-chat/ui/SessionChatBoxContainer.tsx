@@ -113,8 +113,6 @@ interface SharedProps {
   disableViewCode: boolean;
   /** Replace diff stats with an "Open Workspace" button in header */
   showOpenWorkspaceButton: boolean;
-  /** Reduce chrome to prioritize conversation in short containers */
-  isCompactHeight?: boolean;
 }
 
 /** Props for existing session mode */
@@ -162,7 +160,6 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     getActiveTurnPatchKey,
     disableViewCode = false,
     showOpenWorkspaceButton,
-    isCompactHeight = false,
   } = props;
 
   // Extract mode-specific values
@@ -931,11 +928,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
         onChange={onChange}
         onCmdEnter={onCmdEnter}
         disabled={disabled}
-        className={
-          isCompactHeight
-            ? 'min-h-double max-h-[35dvh] overflow-y-auto'
-            : 'min-h-double max-h-[50dvh] overflow-y-auto'
-        }
+        className="min-h-double max-h-[50vh] overflow-y-auto"
         repoIds={repoIds}
         executor={executor}
         sessionId={sessionId}
@@ -945,7 +938,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
         sendShortcut={config?.send_message_shortcut}
       />
     ),
-    [config?.send_message_shortcut, isCompactHeight, sessionId]
+    [config?.send_message_shortcut, sessionId]
   );
 
   const modelSelectorNode = effectiveExecutor ? (
@@ -1007,7 +1000,6 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
           linesAdded: 0,
           linesRemoved: 0,
         }}
-        isCompact={isCompactHeight}
         onViewCode={disableViewCode ? undefined : handleViewCode}
         chatViewMode={chatViewMode}
         chatViewModeSelector={chatViewModeSelector}
@@ -1032,7 +1024,6 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
       repoIds={repoIds}
       tokenUsageInfo={tokenUsageInfo}
       supportsContextUsage={supportsContextUsage}
-      isCompact={isCompactHeight}
       formatExecutorLabel={toPrettyCase}
       formatSessionDate={(createdAt) =>
         formatDateShortWithTime(

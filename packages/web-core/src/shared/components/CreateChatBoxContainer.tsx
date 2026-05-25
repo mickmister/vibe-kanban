@@ -4,7 +4,6 @@ import {
   useCallback,
   useState,
   useEffect,
-  useRef,
 } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useDropzone } from 'react-dropzone';
@@ -27,8 +26,6 @@ import { SettingsDialog } from '@/shared/dialogs/settings/SettingsDialog';
 import { CreateModeRepoPickerBar } from './CreateModeRepoPickerBar';
 import { ModelSelectorContainer } from '@/shared/components/ModelSelectorContainer';
 import type { ChatViewMode } from '@/shared/stores/useUiPreferencesStore';
-import { cn } from '@/shared/lib/utils';
-import { useCompactHeight } from '@/shared/hooks/useCompactHeight';
 
 function getRepoDisplayName(repo: Repo) {
   return repo.display_name || repo.name;
@@ -75,14 +72,12 @@ export function CreateChatBoxContainer({
   const { createWorkspace } = useCreateWorkspace();
   const hasSelectedRepos = repos.length > 0;
   const [hasAttemptedSubmit, setHasAttemptedSubmit] = useState(false);
-  const containerRef = useRef<HTMLDivElement>(null);
   const [hasInitializedStep, setHasInitializedStep] = useState(
     () => hasSelectedRepos || hasResolvedInitialRepoDefaults
   );
   const [isSelectingRepos, setIsSelectingRepos] = useState(
     () => !hasSelectedRepos
   );
-  const isCompactHeight = useCompactHeight(containerRef);
 
   useEffect(() => {
     if (!hasInitialValue || hasInitializedStep) return;
@@ -319,27 +314,12 @@ export function CreateChatBoxContainer({
   }
 
   return (
-    <div
-      ref={containerRef}
-      className="relative flex h-full flex-1 flex-col bg-primary"
-    >
-      <div
-        className={cn(
-          'flex flex-1 overflow-y-auto px-base',
-          isCompactHeight
-            ? 'py-base'
-            : 'py-base sm:items-center sm:justify-center sm:py-0'
-        )}
-      >
-        <div className="flex w-chat max-w-full flex-col gap-base sm:my-0">
+    <div className="relative flex flex-1 flex-col bg-primary h-full">
+      <div className="flex flex-1 items-center justify-center px-base">
+        <div className="flex w-chat max-w-full flex-col gap-base">
           {showRepoPickerStep && (
             <>
-              <h2
-                className={cn(
-                  'text-center font-medium tracking-tight text-high',
-                  isCompactHeight ? 'mb-base text-3xl' : 'mb-double text-4xl'
-                )}
-              >
+              <h2 className="mb-double text-center text-4xl font-medium tracking-tight text-high">
                 {t('createMode.headings.repoStep')}
               </h2>
               <CreateModeRepoPickerBar
@@ -350,12 +330,7 @@ export function CreateChatBoxContainer({
 
           {showChatStep && (
             <>
-              <h2
-                className={cn(
-                  'text-center font-medium tracking-tight text-high',
-                  isCompactHeight ? 'mb-base text-3xl' : 'mb-double text-4xl'
-                )}
-              >
+              <h2 className="mb-double text-center text-4xl font-medium tracking-tight text-high">
                 {t('createMode.headings.chatStep')}
               </h2>
 
@@ -384,11 +359,7 @@ export function CreateChatBoxContainer({
                       onChange={onChange}
                       onCmdEnter={onCmdEnter}
                       disabled={disabled}
-                      className={
-                        isCompactHeight
-                          ? 'min-h-double max-h-[35dvh] overflow-y-auto'
-                          : 'min-h-double max-h-[50dvh] overflow-y-auto'
-                      }
+                      className="min-h-double max-h-[50vh] overflow-y-auto"
                       repoIds={repoIds}
                       repoId={repoId}
                       executor={executor}
@@ -437,7 +408,6 @@ export function CreateChatBoxContainer({
                   onEditRepos={() => setIsSelectingRepos(true)}
                   repoSummaryLabel={repoSummaryLabel}
                   repoSummaryTitle={repoSummaryTitle}
-                  isCompact={isCompactHeight}
                   linkedIssue={
                     linkedIssue?.simpleId
                       ? {

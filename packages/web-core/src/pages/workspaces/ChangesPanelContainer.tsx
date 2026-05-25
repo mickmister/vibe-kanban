@@ -170,9 +170,6 @@ const PIERRE_DIFFS_THEME_CSS = `
 
   [data-code] {
     padding-bottom: 0;
-    -webkit-overflow-scrolling: touch;
-    overscroll-behavior-x: contain;
-    touch-action: pan-x pan-y;
   }
   [data-code]::-webkit-scrollbar {
     height: 8px;
@@ -864,11 +861,7 @@ export const ChangesPanelContainer = memo(function ChangesPanelContainer({
         {...({ ref: virtualizerRef } as Record<string, unknown>)}
         className={`w-full h-full overflow-auto bg-secondary px-base pt-1 ${className}`}
         contentClassName="flex flex-col gap-1"
-        style={{
-          contain: 'layout style paint',
-          WebkitOverflowScrolling: 'touch',
-          touchAction: 'pan-x pan-y',
-        }}
+        style={{ contain: 'layout style paint' }}
       >
         {itemsToRender.map(({ diff, initialExpanded }) => {
           const path = diff.newPath || diff.oldPath || '';

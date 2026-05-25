@@ -1,6 +1,7 @@
 import type { ReactNode, RefObject } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ArrowDownIcon, SpinnerIcon } from '@phosphor-icons/react';
+import { cn } from '../lib/cn';
 
 export interface WorkspacesMainWorkspace {
   id: string;
@@ -17,6 +18,7 @@ interface WorkspacesMainProps {
   isAtBottom?: boolean;
   onAtBottomChange?: (atBottom: boolean) => void;
   onScrollToBottom?: (behavior?: 'auto' | 'smooth') => void;
+  isMobile?: boolean;
 }
 
 export function WorkspacesMain({
@@ -29,6 +31,7 @@ export function WorkspacesMain({
   contextBarContent,
   isAtBottom = true,
   onScrollToBottom,
+  isMobile,
 }: WorkspacesMainProps) {
   const { t } = useTranslation(['tasks', 'common']);
 
@@ -36,7 +39,10 @@ export function WorkspacesMain({
   return (
     <main
       ref={containerRef}
-      className="relative flex h-full min-h-0 flex-1 flex-col bg-primary"
+      className={cn(
+        'relative flex flex-1 flex-col bg-primary',
+        isMobile ? 'min-h-0' : 'h-full'
+      )}
     >
       {/* Conversation content - conditional based on loading/workspace state */}
       {isLoading ? (
@@ -75,7 +81,7 @@ export function WorkspacesMain({
       )}
       {/* Chat box - always rendered to prevent flash during workspace switch */}
       <div
-        className="shrink-0 flex justify-center @container pl-px"
+        className="flex justify-center @container pl-px"
         data-chatbox-container="true"
       >
         {chatBoxContent}
