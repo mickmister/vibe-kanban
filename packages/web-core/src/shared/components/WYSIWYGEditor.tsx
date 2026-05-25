@@ -529,6 +529,10 @@ const WYSIWYGEditor = forwardRef<WYSIWYGEditorRef, WysiwygProps>(
                     'relative border-2 border-cyan-500/90 bg-cyan-500/5',
                     scrollContainerClassName
                   )}
+                  style={{
+                    maxHeight: '5rem',
+                    overflowY: 'auto',
+                  }}
                 >
                   <RichTextPlugin
                     contentEditable={
