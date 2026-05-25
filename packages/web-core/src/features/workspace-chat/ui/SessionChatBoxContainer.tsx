@@ -928,7 +928,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
         onChange={onChange}
         onCmdEnter={onCmdEnter}
         disabled={disabled}
-        className="min-h-double max-h-[35dvh] overflow-y-auto"
+        className="min-h-double max-h-[5rem] overflow-y-auto"
         repoIds={repoIds}
         executor={executor}
         sessionId={sessionId}

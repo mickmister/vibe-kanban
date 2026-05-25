@@ -359,7 +359,7 @@ export function CreateChatBoxContainer({
                       onChange={onChange}
                       onCmdEnter={onCmdEnter}
                       disabled={disabled}
-                      className="min-h-double max-h-[35dvh] overflow-y-auto"
+                      className="min-h-double max-h-[5rem] overflow-y-auto"
                       repoIds={repoIds}
                       repoId={repoId}
                       executor={executor}
