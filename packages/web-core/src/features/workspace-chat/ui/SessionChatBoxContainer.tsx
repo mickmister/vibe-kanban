@@ -933,7 +933,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
         disabled={disabled}
         className={
           isCompactHeight
-            ? 'min-h-[6rem] max-h-[35dvh] overflow-y-auto'
+            ? 'min-h-double max-h-[35dvh] overflow-y-auto'
             : 'min-h-double max-h-[50dvh] overflow-y-auto'
         }
         repoIds={repoIds}
