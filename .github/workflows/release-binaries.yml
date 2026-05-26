@@ -3,17 +3,17 @@ name: Release Binaries
 on:
   push:
     branches:
-      - '**'
+      - "**"
     tags:
-      - 'v*'
+      - "v*"
   workflow_dispatch:
     inputs:
       vk_ref:
-        description: 'VK ref/SHA to build or look up. Defaults to the workflow ref.'
+        description: "VK ref/SHA to build or look up. Defaults to the workflow ref."
         required: false
         type: string
       force_rebuild:
-        description: 'Rebuild and republish even if the SHA-addressed release already has all required Linux assets.'
+        description: "Rebuild and republish even if the SHA-addressed release already has all required runtime assets."
         required: false
         default: false
         type: boolean
@@ -79,7 +79,7 @@ jobs:
 
           short_sha="${vk_sha:0:12}"
           release_tag="vk-assets-${vk_sha}"
-          release_name="VK Linux Runtime Assets (${short_sha})"
+          release_name="VK Runtime Assets (${short_sha})"
 
           echo "should_run=true" >> "$GITHUB_OUTPUT"
           echo "checkout_ref=$vk_sha" >> "$GITHUB_OUTPUT"
@@ -94,25 +94,27 @@ jobs:
           cat <<'JSON' >> "$GITHUB_OUTPUT"
           {"include":[
             {"target":"x86_64-unknown-linux-musl","os":"ubuntu-24.04","name":"linux-x64","archive_ext":"tar.gz","package_format":"tar.gz"},
-            {"target":"aarch64-unknown-linux-musl","os":"ubuntu-24.04-arm","name":"linux-arm64","archive_ext":"tar.gz","package_format":"tar.gz"}
+            {"target":"aarch64-unknown-linux-musl","os":"ubuntu-24.04-arm","name":"linux-arm64","archive_ext":"tar.gz","package_format":"tar.gz"},
+            {"target":"aarch64-apple-darwin","os":"macos-15-xlarge","name":"macos-arm64","archive_ext":"tar.gz","package_format":"tar.gz"}
           ]}
           JSON
           echo 'EOF' >> "$GITHUB_OUTPUT"
           echo 'release_body<<EOF' >> "$GITHUB_OUTPUT"
           cat <<EOF >> "$GITHUB_OUTPUT"
-          Linux runtime assets for VK commit ${vk_sha}.
+          Runtime assets for VK commit ${vk_sha}.
 
           Deterministic lookup tag: \`${release_tag}\`
 
-          Runtime contract for vibe-dashboard Docker consumers:
-          - Required asset: \`vibe-kanban-linux-x64.tar.gz\` or \`vibe-kanban-linux-arm64.tar.gz\`, selected by container architecture.
+          Runtime contract for release consumers:
+          - Linux container consumers should use \`vibe-kanban-linux-x64.tar.gz\` or \`vibe-kanban-linux-arm64.tar.gz\`, selected by container architecture.
+          - macOS ARM consumers should use \`vibe-kanban-macos-arm64.tar.gz\`.
           - Each archive contains the \`vibe-kanban\` executable, built from the VK \`server\` binary.
           - The local web UI is embedded into the executable at build time; no separate frontend/dist artifact is required.
-          - The executable creates and uses its normal local data directory at runtime. Containers should provide a writable HOME/XDG data location if persistence is needed.
+          - The executable creates and uses its normal local data directory at runtime. Containers should provide a writable HOME/XDG data location if persistence is needed; macOS release builds use the platform Application Support data location.
           - Runtime ports are configured with \`HOST\`, \`PORT\`/\`BACKEND_PORT\`, and optionally \`PREVIEW_PROXY_PORT\`.
-          - \`vibe-kanban-mcp\` is not part of this Docker runtime contract and is not required to run the VK app side.
+          - \`vibe-kanban-mcp\` is not part of this runtime contract and is not required to run the VK app side.
 
-          Release assets include Linux archives, checksum files, and a machine-readable \`manifest.json\`.
+          Release assets include runtime archives, checksum files, and a machine-readable \`manifest.json\`.
           EOF
           echo 'EOF' >> "$GITHUB_OUTPUT"
 
@@ -144,6 +146,8 @@ jobs:
             "vibe-kanban-linux-x64.tar.gz.sha256"
             "vibe-kanban-linux-arm64.tar.gz"
             "vibe-kanban-linux-arm64.tar.gz.sha256"
+            "vibe-kanban-macos-arm64.tar.gz"
+            "vibe-kanban-macos-arm64.tar.gz.sha256"
           )
 
           missing=0
@@ -207,8 +211,8 @@ jobs:
       run:
         shell: bash
     env:
-      CARGO_INCREMENTAL: '0'
-      SCCACHE_GHA_ENABLED: 'true'
+      CARGO_INCREMENTAL: "0"
+      SCCACHE_GHA_ENABLED: "true"
       RUSTC_WRAPPER: sccache
       SCCACHE_CACHE_SIZE: 10G
       CARGO_HOME: ${{ github.workspace }}/.cargo
@@ -236,24 +240,27 @@ jobs:
       - name: Restore Rust caches
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
-          workspaces: '.'
+          workspaces: "."
           shared-key: release-binaries-${{ runner.os }}-${{ matrix.target }}
           cache-provider: github
-          cache-all-crates: 'true'
-          cache-on-failure: 'true'
+          cache-all-crates: "true"
+          cache-on-failure: "true"
 
       - name: Install Linux dependencies
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           DEBIAN_FRONTEND=noninteractive sudo apt-get install -y \
             clang libclang-dev lld llvm nasm cmake ninja-build
 
       - name: Install Zig
+        if: runner.os == 'Linux'
         uses: BloopAI/setup-zig@main
         with:
           version: 0.15.2
 
       - name: Install cargo zigbuild
+        if: runner.os == 'Linux'
         uses: taiki-e/cache-cargo-install-action@34ce5120836e5f9f1508d8713d7fdea0e8facd6f # v3.0.1
         with:
           tool: cargo-zigbuild
@@ -267,8 +274,22 @@ jobs:
           path: packages/local-web/dist/
 
       - name: Build Linux runtime binary
+        if: runner.os == 'Linux'
         run: |
           cargo zigbuild --locked --release --target ${{ matrix.target }} \
+            -p server --bin server
+        env:
+          POSTHOG_API_KEY: ${{ secrets.POSTHOG_API_KEY }}
+          POSTHOG_API_ENDPOINT: ${{ secrets.POSTHOG_API_ENDPOINT }}
+          VK_SHARED_API_BASE: ${{ secrets.VK_SHARED_API_BASE }}
+          VK_SHARED_RELAY_API_BASE: ${{ secrets.VK_SHARED_RELAY_API_BASE }}
+          SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+
+      - name: Build macOS runtime binary
+        if: runner.os == 'macOS'
+        run: |
+          export MACOSX_DEPLOYMENT_TARGET=11.0
+          cargo build --locked --release --target ${{ matrix.target }} \
             -p server --bin server
         env:
           POSTHOG_API_KEY: ${{ secrets.POSTHOG_API_KEY }}
@@ -283,15 +304,29 @@ jobs:
           cp target/${{ matrix.target }}/release/server package/vibe-kanban
           chmod 755 package/vibe-kanban
 
-      - name: Package Linux runtime artifact
+      - name: Package runtime artifact
         run: |
           tar -C package -czf dist/vibe-kanban-${{ matrix.name }}.tar.gz vibe-kanban
 
       - name: Generate checksums
         run: |
-          for file in dist/*; do
-            sha256sum "$file" > "$file.sha256"
-          done
+          node <<'EOF'
+          const crypto = require('crypto');
+          const fs = require('fs');
+          const path = require('path');
+
+          for (const file of fs.readdirSync('dist')) {
+            const fullPath = path.join('dist', file);
+            if (!fs.statSync(fullPath).isFile() || file.endsWith('.sha256')) {
+              continue;
+            }
+            const sha256 = crypto
+              .createHash('sha256')
+              .update(fs.readFileSync(fullPath))
+              .digest('hex');
+            fs.writeFileSync(`${fullPath}.sha256`, `${sha256}  ${file}\n`);
+          }
+          EOF
 
       - name: Upload packaged artifacts
         uses: actions/upload-artifact@v6
@@ -334,7 +369,7 @@ jobs:
             release_tag: releaseTag,
             vk_sha: vkSha,
             commit: vkSha,
-            mode: 'linux-container-runtime',
+            mode: 'standalone-runtime-assets',
             generated_at: new Date().toISOString(),
             release_url: `https://github.com/${repository}/releases/tag/${releaseTag}`,
             asset_naming: {
@@ -350,10 +385,11 @@ jobs:
               mcp_binary_included: false,
               notes: [
                 'The vibe-kanban executable is the server binary with packages/local-web/dist embedded at build time.',
-                'No separate frontend assets are required to run the containerized VK app side.',
-                'The container must provide a writable data directory/home if VK state should persist.',
+                'No separate frontend assets are required to run the VK app side.',
+                'The runtime environment must provide a writable data directory/home if VK state should persist.',
+                'macOS release builds use the platform Application Support data location for the local SQLite database.',
                 'Configure bind address with HOST and PORT/BACKEND_PORT; PREVIEW_PROXY_PORT is optional.',
-                'Agent CLIs/tools invoked by VK remain external runtime dependencies of the container image.',
+                'Agent CLIs/tools invoked by VK remain external runtime dependencies.',
               ],
             },
             required_assets: [
@@ -362,6 +398,8 @@ jobs:
               'vibe-kanban-linux-x64.tar.gz.sha256',
               'vibe-kanban-linux-arm64.tar.gz',
               'vibe-kanban-linux-arm64.tar.gz.sha256',
+              'vibe-kanban-macos-arm64.tar.gz',
+              'vibe-kanban-macos-arm64.tar.gz.sha256',
             ],
             platforms: {},
           };
@@ -370,7 +408,7 @@ jobs:
           for (const file of entries) {
             if (file.endsWith('.sha256')) continue;
 
-            const match = file.match(/^(vibe-kanban)-((?:linux)-(?:x64|arm64))\.tar\.gz$/);
+            const match = file.match(/^(vibe-kanban)-((?:linux)-(?:x64|arm64)|macos-arm64)\.tar\.gz$/);
             if (!match) continue;
 
             const [, binaryName, platform] = match;
@@ -380,9 +418,11 @@ jobs:
             const sha256 = shaLine.split(/\s+/)[0];
             const size = fs.statSync(fullPath).size;
 
+            const [osName, archName] = platform.split('-');
+
             manifest.platforms[platform] = {
-              arch: platform === 'linux-x64' ? 'amd64' : 'arm64',
-              os: 'linux',
+              arch: archName === 'x64' ? 'amd64' : 'arm64',
+              os: osName,
               assets: {
                 [binaryName]: {
                   file,
