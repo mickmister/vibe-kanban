@@ -509,12 +509,11 @@ const WYSIWYGEditor = forwardRef<WYSIWYGEditorRef, WysiwygProps>(
       [placeholder]
     );
 
-    const composerWrapperStyle = useMemo<CSSProperties | undefined>(() => {
+    const editorScrollStyle = useMemo<CSSProperties | undefined>(() => {
       if (!constrainMobileComposerHeight || !isMobile || disabled) {
         return undefined;
       }
       return {
-        minHeight: '1rem',
         maxHeight: '24dvh',
         overflowY: 'auto',
       };
@@ -536,7 +535,7 @@ const WYSIWYGEditor = forwardRef<WYSIWYGEditorRef, WysiwygProps>(
                 />
                 {!disabled && !showStaticToolbar && <ToolbarPlugin />}
 
-                <div className="relative" style={composerWrapperStyle}>
+                <div className="relative">
                   <RichTextPlugin
                     contentEditable={
                       <ContentEditable
@@ -545,6 +544,7 @@ const WYSIWYGEditor = forwardRef<WYSIWYGEditorRef, WysiwygProps>(
                           disabled ? 'Markdown content' : 'Markdown editor'
                         }
                         onPasteCapture={handlePaste}
+                        style={editorScrollStyle}
                       />
                     }
                     placeholder={placeholderElement}
