@@ -36,14 +36,6 @@ function describeShortcutEvent(event: KeyboardEvent) {
   };
 }
 
-function isInIframe() {
-  try {
-    return window.self !== window.top;
-  } catch {
-    return true;
-  }
-}
-
 function isTextEditingTarget(target: EventTarget | null) {
   if (!(target instanceof Element)) return false;
 
@@ -98,11 +90,6 @@ function getIframeShortcutAction(event: KeyboardEvent): ShortcutDecision {
 
 export function installIframeShortcutBridge() {
   if (window[INSTALL_FLAG]) return;
-
-  if (!isInIframe()) {
-    debugLog('install skipped because window is not in an iframe');
-    return;
-  }
 
   window[INSTALL_FLAG] = true;
 
