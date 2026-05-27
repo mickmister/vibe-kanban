@@ -330,7 +330,7 @@ export function SharedAppLayout() {
         className={cn(
           'bg-primary',
           isMobile
-            ? 'flex fixed inset-0 overflow-hidden pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)]'
+            ? 'flex fixed inset-0 pb-[env(safe-area-inset-bottom)]'
             : isZenShellActive
               ? cn(
                   'grid h-screen grid-cols-[1fr]',
