@@ -509,15 +509,29 @@ const WYSIWYGEditor = forwardRef<WYSIWYGEditorRef, WysiwygProps>(
       [placeholder]
     );
 
-    const editorScrollStyle = useMemo<CSSProperties | undefined>(() => {
-      if (!constrainMobileComposerHeight || !isMobile || disabled) {
+    const shouldConstrainMobileComposerHeight =
+      constrainMobileComposerHeight && isMobile && !disabled;
+
+    const composerWrapperStyle = useMemo<CSSProperties | undefined>(() => {
+      if (!shouldConstrainMobileComposerHeight) {
         return undefined;
       }
       return {
+        minHeight: '1rem',
         maxHeight: '24dvh',
         overflowY: 'auto',
       };
-    }, [constrainMobileComposerHeight, disabled, isMobile]);
+    }, [shouldConstrainMobileComposerHeight]);
+
+    const editorScrollStyle = useMemo<CSSProperties | undefined>(() => {
+      if (!shouldConstrainMobileComposerHeight) {
+        return undefined;
+      }
+      return {
+        maxHeight: 'none',
+        overflowY: 'visible',
+      };
+    }, [shouldConstrainMobileComposerHeight]);
 
     const editorContent = (
       <div className="wysiwyg text-base relative">
@@ -535,7 +549,7 @@ const WYSIWYGEditor = forwardRef<WYSIWYGEditorRef, WysiwygProps>(
                 />
                 {!disabled && !showStaticToolbar && <ToolbarPlugin />}
 
-                <div className="relative">
+                <div className="relative" style={composerWrapperStyle}>
                   <RichTextPlugin
                     contentEditable={
                       <ContentEditable
