@@ -360,6 +360,7 @@ export function CreateChatBoxContainer({
                       onCmdEnter={onCmdEnter}
                       disabled={disabled}
                       className="min-h-double max-h-[50vh] overflow-y-auto"
+                      constrainMobileComposerHeight
                       repoIds={repoIds}
                       repoId={repoId}
                       executor={executor}
