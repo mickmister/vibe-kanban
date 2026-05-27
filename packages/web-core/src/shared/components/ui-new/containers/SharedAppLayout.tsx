@@ -1,11 +1,4 @@
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  type CSSProperties,
-} from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { DropResult } from '@hello-pangea/dnd';
 import {
   Outlet,
@@ -68,58 +61,11 @@ import { WorkspacesSidebarReopenTag } from '@vibe/ui/components/WorkspacesSideba
 import { useRemoteCloudHostsAppBarModel } from '@/shared/hooks/useRemoteCloudHosts';
 import { CloudShutdownExportBanner } from '@/shared/components/CloudShutdownExportBanner';
 
-function getVisualViewportShellStyle(): CSSProperties {
-  const visualViewport = window.visualViewport;
-
-  return {
-    top: visualViewport?.offsetTop ?? 0,
-    height: visualViewport?.height ?? window.innerHeight,
-  };
-}
-
-function useMobileVisualViewportShellStyle(
-  isMobile: boolean
-): CSSProperties | undefined {
-  const [style, setStyle] = useState<CSSProperties | undefined>(() => {
-    if (typeof window === 'undefined' || !isMobile) return undefined;
-    return getVisualViewportShellStyle();
-  });
-
-  useEffect(() => {
-    if (!isMobile) {
-      setStyle(undefined);
-      return;
-    }
-
-    const updateStyle = () => {
-      setStyle(getVisualViewportShellStyle());
-    };
-
-    updateStyle();
-
-    const visualViewport = window.visualViewport;
-    visualViewport?.addEventListener('resize', updateStyle);
-    visualViewport?.addEventListener('scroll', updateStyle);
-    window.addEventListener('resize', updateStyle);
-    window.addEventListener('orientationchange', updateStyle);
-
-    return () => {
-      visualViewport?.removeEventListener('resize', updateStyle);
-      visualViewport?.removeEventListener('scroll', updateStyle);
-      window.removeEventListener('resize', updateStyle);
-      window.removeEventListener('orientationchange', updateStyle);
-    };
-  }, [isMobile]);
-
-  return style;
-}
-
 export function SharedAppLayout() {
   const appNavigation = useAppNavigation();
   const currentDestination = useCurrentAppDestination();
   const location = useLocation();
   const isMobile = useIsMobile();
-  const mobileShellStyle = useMobileVisualViewportShellStyle(isMobile);
   const mobileFontScale = useUiPreferencesStore((s) => s.mobileFontScale);
   const isLeftSidebarVisible = useUiPreferencesStore(
     (s) => s.isLeftSidebarVisible
@@ -384,7 +330,7 @@ export function SharedAppLayout() {
         className={cn(
           'bg-primary',
           isMobile
-            ? 'fixed left-0 right-0 flex overflow-hidden pb-[env(safe-area-inset-bottom)]'
+            ? 'flex fixed inset-0 overflow-hidden pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)]'
             : isZenShellActive
               ? cn(
                   'grid h-screen grid-cols-[1fr]',
@@ -399,7 +345,6 @@ export function SharedAppLayout() {
                     : 'grid-rows-[auto_1fr]'
                 )
         )}
-        style={isMobile ? mobileShellStyle : undefined}
       >
         {!isMobile && (
           <>
