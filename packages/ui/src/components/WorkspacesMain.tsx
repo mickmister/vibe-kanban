@@ -35,15 +35,15 @@ export function WorkspacesMain({
   return (
     <main
       ref={containerRef}
-      className="relative grid h-full min-h-0 flex-1 grid-rows-[minmax(0,1fr)_auto_auto] bg-primary"
+      className="relative flex h-full min-h-0 flex-1 flex-col bg-primary"
     >
       {/* Conversation content - conditional based on loading/workspace state */}
       {isLoading ? (
-        <div className="min-h-0 flex items-center justify-center">
+        <div className="flex-1 min-h-0 flex items-center justify-center">
           <SpinnerIcon className="size-6 animate-spin text-low" />
         </div>
       ) : !workspaceWithSession ? (
-        <div className="min-h-0 flex items-center justify-center">
+        <div className="flex-1 min-h-0 flex items-center justify-center">
           <p className="text-low">{t('common:workspaces.selectToStart')}</p>
         </div>
       ) : (
