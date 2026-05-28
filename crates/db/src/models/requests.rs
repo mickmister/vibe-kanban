@@ -5,6 +5,10 @@ use uuid::Uuid;
 
 use super::{execution_process::ExecutionProcess, workspace::Workspace};
 
+fn default_true() -> bool {
+    true
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 pub struct ContainerQuery {
     #[serde(rename = "ref")]
@@ -15,6 +19,8 @@ pub struct ContainerQuery {
 pub struct WorkspaceRepoInput {
     pub repo_id: Uuid,
     pub target_branch: String,
+    #[serde(default = "default_true")]
+    pub create_branch: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, TS)]

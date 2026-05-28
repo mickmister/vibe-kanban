@@ -83,6 +83,7 @@ export function toDraftWorkspaceData(
       initialState.preferredRepos?.map((repo) => ({
         repo_id: repo.repo_id,
         target_branch: repo.target_branch ?? '',
+        create_branch: repo.create_branch ?? true,
       })) ?? [],
     executor_config: initialState.executorConfig ?? null,
     linked_issue: initialState.linkedIssue

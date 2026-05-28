@@ -216,7 +216,8 @@ pub async fn create_pr(
     let worktree_path = workspace_path.join(&repo.name);
 
     let git = deployment.git();
-    let push_remote = git.resolve_remote_for_branch(&repo_path, &workspace.branch)?;
+    let branch_name = workspace_repo.branch_name(&workspace.branch);
+    let push_remote = git.resolve_remote_for_branch(&repo_path, branch_name)?;
 
     // Try to get the remote from the branch name (works for remote-tracking branches like "upstream/main").
     // Fall back to push_remote if the branch doesn't exist locally or isn't a remote-tracking branch.
@@ -253,7 +254,7 @@ pub async fn create_pr(
         Ok(true) => {}
     }
 
-    if let Err(e) = git.push_to_remote(&worktree_path, &workspace.branch, false) {
+    if let Err(e) = git.push_to_remote(&worktree_path, branch_name, false) {
         tracing::error!("Failed to push branch to remote: {}", e);
         match e {
             GitServiceError::GitCLI(GitCliError::AuthFailed(_)) => {
@@ -291,7 +292,7 @@ pub async fn create_pr(
     let pr_request = CreatePrRequest {
         title: request.title.clone(),
         body: request.body.clone(),
-        head_branch: workspace.branch.clone(),
+        head_branch: branch_name.to_string(),
         base_branch: base_branch.clone(),
         draft: request.draft,
         head_repo_url: Some(push_remote.url.clone()),
@@ -436,7 +437,11 @@ pub async fn attach_existing_pr(
 
     // List all PRs for branch (open, closed, and merged)
     let prs = match git_host
-        .list_prs_for_branch(&repo.path, &remote.url, &workspace.branch)
+        .list_prs_for_branch(
+            &repo.path,
+            &remote.url,
+            workspace_repo.branch_name(&workspace.branch),
+        )
         .await
     {
         Ok(prs) => prs,
@@ -730,6 +735,7 @@ pub async fn create_workspace_from_pr(
         &[CreateWorkspaceRepo {
             repo_id: payload.repo_id,
             target_branch: target_branch_ref.clone(),
+            create_branch: true,
         }],
     )
     .await?;

@@ -145,6 +145,7 @@ impl McpServer {
             .map(|r| WorkspaceRepoInput {
                 repo_id: r.repo_id,
                 target_branch: r.branch,
+                create_branch: true,
             })
             .collect();
 

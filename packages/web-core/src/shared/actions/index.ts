@@ -205,6 +205,7 @@ export const Actions = {
             preferredRepos: repos.map((r) => ({
               repo_id: r.id,
               target_branch: r.target_branch,
+              create_branch: r.create_branch ?? true,
             })),
           },
           linkedIssue,
@@ -376,6 +377,7 @@ export const Actions = {
             preferredRepos: repos.map((r) => ({
               repo_id: r.id,
               target_branch: workspace.branch,
+              create_branch: true,
             })),
           },
           linkedIssue,

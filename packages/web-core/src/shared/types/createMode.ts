@@ -12,6 +12,7 @@ export interface CreateModeInitialState {
   preferredRepos?: Array<{
     repo_id: string;
     target_branch: string | null;
+    create_branch?: boolean;
   }> | null;
   project_id?: string | null;
   linkedIssue?: LinkedIssue | null;

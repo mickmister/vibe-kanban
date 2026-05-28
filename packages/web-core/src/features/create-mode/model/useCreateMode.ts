@@ -19,6 +19,8 @@ export interface CreateModeContextValue {
   removeRepo: (repoId: string) => void;
   clearRepos: () => void;
   targetBranches: Record<string, string | null>;
+  createBranchByRepo: Record<string, boolean>;
+  setCreateBranch: (repoId: string, createBranch: boolean) => void;
   setTargetBranch: (repoId: string, branch: string) => void;
   hasResolvedInitialRepoDefaults: boolean;
   preferredExecutorConfig: ExecutorConfig | null;

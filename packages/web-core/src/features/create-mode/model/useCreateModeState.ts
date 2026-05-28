@@ -44,6 +44,7 @@ import type {
 interface SelectedRepo {
   repo: Repo;
   targetBranch: string | null;
+  createBranch: boolean;
 }
 
 type Phase = 'loading' | 'ready' | 'error';
@@ -65,10 +66,16 @@ type DraftAction =
     }
   | { type: 'INIT_ERROR'; error: string }
   | { type: 'SET_PROJECT'; projectId: string | null }
-  | { type: 'ADD_REPO'; repo: Repo; targetBranch: string | null }
+  | {
+      type: 'ADD_REPO';
+      repo: Repo;
+      targetBranch: string | null;
+      createBranch: boolean;
+    }
   | { type: 'SET_REPOS_IF_EMPTY'; repos: SelectedRepo[] }
   | { type: 'REMOVE_REPO'; repoId: string }
   | { type: 'SET_TARGET_BRANCH'; repoId: string; branch: string }
+  | { type: 'SET_CREATE_BRANCH'; repoId: string; createBranch: boolean }
   | { type: 'SET_MESSAGE'; message: string }
   | { type: 'CLEAR_REPOS' }
   | { type: 'CLEAR' }
@@ -120,7 +127,11 @@ function draftReducer(state: DraftState, action: DraftAction): DraftState {
         ...state,
         repos: [
           ...state.repos,
-          { repo: action.repo, targetBranch: action.targetBranch },
+          {
+            repo: action.repo,
+            targetBranch: action.targetBranch,
+            createBranch: action.createBranch,
+          },
         ],
       };
     }
@@ -143,6 +154,16 @@ function draftReducer(state: DraftState, action: DraftAction): DraftState {
         repos: state.repos.map((r) =>
           r.repo.id === action.repoId
             ? { ...r, targetBranch: action.branch }
+            : r
+        ),
+      };
+
+    case 'SET_CREATE_BRANCH':
+      return {
+        ...state,
+        repos: state.repos.map((r) =>
+          r.repo.id === action.repoId
+            ? { ...r, createBranch: action.createBranch }
             : r
         ),
       };
@@ -232,6 +253,7 @@ interface UseCreateModeStateParams {
 interface UseCreateModeStateResult {
   repos: Repo[];
   targetBranches: Record<string, string | null>;
+  createBranchByRepo: Record<string, boolean>;
   hasResolvedInitialRepoDefaults: boolean;
   preferredExecutorConfig: ExecutorConfig | null;
   message: string;
@@ -244,6 +266,7 @@ interface UseCreateModeStateResult {
   removeRepo: (repoId: string) => void;
   clearRepos: () => void;
   setTargetBranch: (repoId: string, branch: string) => void;
+  setCreateBranch: (repoId: string, createBranch: boolean) => void;
   clearDraft: () => Promise<void>;
   clearLinkedIssue: () => void;
   setExecutorConfig: (config: ExecutorConfig | null) => void;
@@ -436,6 +459,7 @@ export function useCreateModeState({
       repos: preferredRepos.map((repo) => ({
         repo,
         targetBranch: repo.target_branch || null,
+        createBranch: repo.create_branch ?? true,
       })),
     });
   }, [
@@ -482,7 +506,13 @@ export function useCreateModeState({
         const selectedRepos = scratchDefaults.flatMap((d) => {
           const repo = reposById.get(d.repo_id);
           if (!repo) return [];
-          return [{ repo, targetBranch: d.target_branch || null }];
+          return [
+            {
+              repo,
+              targetBranch: d.target_branch || null,
+              createBranch: d.create_branch ?? true,
+            },
+          ];
         });
 
         if (selectedRepos.length > 0) {
@@ -562,6 +592,7 @@ export function useCreateModeState({
       repos: state.repos.map((r) => ({
         repo_id: r.repo.id,
         target_branch: r.targetBranch ?? '',
+        create_branch: r.createBranch,
       })),
       executor_config: state.executorConfig ?? null,
       linked_issue: state.linkedIssue
@@ -672,6 +703,18 @@ export function useCreateModeState({
     [state.repos]
   );
 
+  const createBranchByRepo = useMemo(
+    () =>
+      state.repos.reduce(
+        (acc, r) => {
+          acc[r.repo.id] = r.createBranch;
+          return acc;
+        },
+        {} as Record<string, boolean>
+      ),
+    [state.repos]
+  );
+
   // ============================================================================
   // Actions
   // ============================================================================
@@ -681,7 +724,12 @@ export function useCreateModeState({
 
   const addRepo = useCallback((repo: Repo) => {
     // Branch is always selected manually by the user.
-    dispatch({ type: 'ADD_REPO', repo, targetBranch: null });
+    dispatch({
+      type: 'ADD_REPO',
+      repo,
+      targetBranch: null,
+      createBranch: true,
+    });
   }, []);
 
   const removeRepo = useCallback((repoId: string) => {
@@ -695,6 +743,13 @@ export function useCreateModeState({
   const setTargetBranch = useCallback((repoId: string, branch: string) => {
     dispatch({ type: 'SET_TARGET_BRANCH', repoId, branch });
   }, []);
+
+  const setCreateBranch = useCallback(
+    (repoId: string, createBranch: boolean) => {
+      dispatch({ type: 'SET_CREATE_BRANCH', repoId, createBranch });
+    },
+    []
+  );
 
   const clearDraft = useCallback(async () => {
     try {
@@ -725,6 +780,7 @@ export function useCreateModeState({
   return {
     repos,
     targetBranches,
+    createBranchByRepo,
     hasResolvedInitialRepoDefaults,
     preferredExecutorConfig,
     message: state.message,
@@ -737,6 +793,7 @@ export function useCreateModeState({
     removeRepo,
     clearRepos,
     setTargetBranch,
+    setCreateBranch,
     clearDraft,
     clearLinkedIssue,
     setExecutorConfig,
