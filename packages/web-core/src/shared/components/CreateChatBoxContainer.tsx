@@ -55,6 +55,7 @@ export function CreateChatBoxContainer({
   const {
     repos,
     targetBranches,
+    createBranchByRepo,
     message,
     setMessage,
     clearDraft,
@@ -159,21 +160,25 @@ export function CreateChatBoxContainer({
       const branch = selectedBranch
         ? truncateBranchLabel(selectedBranch)
         : 'Select branch';
-      return `${getRepoDisplayName(repo)} · ${branch}`;
+      const mode =
+        createBranchByRepo[repo.id] === false ? 'Use branch' : 'New branch';
+      return `${getRepoDisplayName(repo)} · ${branch} · ${mode}`;
     }
 
     return `${repos.length} repositories selected`;
-  }, [repos, targetBranches]);
+  }, [repos, targetBranches, createBranchByRepo]);
 
   const repoSummaryTitle = useMemo(
     () =>
       repos
         .map((repo) => {
           const branch = targetBranches[repo.id] ?? 'Select branch';
-          return `${getRepoDisplayName(repo)} (${branch})`;
+          const mode =
+            createBranchByRepo[repo.id] === false ? 'use branch' : 'new branch';
+          return `${getRepoDisplayName(repo)} (${branch}, ${mode})`;
         })
         .join('\n'),
-    [repos, targetBranches]
+    [repos, targetBranches, createBranchByRepo]
   );
 
   const hasSelectedBranchesForAllRepos = repos.every(
@@ -248,6 +253,7 @@ export function CreateChatBoxContainer({
       repos: repos.map((r) => ({
         repo_id: r.id,
         target_branch: targetBranches[r.id]!,
+        create_branch: createBranchByRepo[r.id] ?? true,
       })),
       linked_issue: linkedIssue
         ? {
@@ -287,6 +293,7 @@ export function CreateChatBoxContainer({
     message,
     repos,
     targetBranches,
+    createBranchByRepo,
     createWorkspace,
     onWorkspaceCreated,
     getAttachmentIds,

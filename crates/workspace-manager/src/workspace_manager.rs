@@ -21,13 +21,23 @@ use worktree_manager::{WorktreeCleanup, WorktreeError, WorktreeManager};
 pub struct RepoWorkspaceInput {
     pub repo: Repo,
     pub target_branch: String,
+    pub create_branch: bool,
 }
 
 impl RepoWorkspaceInput {
-    pub fn new(repo: Repo, target_branch: String) -> Self {
+    pub fn new(repo: Repo, target_branch: String, create_branch: bool) -> Self {
         Self {
             repo,
             target_branch,
+            create_branch,
+        }
+    }
+
+    fn branch_name<'a>(&'a self, workspace_branch: &'a str) -> &'a str {
+        if self.create_branch {
+            workspace_branch
+        } else {
+            &self.target_branch
         }
     }
 }
@@ -102,6 +112,7 @@ impl ManagedWorkspace {
         let create_repo = CreateWorkspaceRepo {
             repo_id: repo.repo_id,
             target_branch: repo.target_branch.clone(),
+            create_branch: repo.create_branch,
         };
 
         WorkspaceRepo::create_many(
@@ -319,10 +330,10 @@ impl WorkspaceManager {
 
             match WorktreeManager::create_worktree(
                 &input.repo.path,
-                branch_name,
+                input.branch_name(branch_name),
                 &worktree_path,
                 &input.target_branch,
-                true,
+                input.create_branch,
             )
             .await
             {
@@ -402,6 +413,8 @@ impl WorkspaceManager {
                 worktree_path.display()
             );
 
+            let branch_name = input.branch_name(branch_name);
+
             if git.check_branch_exists(&repo.path, branch_name)? {
                 WorktreeManager::ensure_worktree_exists(&repo.path, branch_name, &worktree_path)
                     .await?;
@@ -415,7 +428,7 @@ impl WorkspaceManager {
                     branch_name,
                     &worktree_path,
                     &input.target_branch,
-                    true,
+                    input.create_branch,
                 )
                 .await?;
             }

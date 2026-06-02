@@ -265,7 +265,7 @@ pub async fn merge_workspace(
     let merge_commit_id = deployment.git().merge_changes(
         &repo.path,
         &worktree_path,
-        &workspace.branch,
+        workspace_repo.branch_name(&workspace.branch),
         &workspace_repo.target_branch,
         &commit_message,
     )?;
@@ -331,7 +331,11 @@ pub async fn push_workspace_branch(
 
     match deployment
         .git()
-        .push_to_remote(&worktree_path, &workspace.branch, false)
+        .push_to_remote(
+            &worktree_path,
+            workspace_repo.branch_name(&workspace.branch),
+            false,
+        )
     {
         Ok(_) => {
             invalidate_git_status_cache(workspace.id).await;
@@ -386,7 +390,11 @@ pub async fn force_push_workspace_branch(
 
     deployment
         .git()
-        .push_to_remote(&worktree_path, &workspace.branch, true)?;
+        .push_to_remote(
+            &worktree_path,
+            workspace_repo.branch_name(&workspace.branch),
+            true,
+        )?;
 
     invalidate_git_status_cache(workspace.id).await;
 
@@ -469,9 +477,9 @@ async fn compute_workspace_branch_status(
 
     let repositories = WorkspaceRepo::find_repos_for_workspace(pool, workspace.id).await?;
     let workspace_repos = WorkspaceRepo::find_by_workspace_id(pool, workspace.id).await?;
-    let target_branches: HashMap<_, _> = workspace_repos
+    let workspace_repos_by_id: HashMap<_, _> = workspace_repos
         .iter()
-        .map(|wr| (wr.repo_id, wr.target_branch.clone()))
+        .map(|wr| (wr.repo_id, wr))
         .collect();
 
     let container_ref = deployment
@@ -496,9 +504,11 @@ async fn compute_workspace_branch_status(
     let mut results = Vec::with_capacity(repositories.len());
 
     for repo in repositories {
-        let Some(target_branch) = target_branches.get(&repo.id).cloned() else {
+        let Some(workspace_repo) = workspace_repos_by_id.get(&repo.id) else {
             continue;
         };
+        let target_branch = workspace_repo.target_branch.clone();
+        let branch_name = workspace_repo.branch_name(&workspace.branch);
 
         let repo_merges = merges_by_repo.get(&repo.id).cloned().unwrap_or_default();
         let worktree_path = workspace_dir.join(&repo.name);
@@ -544,14 +554,14 @@ async fn compute_workspace_branch_status(
         let (commits_ahead, commits_behind) = if is_target_remote {
             let (ahead, behind) = deployment.git().get_remote_branch_status(
                 &repo.path,
-                &workspace.branch,
+                branch_name,
                 Some(&target_branch),
             )?;
             (Some(ahead), Some(behind))
         } else {
             let (a, b) = deployment.git().get_branch_status(
                 &repo.path,
-                &workspace.branch,
+                branch_name,
                 &target_branch,
             )?;
             (Some(a), Some(b))
@@ -568,7 +578,7 @@ async fn compute_workspace_branch_status(
         {
             match deployment
                 .git()
-                .get_remote_branch_status(&repo.path, &workspace.branch, None)
+                .get_remote_branch_status(&repo.path, branch_name, None)
             {
                 Ok((ahead, behind)) => (Some(ahead), Some(behind)),
                 Err(_) => (None, None),
@@ -615,6 +625,9 @@ pub async fn change_target_branch(
     let repo = Repo::find_by_id(pool, repo_id)
         .await?
         .ok_or(RepoError::NotFound)?;
+    let workspace_repo = WorkspaceRepo::find_by_workspace_and_repo_id(pool, workspace.id, repo_id)
+        .await?
+        .ok_or(RepoError::NotFound)?;
 
     if !deployment
         .git()
@@ -631,10 +644,11 @@ pub async fn change_target_branch(
 
     WorkspaceRepo::update_target_branch(pool, workspace.id, repo_id, &new_target_branch).await?;
 
-    let status =
-        deployment
-            .git()
-            .get_branch_status(&repo.path, &workspace.branch, &new_target_branch)?;
+    let status = deployment.git().get_branch_status(
+        &repo.path,
+        workspace_repo.branch_name(&workspace.branch),
+        &new_target_branch,
+    )?;
 
     invalidate_git_status_cache(workspace.id).await;
 
@@ -856,7 +870,7 @@ pub async fn rebase_workspace(
         &worktree_path,
         &new_base_branch,
         &old_base_branch,
-        &workspace.branch.clone(),
+        workspace_repo.branch_name(&workspace.branch),
     );
     if let Err(e) = result {
         return match e {

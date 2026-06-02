@@ -53,6 +53,7 @@ pub async fn add_workspace_repo(
     let repo_input = WorkspaceRepoInput {
         repo_id: payload.repo_id,
         target_branch: payload.target_branch,
+        create_branch: true,
     };
 
     managed_workspace

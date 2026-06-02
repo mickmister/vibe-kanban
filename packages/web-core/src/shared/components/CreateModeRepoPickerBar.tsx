@@ -17,6 +17,7 @@ import { useCreateMode } from '@/features/create-mode/model/useCreateMode';
 import { FolderPickerDialog } from '@/shared/dialogs/shared/FolderPickerDialog';
 import { SettingsDialog } from '@/shared/dialogs/settings/SettingsDialog';
 import { PrimaryButton } from '@vibe/ui/components/PrimaryButton';
+import { Checkbox } from '@vibe/ui/components/Checkbox';
 import { CreateRepoDialog } from '@vibe/ui/components/CreateRepoDialog';
 import {
   SelectionDialog,
@@ -75,8 +76,15 @@ export function CreateModeRepoPickerBar({
 }: CreateModeRepoPickerBarProps) {
   const { t } = useTranslation('common');
   const queryClient = useQueryClient();
-  const { repos, targetBranches, addRepo, removeRepo, setTargetBranch } =
-    useCreateMode();
+  const {
+    repos,
+    targetBranches,
+    createBranchByRepo,
+    addRepo,
+    removeRepo,
+    setTargetBranch,
+    setCreateBranch,
+  } = useCreateMode();
   const [pendingAction, setPendingAction] = useState<PendingAction>(null);
   const [branchRepoId, setBranchRepoId] = useState<string | null>(null);
   const [pickerError, setPickerError] = useState<string | null>(null);
@@ -252,6 +260,7 @@ export function CreateModeRepoPickerBar({
               {repos.map((repo, index) => {
                 const branch = targetBranches[repo.id] ?? 'Select branch';
                 const repoDisplayName = getRepoDisplayName(repo);
+                const createBranch = createBranchByRepo[repo.id] ?? true;
                 const isChangingBranch =
                   pendingAction === 'branch' && branchRepoId === repo.id;
 
@@ -281,6 +290,28 @@ export function CreateModeRepoPickerBar({
                       )}
                       <span className="max-w-[200px] truncate">{branch}</span>
                     </button>
+                    <span className="h-3 w-px shrink-0 bg-border/70" />
+                    <label
+                      className={cn(
+                        repoRowButtonClassName,
+                        'cursor-pointer select-none'
+                      )}
+                      title={
+                        createBranch
+                          ? 'Create a new workspace branch from the selected branch'
+                          : 'Use the selected branch directly for this workspace'
+                      }
+                    >
+                      <Checkbox
+                        checked={createBranch}
+                        disabled={isBusy}
+                        onCheckedChange={(checked) =>
+                          setCreateBranch(repo.id, checked)
+                        }
+                        className="size-icon-xs"
+                      />
+                      <span>Create new branch</span>
+                    </label>
                     <span className="h-3 w-px shrink-0 bg-border/70" />
                     <button
                       type="button"

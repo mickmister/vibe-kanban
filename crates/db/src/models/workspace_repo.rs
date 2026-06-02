@@ -14,6 +14,7 @@ pub struct WorkspaceRepo {
     pub workspace_id: Uuid,
     pub repo_id: Uuid,
     pub target_branch: String,
+    pub create_branch: bool,
     #[ts(type = "Date")]
     pub created_at: DateTime<Utc>,
     #[ts(type = "Date")]
@@ -24,6 +25,7 @@ pub struct WorkspaceRepo {
 pub struct CreateWorkspaceRepo {
     pub repo_id: Uuid,
     pub target_branch: String,
+    pub create_branch: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -31,6 +33,17 @@ pub struct RepoWithTargetBranch {
     #[serde(flatten)]
     pub repo: Repo,
     pub target_branch: String,
+    pub create_branch: bool,
+}
+
+impl RepoWithTargetBranch {
+    pub fn branch_name<'a>(&'a self, workspace_branch: &'a str) -> &'a str {
+        if self.create_branch {
+            workspace_branch
+        } else {
+            &self.target_branch
+        }
+    }
 }
 
 /// Repo info with copy_files configuration.
@@ -43,6 +56,14 @@ pub struct RepoWithCopyFiles {
 }
 
 impl WorkspaceRepo {
+    pub fn branch_name<'a>(&'a self, workspace_branch: &'a str) -> &'a str {
+        if self.create_branch {
+            workspace_branch
+        } else {
+            &self.target_branch
+        }
+    }
+
     pub async fn create_many(
         pool: &SqlitePool,
         workspace_id: Uuid,
@@ -62,18 +83,20 @@ impl WorkspaceRepo {
             let id = Uuid::new_v4();
             let workspace_repo = sqlx::query_as!(
                 WorkspaceRepo,
-                r#"INSERT INTO workspace_repos (id, workspace_id, repo_id, target_branch)
-                   VALUES ($1, $2, $3, $4)
+                r#"INSERT INTO workspace_repos (id, workspace_id, repo_id, target_branch, create_branch)
+                   VALUES ($1, $2, $3, $4, $5)
                    RETURNING id as "id!: Uuid",
                              workspace_id as "workspace_id!: Uuid",
                              repo_id as "repo_id!: Uuid",
                              target_branch,
+                             create_branch as "create_branch!: bool",
                              created_at as "created_at!: DateTime<Utc>",
                              updated_at as "updated_at!: DateTime<Utc>""#,
                 id,
                 workspace_id,
                 repo.repo_id,
-                repo.target_branch
+                repo.target_branch,
+                repo.create_branch
             )
             .fetch_one(&mut *tx)
             .await?;
@@ -94,6 +117,7 @@ impl WorkspaceRepo {
                       workspace_id as "workspace_id!: Uuid",
                       repo_id as "repo_id!: Uuid",
                       target_branch,
+                      create_branch as "create_branch!: bool",
                       created_at as "created_at!: DateTime<Utc>",
                       updated_at as "updated_at!: DateTime<Utc>"
                FROM workspace_repos
@@ -153,7 +177,8 @@ impl WorkspaceRepo {
                       r.default_working_dir,
                       r.created_at as "created_at!: DateTime<Utc>",
                       r.updated_at as "updated_at!: DateTime<Utc>",
-                      wr.target_branch
+                      wr.target_branch,
+                      wr.create_branch as "create_branch!: bool"
                FROM repos r
                JOIN workspace_repos wr ON r.id = wr.repo_id
                WHERE wr.workspace_id = $1
@@ -183,6 +208,7 @@ impl WorkspaceRepo {
                     updated_at: row.updated_at,
                 },
                 target_branch: row.target_branch,
+                create_branch: row.create_branch,
             })
             .collect())
     }
@@ -198,6 +224,7 @@ impl WorkspaceRepo {
                       workspace_id as "workspace_id!: Uuid",
                       repo_id as "repo_id!: Uuid",
                       target_branch,
+                      create_branch as "create_branch!: bool",
                       created_at as "created_at!: DateTime<Utc>",
                       updated_at as "updated_at!: DateTime<Utc>"
                FROM workspace_repos

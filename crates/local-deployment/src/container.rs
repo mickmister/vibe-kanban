@@ -171,22 +171,26 @@ impl LocalContainerService {
 
         let repositories =
             WorkspaceRepo::find_repos_for_workspace(&self.db.pool, workspace_id).await?;
-        let target_branches: HashMap<_, _> = workspace_repos
+        let workspace_repos_by_id: HashMap<_, _> = workspace_repos
             .iter()
-            .map(|wr| (wr.repo_id, wr.target_branch.clone()))
+            .map(|wr| (wr.repo_id, wr))
             .collect();
 
         let workspace_inputs: Vec<RepoWorkspaceInput> = repositories
             .iter()
             .map(|repo| {
-                let target_branch = target_branches.get(&repo.id).cloned().ok_or_else(|| {
+                let workspace_repo = workspace_repos_by_id.get(&repo.id).ok_or_else(|| {
                     ContainerError::Other(anyhow!(
                         "Missing target branch mapping for repo {} in workspace {}",
                         repo.id,
                         workspace_id
                     ))
                 })?;
-                Ok(RepoWorkspaceInput::new(repo.clone(), target_branch))
+                Ok(RepoWorkspaceInput::new(
+                    repo.clone(),
+                    workspace_repo.target_branch.clone(),
+                    workspace_repo.create_branch,
+                ))
             })
             .collect::<Result<_, ContainerError>>()?;
 
@@ -1514,9 +1518,9 @@ impl ContainerService for LocalContainerService {
     {
         let workspace_repos =
             WorkspaceRepo::find_by_workspace_id(&self.db.pool, workspace.id).await?;
-        let target_branches: HashMap<_, _> = workspace_repos
+        let workspace_repos_by_id: HashMap<_, _> = workspace_repos
             .iter()
-            .map(|wr| (wr.repo_id, wr.target_branch.clone()))
+            .map(|wr| (wr.repo_id, wr))
             .collect();
 
         let repositories =
@@ -1530,15 +1534,16 @@ impl ContainerService for LocalContainerService {
 
         for repo in repositories {
             let worktree_path = workspace_root.join(&repo.name);
-            let branch = &workspace.branch;
-
-            let Some(target_branch) = target_branches.get(&repo.id) else {
+            let Some(workspace_repo) = workspace_repos_by_id.get(&repo.id) else {
                 tracing::warn!(
-                    "Skipping diff stream for repo {}: no target branch configured",
+                    "Skipping diff stream for repo {}: no workspace repo configured",
                     repo.name
                 );
                 continue;
             };
+
+            let branch = workspace_repo.branch_name(&workspace.branch);
+            let target_branch = &workspace_repo.target_branch;
 
             let base_commit = match self
                 .git()
@@ -1581,7 +1586,7 @@ impl ContainerService for LocalContainerService {
                     workspace_id = %workspace.id,
                     stats_only,
                     repo_count,
-                    target_branch_count = target_branches.len(),
+                    target_branch_count = workspace_repos_by_id.len(),
                     created_stream_count = 0,
                     rss_mb = utils::process_diag::bytes_to_mb(snapshot.rss_bytes),
                     vm_size_mb = utils::process_diag::bytes_to_mb(snapshot.virtual_bytes),
@@ -1601,7 +1606,7 @@ impl ContainerService for LocalContainerService {
                 workspace_id = %workspace.id,
                 stats_only,
                 repo_count,
-                target_branch_count = target_branches.len(),
+                target_branch_count = workspace_repos_by_id.len(),
                 created_stream_count = streams.len(),
                 rss_mb = utils::process_diag::bytes_to_mb(snapshot.rss_bytes),
                 vm_size_mb = utils::process_diag::bytes_to_mb(snapshot.virtual_bytes),
