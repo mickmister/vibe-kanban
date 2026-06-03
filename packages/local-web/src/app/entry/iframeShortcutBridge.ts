@@ -114,6 +114,9 @@ export function installIframeShortcutBridge() {
       event: describeShortcutEvent(event),
     });
 
+    event.preventDefault();
+    event.stopPropagation();
+
     window.parent.postMessage(
       { type: 'vk-iframe-shortcut', action: decision.action },
       '*'

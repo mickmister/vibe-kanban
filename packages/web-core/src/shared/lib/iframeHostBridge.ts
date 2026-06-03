@@ -41,7 +41,7 @@ function postToIframeHost(message: VibeKanbanIframeMessage): boolean {
 export function postWorkspaceNavigationToIframeHost(
   destination: AppDestination
 ): boolean {
-  if (!('workspaceId' in destination)) {
+  if (destination.kind !== 'workspace') {
     return false;
   }
 
