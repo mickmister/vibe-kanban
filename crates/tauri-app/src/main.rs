@@ -126,7 +126,7 @@ fn main() {
 
     tracing_subscriber::registry()
         .with(tracing_subscriber::fmt::layer().with_filter(env_filter))
-        .with(sentry_layer())
+        .with(sentry_layer(SentrySource::Desktop))
         .init();
 
     // Shared token so we can tell the server to shut down when the app quits.

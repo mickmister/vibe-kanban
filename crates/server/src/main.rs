@@ -45,7 +45,7 @@ async fn main() -> Result<(), VibeKanbanError> {
     let env_filter = EnvFilter::try_new(filter_string).expect("Failed to create tracing filter");
     tracing_subscriber::registry()
         .with(tracing_subscriber::fmt::layer().with_filter(env_filter))
-        .with(sentry_layer())
+        .with(sentry_layer(SentrySource::Backend))
         .init();
     if perf_tracing_enabled {
         tracing::info!(
@@ -106,7 +106,7 @@ async fn main() -> Result<(), VibeKanbanError> {
         .expect("client preview proxy port already set");
     startup::log_startup_phase("client_info_registered");
 
-    let app_router = routes::router(deployment.clone());
+    let app_router = routes::router(deployment.clone(), perf_tracing_enabled);
 
     // Production only: open browser
     if !cfg!(debug_assertions) {
@@ -125,11 +125,17 @@ async fn main() -> Result<(), VibeKanbanError> {
         });
     }
 
-    let proxy_router: Router = routes::preview::subdomain_router(deployment.clone())
-        .layer(TraceLayer::new_for_http().make_span_with(|request: &axum::extract::Request| {
-            make_http_span(request)
-        }))
-        .layer(ValidateRequestHeaderLayer::custom(validate_origin));
+    let proxy_router: Router = {
+        let router = routes::preview::subdomain_router(deployment.clone());
+        let router = if perf_tracing_enabled {
+            router.layer(TraceLayer::new_for_http().make_span_with(
+                |request: &axum::extract::Request| make_http_span(request),
+            ))
+        } else {
+            router
+        };
+        router.layer(ValidateRequestHeaderLayer::custom(validate_origin))
+    };
 
     let main_shutdown = shutdown_token.clone();
     let proxy_shutdown = shutdown_token.clone();

@@ -1,6 +1,7 @@
 use std::{
     borrow::Cow,
     pin::Pin,
+    sync::OnceLock,
     task::{Context, Poll},
 };
 
@@ -136,6 +137,15 @@ pub struct MaybeSignedWebSocket {
 
 impl MaybeSignedWebSocket {
     pub async fn send(&mut self, message: Message) -> anyhow::Result<()> {
+        if !websocket_trace_enabled() {
+            return match &mut self.inner {
+                WebSocketInner::Plain(ws) => SinkExt::send(ws, message)
+                    .await
+                    .map_err(anyhow::Error::from),
+                WebSocketInner::Signed(ws) => ws.send(message).await,
+            };
+        }
+
         let mode = self.mode();
         let metadata = WsMessageMetadata::from(&message);
 
@@ -158,6 +168,17 @@ impl MaybeSignedWebSocket {
     }
 
     pub async fn recv(&mut self) -> anyhow::Result<Option<Message>> {
+        if !websocket_trace_enabled() {
+            return match &mut self.inner {
+                WebSocketInner::Plain(ws) => match ws.next().await {
+                    Some(Ok(msg)) => Ok(Some(msg)),
+                    Some(Err(e)) => Err(anyhow::Error::from(e)),
+                    None => Ok(None),
+                },
+                WebSocketInner::Signed(ws) => ws.recv().await,
+            };
+        }
+
         let mode = self.mode();
         async move {
             let message = match &mut self.inner {
@@ -237,8 +258,8 @@ impl Sink<Message> for MaybeSignedWebSocket {
 
     fn start_send(self: Pin<&mut Self>, item: Message) -> Result<(), Self::Error> {
         let this = self.get_mut();
-        let metadata = WsMessageMetadata::from(&item);
-        if ws_poll_tracing_enabled() {
+        if ws_poll_tracing_enabled() && websocket_trace_enabled() {
+            let metadata = WsMessageMetadata::from(&item);
             tracing::trace!(
                 mode = this.mode(),
                 message.kind = metadata.kind,
@@ -276,8 +297,16 @@ impl Sink<Message> for MaybeSignedWebSocket {
     }
 }
 
+fn websocket_trace_enabled() -> bool {
+    tracing::enabled!(
+        target: "server::middleware::signed_ws",
+        tracing::Level::TRACE
+    )
+}
+
 fn ws_poll_tracing_enabled() -> bool {
-    env_flag("VK_WS_POLL_TRACING")
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| env_flag("VK_WS_POLL_TRACING"))
 }
 
 fn env_flag(name: &str) -> bool {

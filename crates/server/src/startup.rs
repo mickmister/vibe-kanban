@@ -10,7 +10,7 @@ use deployment::{Deployment, DeploymentError};
 use services::services::container::ContainerService;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
-use tower_http::validate_request::ValidateRequestHeaderLayer;
+use tower_http::{trace::TraceLayer, validate_request::ValidateRequestHeaderLayer};
 use utils::{
     assets::asset_dir,
     process_diag::{self, ProcessSnapshot},
@@ -18,7 +18,10 @@ use utils::{
 
 use crate::{
     DeploymentImpl,
-    middleware::origin::{validate_allowed_origins_config, validate_origin},
+    middleware::{
+        make_http_span,
+        origin::{validate_allowed_origins_config, validate_origin},
+    },
     routes,
     runtime::relay_registration,
 };
@@ -62,9 +65,19 @@ impl ServerHandle {
         relay_registration::spawn_relay(&self.deployment).await;
         log_startup_phase("relay_startup_spawn_complete");
 
-        let app_router = routes::router(self.deployment.clone());
-        let proxy_router: axum::Router = routes::preview::subdomain_router(self.deployment.clone())
-            .layer(ValidateRequestHeaderLayer::custom(validate_origin));
+        let perf_tracing_enabled = env_flag("VK_PERF_TRACING");
+        let app_router = routes::router(self.deployment.clone(), perf_tracing_enabled);
+        let proxy_router: axum::Router = {
+            let router = routes::preview::subdomain_router(self.deployment.clone());
+            let router = if perf_tracing_enabled {
+                router.layer(TraceLayer::new_for_http().make_span_with(
+                    |request: &axum::extract::Request| make_http_span(request),
+                ))
+            } else {
+                router
+            };
+            router.layer(ValidateRequestHeaderLayer::custom(validate_origin))
+        };
 
         let main_shutdown = self.shutdown_token.clone();
         let proxy_shutdown = self.shutdown_token.clone();

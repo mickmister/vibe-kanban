@@ -50,7 +50,11 @@ pub fn init_once(source: SentrySource) {
     };
 
     INIT_GUARD.get_or_init(|| {
-        let trace_config = trace_sample_rate_config();
+        let trace_config = if matches!(source, SentrySource::Backend) {
+            trace_sample_rate_config()
+        } else {
+            TraceSampleRateConfig::Unset
+        };
         if let TraceSampleRateConfig::Invalid { name, value } = &trace_config {
             eprintln!(
                 "Ignoring invalid {name}={value:?}; expected a Sentry trace \
@@ -93,13 +97,15 @@ pub fn configure_user_scope(user_id: &str, username: Option<&str>, email: Option
     });
 }
 
-pub fn sentry_layer<S>() -> SentryLayer<S>
+pub fn sentry_layer<S>(source: SentrySource) -> SentryLayer<S>
 where
     S: tracing::Subscriber,
     S: for<'a> tracing_subscriber::registry::LookupSpan<'a>,
 {
     let include_perf_trace_spans =
-        perf_tracing_enabled() && trace_sample_rate_config().rate() > 0.0;
+        matches!(source, SentrySource::Backend)
+            && perf_tracing_enabled()
+            && trace_sample_rate_config().rate() > 0.0;
 
     SentryLayer::default()
         .span_filter(move |meta| {
