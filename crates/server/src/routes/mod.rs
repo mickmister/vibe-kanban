@@ -85,7 +85,9 @@ pub fn router(deployment: DeploymentImpl) -> IntoMakeService<Router> {
         .route("/", get(frontend::serve_frontend_root))
         .route("/{*path}", get(frontend::serve_frontend))
         .nest("/api", api_routes)
-        .layer(TraceLayer::new_for_http())
+        .layer(TraceLayer::new_for_http().make_span_with(|request: &axum::extract::Request| {
+            middleware::make_http_span(request)
+        }))
         .layer(CompressionLayer::new())
         .into_make_service()
 }

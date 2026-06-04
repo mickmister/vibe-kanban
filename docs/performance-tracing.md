@@ -17,7 +17,7 @@ VK_PERF_TRACING=1 RUST_LOG=info pnpm run backend:dev:watch
   send, receive, flush, and close paths;
 - `ws_bridge=trace` for proxied WebSocket bridge send paths.
 
-For deeper function-level traces, add explicit module directives:
+For deeper targeted function-level traces, add explicit module directives:
 
 ```bash
 VK_PERF_TRACING=1 \
@@ -27,9 +27,9 @@ pnpm run backend:dev:watch
 
 ## Sending traces to Sentry
 
-The backend already initializes Sentry when `SENTRY_DSN` is configured. During a
-profiling run, `VK_PERF_TRACING=1` also enables Sentry Performance span capture
-with a default trace sample rate of `1.0`.
+The backend already initializes Sentry when `SENTRY_DSN` is configured. To send
+performance spans to Sentry, explicitly set a Sentry trace sample rate for the
+profiling run.
 
 Use a lower sample rate for longer or higher-volume runs:
 
@@ -41,9 +41,11 @@ RUST_LOG=info \
 pnpm run backend:dev:watch
 ```
 
-`VK_SENTRY_TRACES_SAMPLE_RATE` and `SENTRY_TRACES_SAMPLE_RATE` are clamped to the
-Sentry-supported `0.0` to `1.0` range. Prefer short, sampled profiling windows
-for noisy WebSocket sessions to avoid excessive span volume.
+`VK_SENTRY_TRACES_SAMPLE_RATE` takes precedence over `SENTRY_TRACES_SAMPLE_RATE`.
+Both must be valid Sentry-supported values from `0.0` to `1.0`; invalid values
+disable Sentry Performance export instead of falling back to a higher sample
+rate. Prefer short, sampled profiling windows for noisy WebSocket sessions to
+avoid excessive span volume.
 
 ## WebSocket notes
 
@@ -54,12 +56,18 @@ so the server instruments those paths explicitly. Look for spans/events named:
 - `ws.upgrade`
 - `ws.send`
 - `ws.recv`
-- `ws.sink.start_send`
-- `ws.sink.poll_flush`
 - `ws.bridge.send`
 
 Message logs include the message kind, byte length, and whether a close frame
 was present. Payload contents are intentionally not logged.
+
+Low-level sink polling events such as `ws.sink.start_send`,
+`ws.sink.poll_ready`, and `ws.sink.poll_flush` are intentionally gated behind an
+additional flag because they can be very noisy:
+
+```bash
+VK_PERF_TRACING=1 VK_WS_POLL_TRACING=1 RUST_LOG=info pnpm run backend:dev:watch
+```
 
 ## SQL query notes
 

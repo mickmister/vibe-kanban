@@ -1,7 +1,12 @@
 use anyhow::{self, Error as AnyhowError};
 use axum::Router;
 use deployment::{Deployment, DeploymentError};
-use server::{middleware::origin::validate_origin, routes, runtime::relay_registration, startup};
+use server::{
+    middleware::{make_http_span, origin::validate_origin},
+    routes,
+    runtime::relay_registration,
+    startup,
+};
 use sqlx::Error as SqlxError;
 use strip_ansi_escapes::strip;
 use thiserror::Error;
@@ -121,7 +126,9 @@ async fn main() -> Result<(), VibeKanbanError> {
     }
 
     let proxy_router: Router = routes::preview::subdomain_router(deployment.clone())
-        .layer(TraceLayer::new_for_http())
+        .layer(TraceLayer::new_for_http().make_span_with(|request: &axum::extract::Request| {
+            make_http_span(request)
+        }))
         .layer(ValidateRequestHeaderLayer::custom(validate_origin));
 
     let main_shutdown = shutdown_token.clone();

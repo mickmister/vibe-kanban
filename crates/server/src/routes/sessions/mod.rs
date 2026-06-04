@@ -26,6 +26,7 @@ use executors::{
 };
 use serde::Deserialize;
 use services::services::container::ContainerService;
+use tracing::Instrument;
 use ts_rs::TS;
 use utils::response::ApiResponse;
 use uuid::Uuid;
@@ -52,10 +53,33 @@ pub async fn get_sessions(
     Query(query): Query<SessionQuery>,
 ) -> Result<ResponseJson<ApiResponse<Vec<Session>>>, ApiError> {
     let pool = &deployment.db().pool;
-    let sessions = Session::find_by_workspace_id(pool, query.workspace_id).await?;
+    let sessions = async {
+        Session::find_by_workspace_id(pool, query.workspace_id).await
+    }
+    .instrument(tracing::debug_span!(
+        "sessions.find_by_workspace_id",
+        workspace_id = %query.workspace_id,
+    ))
+    .await?;
+
+    tracing::debug!(
+        workspace_id = %query.workspace_id,
+        session_count = sessions.len(),
+        "sessions.list.loaded"
+    );
+
     Ok(ResponseJson(ApiResponse::success(sessions)))
 }
 
+#[tracing::instrument(
+    level = "debug",
+    skip(session),
+    fields(
+        session_id = %session.id,
+        workspace_id = %session.workspace_id,
+        has_name = session.name.is_some(),
+    )
+)]
 pub async fn get_session(
     Extension(session): Extension<Session>,
 ) -> Result<ResponseJson<ApiResponse<Session>>, ApiError> {

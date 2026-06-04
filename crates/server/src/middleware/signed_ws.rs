@@ -226,7 +226,9 @@ impl Sink<Message> for MaybeSignedWebSocket {
 
     fn poll_ready(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         let this = self.get_mut();
-        tracing::trace!(mode = this.mode(), "ws.sink.poll_ready");
+        if ws_poll_tracing_enabled() {
+            tracing::trace!(mode = this.mode(), "ws.sink.poll_ready");
+        }
         match &mut this.inner {
             WebSocketInner::Plain(ws) => Pin::new(ws).poll_ready(cx).map_err(anyhow::Error::from),
             WebSocketInner::Signed(ws) => Pin::new(ws).poll_ready(cx),
@@ -236,13 +238,15 @@ impl Sink<Message> for MaybeSignedWebSocket {
     fn start_send(self: Pin<&mut Self>, item: Message) -> Result<(), Self::Error> {
         let this = self.get_mut();
         let metadata = WsMessageMetadata::from(&item);
-        tracing::trace!(
-            mode = this.mode(),
-            message.kind = metadata.kind,
-            message.len_bytes = metadata.len_bytes,
-            message.has_close_frame = metadata.has_close_frame,
-            "ws.sink.start_send"
-        );
+        if ws_poll_tracing_enabled() {
+            tracing::trace!(
+                mode = this.mode(),
+                message.kind = metadata.kind,
+                message.len_bytes = metadata.len_bytes,
+                message.has_close_frame = metadata.has_close_frame,
+                "ws.sink.start_send"
+            );
+        }
         match &mut this.inner {
             WebSocketInner::Plain(ws) => Pin::new(ws).start_send(item).map_err(anyhow::Error::from),
             WebSocketInner::Signed(ws) => Pin::new(ws).start_send(item),
@@ -251,7 +255,9 @@ impl Sink<Message> for MaybeSignedWebSocket {
 
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         let this = self.get_mut();
-        tracing::trace!(mode = this.mode(), "ws.sink.poll_flush");
+        if ws_poll_tracing_enabled() {
+            tracing::trace!(mode = this.mode(), "ws.sink.poll_flush");
+        }
         match &mut this.inner {
             WebSocketInner::Plain(ws) => Pin::new(ws).poll_flush(cx).map_err(anyhow::Error::from),
             WebSocketInner::Signed(ws) => Pin::new(ws).poll_flush(cx),
@@ -260,12 +266,30 @@ impl Sink<Message> for MaybeSignedWebSocket {
 
     fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         let this = self.get_mut();
-        tracing::trace!(mode = this.mode(), "ws.sink.poll_close");
+        if ws_poll_tracing_enabled() {
+            tracing::trace!(mode = this.mode(), "ws.sink.poll_close");
+        }
         match &mut this.inner {
             WebSocketInner::Plain(ws) => Pin::new(ws).poll_close(cx).map_err(anyhow::Error::from),
             WebSocketInner::Signed(ws) => Pin::new(ws).poll_close(cx),
         }
     }
+}
+
+fn ws_poll_tracing_enabled() -> bool {
+    env_flag("VK_WS_POLL_TRACING")
+}
+
+fn env_flag(name: &str) -> bool {
+    std::env::var(name)
+        .ok()
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
 }
 
 struct WsMessageMetadata {

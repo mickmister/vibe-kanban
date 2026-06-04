@@ -50,7 +50,14 @@ pub fn init_once(source: SentrySource) {
     };
 
     INIT_GUARD.get_or_init(|| {
-        let traces_sample_rate = traces_sample_rate().unwrap_or(0.0);
+        let trace_config = trace_sample_rate_config();
+        if let TraceSampleRateConfig::Invalid { name, value } = &trace_config {
+            eprintln!(
+                "Ignoring invalid {name}={value:?}; expected a Sentry trace \
+                 sample rate between 0.0 and 1.0"
+            );
+        }
+        let traces_sample_rate = trace_config.rate();
         sentry::init((
             dsn,
             sentry::ClientOptions {
@@ -92,7 +99,7 @@ where
     S: for<'a> tracing_subscriber::registry::LookupSpan<'a>,
 {
     let include_perf_trace_spans =
-        perf_tracing_enabled() && traces_sample_rate().unwrap_or(0.0) > 0.0;
+        perf_tracing_enabled() && trace_sample_rate_config().rate() > 0.0;
 
     SentryLayer::default()
         .span_filter(move |meta| {
@@ -106,32 +113,53 @@ where
         })
 }
 
-fn traces_sample_rate() -> Option<f32> {
-    traces_sample_rate_from(
-        perf_tracing_enabled(),
-        first_env_var(["VK_SENTRY_TRACES_SAMPLE_RATE", "SENTRY_TRACES_SAMPLE_RATE"]),
-    )
+#[derive(Debug, PartialEq)]
+enum TraceSampleRateConfig {
+    Unset,
+    Valid(f32),
+    Invalid { name: &'static str, value: String },
 }
 
-fn traces_sample_rate_from(
-    perf_tracing_enabled: bool,
-    configured_rate: Option<String>,
-) -> Option<f32> {
-    configured_rate
-        .and_then(|value| value.trim().parse::<f32>().ok())
-        .map(|value| value.clamp(0.0, 1.0))
-        .or_else(|| perf_tracing_enabled.then_some(1.0))
+impl TraceSampleRateConfig {
+    fn rate(&self) -> f32 {
+        match self {
+            Self::Valid(rate) => *rate,
+            Self::Unset | Self::Invalid { .. } => 0.0,
+        }
+    }
+}
+
+fn trace_sample_rate_config() -> TraceSampleRateConfig {
+    trace_sample_rate_config_from(first_env_var([
+        "VK_SENTRY_TRACES_SAMPLE_RATE",
+        "SENTRY_TRACES_SAMPLE_RATE",
+    ]))
+}
+
+fn trace_sample_rate_config_from(
+    configured_rate: Option<(&'static str, String)>,
+) -> TraceSampleRateConfig {
+    let Some((name, value)) = configured_rate else {
+        return TraceSampleRateConfig::Unset;
+    };
+
+    match value.trim().parse::<f32>() {
+        Ok(value) if (0.0..=1.0).contains(&value) => TraceSampleRateConfig::Valid(value),
+        _ => TraceSampleRateConfig::Invalid { name, value },
+    }
 }
 
 fn perf_tracing_enabled() -> bool {
     env_flag("VK_PERF_TRACING")
 }
 
-fn first_env_var<const N: usize>(names: [&str; N]) -> Option<String> {
-    names
-        .into_iter()
-        .find_map(|name| std::env::var(name).ok())
-        .filter(|value| !value.trim().is_empty())
+fn first_env_var<const N: usize>(names: [&'static str; N]) -> Option<(&'static str, String)> {
+    names.into_iter().find_map(|name| {
+        std::env::var(name)
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+            .map(|value| (name, value))
+    })
 }
 
 fn env_flag(name: &str) -> bool {
@@ -148,28 +176,36 @@ fn env_flag(name: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::traces_sample_rate_from;
+    use super::{TraceSampleRateConfig, trace_sample_rate_config_from};
 
     #[test]
     fn traces_sample_rate_is_disabled_by_default() {
-        assert_eq!(traces_sample_rate_from(false, None), None);
+        assert_eq!(trace_sample_rate_config_from(None), TraceSampleRateConfig::Unset);
     }
 
     #[test]
-    fn traces_sample_rate_defaults_to_one_for_perf_tracing() {
-        assert_eq!(traces_sample_rate_from(true, None), Some(1.0));
-    }
-
-    #[test]
-    fn traces_sample_rate_clamps_configured_value() {
-        assert_eq!(traces_sample_rate_from(true, Some("2".into())), Some(1.0));
+    fn traces_sample_rate_accepts_configured_value() {
         assert_eq!(
-            traces_sample_rate_from(true, Some("-1".into())),
-            Some(0.0)
+            trace_sample_rate_config_from(Some(("VK_SENTRY_TRACES_SAMPLE_RATE", "0.25".into()))),
+            TraceSampleRateConfig::Valid(0.25)
+        );
+    }
+
+    #[test]
+    fn traces_sample_rate_rejects_invalid_configured_value() {
+        assert_eq!(
+            trace_sample_rate_config_from(Some(("VK_SENTRY_TRACES_SAMPLE_RATE", "2".into()))),
+            TraceSampleRateConfig::Invalid {
+                name: "VK_SENTRY_TRACES_SAMPLE_RATE",
+                value: "2".into(),
+            }
         );
         assert_eq!(
-            traces_sample_rate_from(false, Some("0.25".into())),
-            Some(0.25)
+            trace_sample_rate_config_from(Some(("SENTRY_TRACES_SAMPLE_RATE", "oops".into()))),
+            TraceSampleRateConfig::Invalid {
+                name: "SENTRY_TRACES_SAMPLE_RATE",
+                value: "oops".into(),
+            }
         );
     }
 }
