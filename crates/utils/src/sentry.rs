@@ -3,6 +3,8 @@ use std::sync::OnceLock;
 use sentry_tracing::{EventFilter, SentryLayer};
 use tracing::Level;
 
+use crate::perf_trace;
+
 static INIT_GUARD: OnceLock<sentry::ClientInitGuard> = OnceLock::new();
 
 #[derive(Clone, Copy, Debug)]
@@ -11,6 +13,18 @@ pub enum SentrySource {
     Desktop,
     Mcp,
     Remote,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SentryPerfMode {
+    SourceDefault,
+    Backend,
+}
+
+impl SentryPerfMode {
+    fn enables_backend_perf(self, source: SentrySource) -> bool {
+        matches!(source, SentrySource::Backend) || matches!(self, Self::Backend)
+    }
 }
 
 impl SentrySource {
@@ -45,12 +59,16 @@ fn environment() -> &'static str {
 }
 
 pub fn init_once(source: SentrySource) {
+    init_once_with_perf_mode(source, SentryPerfMode::SourceDefault);
+}
+
+pub fn init_once_with_perf_mode(source: SentrySource, perf_mode: SentryPerfMode) {
     let Some(dsn) = source.dsn() else {
         return;
     };
 
     INIT_GUARD.get_or_init(|| {
-        let trace_config = if matches!(source, SentrySource::Backend) {
+        let trace_config = if perf_mode.enables_backend_perf(source) && perf_trace::enabled() {
             trace_sample_rate_config()
         } else {
             TraceSampleRateConfig::Unset
@@ -102,9 +120,20 @@ where
     S: tracing::Subscriber,
     S: for<'a> tracing_subscriber::registry::LookupSpan<'a>,
 {
+    sentry_layer_with_perf_mode(source, SentryPerfMode::SourceDefault)
+}
+
+pub fn sentry_layer_with_perf_mode<S>(
+    source: SentrySource,
+    perf_mode: SentryPerfMode,
+) -> SentryLayer<S>
+where
+    S: tracing::Subscriber,
+    S: for<'a> tracing_subscriber::registry::LookupSpan<'a>,
+{
     let include_perf_trace_spans =
-        matches!(source, SentrySource::Backend)
-            && perf_tracing_enabled()
+        perf_mode.enables_backend_perf(source)
+            && perf_trace::enabled()
             && trace_sample_rate_config().rate() > 0.0;
 
     SentryLayer::default()
@@ -155,10 +184,6 @@ fn trace_sample_rate_config_from(
     }
 }
 
-fn perf_tracing_enabled() -> bool {
-    env_flag("VK_PERF_TRACING")
-}
-
 fn first_env_var<const N: usize>(names: [&'static str; N]) -> Option<(&'static str, String)> {
     names.into_iter().find_map(|name| {
         std::env::var(name)
@@ -168,21 +193,11 @@ fn first_env_var<const N: usize>(names: [&'static str; N]) -> Option<(&'static s
     })
 }
 
-fn env_flag(name: &str) -> bool {
-    std::env::var(name)
-        .ok()
-        .map(|value| {
-            matches!(
-                value.trim().to_ascii_lowercase().as_str(),
-                "1" | "true" | "yes" | "on"
-            )
-        })
-        .unwrap_or(false)
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{TraceSampleRateConfig, trace_sample_rate_config_from};
+    use super::{
+        SentryPerfMode, SentrySource, TraceSampleRateConfig, trace_sample_rate_config_from,
+    };
 
     #[test]
     fn traces_sample_rate_is_disabled_by_default() {
@@ -213,5 +228,19 @@ mod tests {
                 value: "oops".into(),
             }
         );
+    }
+
+    #[test]
+    fn source_default_perf_mode_only_enables_backend_source() {
+        assert!(SentryPerfMode::SourceDefault.enables_backend_perf(SentrySource::Backend));
+        assert!(!SentryPerfMode::SourceDefault.enables_backend_perf(SentrySource::Desktop));
+        assert!(!SentryPerfMode::SourceDefault.enables_backend_perf(SentrySource::Mcp));
+        assert!(!SentryPerfMode::SourceDefault.enables_backend_perf(SentrySource::Remote));
+    }
+
+    #[test]
+    fn backend_perf_mode_enables_embedded_backend_processes() {
+        assert!(SentryPerfMode::Backend.enables_backend_perf(SentrySource::Backend));
+        assert!(SentryPerfMode::Backend.enables_backend_perf(SentrySource::Desktop));
     }
 }

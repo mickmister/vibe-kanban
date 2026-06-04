@@ -48,6 +48,11 @@ disable Sentry Performance export instead of falling back to a higher sample
 rate. Prefer short, sampled profiling windows for noisy WebSocket sessions to
 avoid excessive span volume.
 
+The standalone backend uses backend Sentry performance settings directly. The
+desktop app runs the local backend in the same process, so `VK_PERF_TRACING=1`
+also switches the desktop process into an embedded-backend performance mode for
+filter directives and Sentry span capture.
+
 ### Sentry smoke-test checklist
 
 For a profiling run that sends data to Sentry:

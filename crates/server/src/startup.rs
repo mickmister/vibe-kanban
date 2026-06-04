@@ -13,6 +13,7 @@ use tokio_util::sync::CancellationToken;
 use tower_http::{trace::TraceLayer, validate_request::ValidateRequestHeaderLayer};
 use utils::{
     assets::asset_dir,
+    perf_trace,
     process_diag::{self, ProcessSnapshot},
 };
 
@@ -65,7 +66,7 @@ impl ServerHandle {
         relay_registration::spawn_relay(&self.deployment).await;
         log_startup_phase("relay_startup_spawn_complete");
 
-        let perf_tracing_enabled = env_flag("VK_PERF_TRACING");
+        let perf_tracing_enabled = perf_trace::enabled();
         let app_router = routes::router(self.deployment.clone(), perf_tracing_enabled);
         let proxy_router: axum::Router = {
             let router = routes::preview::subdomain_router(self.deployment.clone());

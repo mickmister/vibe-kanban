@@ -13,6 +13,7 @@ pub mod jwt;
 pub mod log_msg;
 pub mod msg_store;
 pub mod path;
+pub mod perf_trace;
 pub mod port_file;
 pub mod process;
 pub mod process_diag;

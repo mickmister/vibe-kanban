@@ -18,6 +18,7 @@ use futures_util::{Sink, SinkExt, Stream, StreamExt};
 use relay_control::signing::{RelaySigningService, RequestSignature};
 use relay_ws::{SignedAxumSocket, signed_axum_websocket};
 use tracing::Instrument;
+use utils::perf_trace;
 
 use crate::{DeploymentImpl, middleware::RelayRequestSignatureContext};
 
@@ -306,19 +307,7 @@ fn websocket_trace_enabled() -> bool {
 
 fn ws_poll_tracing_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| env_flag("VK_WS_POLL_TRACING"))
-}
-
-fn env_flag(name: &str) -> bool {
-    std::env::var(name)
-        .ok()
-        .map(|value| {
-            matches!(
-                value.trim().to_ascii_lowercase().as_str(),
-                "1" | "true" | "yes" | "on"
-            )
-        })
-        .unwrap_or(false)
+    *ENABLED.get_or_init(perf_trace::ws_poll_tracing_enabled)
 }
 
 struct WsMessageMetadata {

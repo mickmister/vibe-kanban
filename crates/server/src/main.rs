@@ -14,9 +14,28 @@ use tokio_util::sync::CancellationToken;
 use tower_http::{trace::TraceLayer, validate_request::ValidateRequestHeaderLayer};
 use tracing_subscriber::{EnvFilter, prelude::*};
 use utils::{
+    perf_trace,
     port_file::write_port_file_with_proxy,
     sentry::{self as sentry_utils, SentrySource, sentry_layer},
 };
+
+const DEFAULT_TRACING_TARGETS: &[&str] = &[
+    "server",
+    "services",
+    "db",
+    "executors",
+    "deployment",
+    "local_deployment",
+    "utils",
+    "embedded_ssh",
+    "desktop_bridge",
+    "relay_hosts",
+    "relay_client",
+    "relay_webrtc",
+    "ws_bridge",
+];
+
+const DEFAULT_TRACING_DIRECTIVES: &[&str] = &["warn", "codex_core=off"];
 
 #[derive(Debug, Error)]
 pub enum VibeKanbanError {
@@ -40,8 +59,13 @@ async fn main() -> Result<(), VibeKanbanError> {
     sentry_utils::init_once(SentrySource::Backend);
 
     let log_level = std::env::var("RUST_LOG").unwrap_or_else(|_| "info".to_string());
-    let perf_tracing_enabled = env_flag("VK_PERF_TRACING");
-    let filter_string = tracing_filter_string(&log_level, perf_tracing_enabled);
+    let perf_tracing_enabled = perf_trace::enabled();
+    let filter_string = perf_trace::tracing_filter_string(
+        &log_level,
+        perf_tracing_enabled,
+        DEFAULT_TRACING_TARGETS,
+        DEFAULT_TRACING_DIRECTIVES,
+    );
     let env_filter = EnvFilter::try_new(filter_string).expect("Failed to create tracing filter");
     tracing_subscriber::registry()
         .with(tracing_subscriber::fmt::layer().with_filter(env_filter))
@@ -175,56 +199,6 @@ async fn main() -> Result<(), VibeKanbanError> {
     Ok(())
 }
 
-fn tracing_filter_string(rust_log: &str, perf_tracing_enabled: bool) -> String {
-    let base_filter = if rust_log.contains('=') || rust_log.contains(',') {
-        rust_log.to_string()
-    } else {
-        [
-            "warn".to_string(),
-            format!("server={rust_log}"),
-            format!("services={rust_log}"),
-            format!("db={rust_log}"),
-            format!("executors={rust_log}"),
-            format!("deployment={rust_log}"),
-            format!("local_deployment={rust_log}"),
-            format!("utils={rust_log}"),
-            format!("embedded_ssh={rust_log}"),
-            format!("desktop_bridge={rust_log}"),
-            format!("relay_hosts={rust_log}"),
-            format!("relay_client={rust_log}"),
-            format!("relay_webrtc={rust_log}"),
-            format!("ws_bridge={rust_log}"),
-            "codex_core=off".to_string(),
-        ]
-        .join(",")
-    };
-
-    if perf_tracing_enabled {
-        [
-            base_filter,
-            "tower_http=debug".to_string(),
-            "sqlx::query=debug".to_string(),
-            "server::middleware::signed_ws=trace".to_string(),
-            "ws_bridge=trace".to_string(),
-        ]
-        .join(",")
-    } else {
-        base_filter
-    }
-}
-
-fn env_flag(name: &str) -> bool {
-    std::env::var(name)
-        .ok()
-        .map(|value| {
-            matches!(
-                value.trim().to_ascii_lowercase().as_str(),
-                "1" | "true" | "yes" | "on"
-            )
-        })
-        .unwrap_or(false)
-}
-
 pub async fn shutdown_signal() {
     // Always wait for Ctrl+C
     let ctrl_c = async {
@@ -263,37 +237,4 @@ pub async fn shutdown_signal() {
 
 pub async fn perform_cleanup_actions(deployment: &server::DeploymentImpl) {
     startup::perform_cleanup_actions(deployment).await;
-}
-
-#[cfg(test)]
-mod tests {
-    use super::tracing_filter_string;
-
-    #[test]
-    fn tracing_filter_uses_workspace_defaults_for_plain_levels() {
-        let filter = tracing_filter_string("debug", false);
-
-        assert!(filter.contains("server=debug"));
-        assert!(filter.contains("services=debug"));
-        assert!(filter.contains("ws_bridge=debug"));
-        assert!(filter.contains("codex_core=off"));
-        assert!(!filter.contains("sqlx::query=debug"));
-    }
-
-    #[test]
-    fn tracing_filter_preserves_explicit_rust_log_directives() {
-        let filter = tracing_filter_string("server=trace,sqlx=debug", false);
-
-        assert_eq!(filter, "server=trace,sqlx=debug");
-    }
-
-    #[test]
-    fn tracing_filter_adds_perf_directives_when_enabled() {
-        let filter = tracing_filter_string("info", true);
-
-        assert!(filter.contains("tower_http=debug"));
-        assert!(filter.contains("sqlx::query=debug"));
-        assert!(filter.contains("server::middleware::signed_ws=trace"));
-        assert!(filter.contains("ws_bridge=trace"));
-    }
 }

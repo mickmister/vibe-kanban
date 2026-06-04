@@ -19,11 +19,27 @@ use tokio_util::sync::CancellationToken;
 use tracing_subscriber::{EnvFilter, prelude::*};
 use utils::{
     assets::config_path,
-    sentry::{self as sentry_utils, SentrySource, sentry_layer},
+    perf_trace,
+    sentry::{
+        SentryPerfMode, SentrySource, init_once_with_perf_mode, sentry_layer_with_perf_mode,
+    },
 };
 use uuid::Uuid;
 
 const UPDATE_CHECK_INTERVAL: Duration = Duration::from_secs(60 * 60);
+
+const DEFAULT_TRACING_TARGETS: &[&str] = &[
+    "server",
+    "services",
+    "db",
+    "executors",
+    "deployment",
+    "local_deployment",
+    "utils",
+    "vibe_kanban_tauri",
+];
+
+const DEFAULT_TRACING_DIRECTIVES: &[&str] = &["warn"];
 
 #[cfg(target_os = "linux")]
 mod linux_notifications;
@@ -116,17 +132,28 @@ fn main() {
         .expect("Failed to install rustls crypto provider");
 
     let log_level = std::env::var("RUST_LOG").unwrap_or_else(|_| "info".to_string());
-    let filter_string = format!(
-        "warn,server={level},services={level},db={level},executors={level},deployment={level},local_deployment={level},utils={level},vibe_kanban_tauri={level}",
-        level = log_level
+    let perf_tracing_enabled = perf_trace::enabled();
+    let filter_string = perf_trace::tracing_filter_string(
+        &log_level,
+        perf_tracing_enabled,
+        DEFAULT_TRACING_TARGETS,
+        DEFAULT_TRACING_DIRECTIVES,
     );
     let env_filter = EnvFilter::try_new(filter_string).expect("Failed to create tracing filter");
 
-    sentry_utils::init_once(SentrySource::Desktop);
+    let sentry_perf_mode = if perf_tracing_enabled {
+        SentryPerfMode::Backend
+    } else {
+        SentryPerfMode::SourceDefault
+    };
+    init_once_with_perf_mode(SentrySource::Desktop, sentry_perf_mode);
 
     tracing_subscriber::registry()
         .with(tracing_subscriber::fmt::layer().with_filter(env_filter))
-        .with(sentry_layer(SentrySource::Desktop))
+        .with(sentry_layer_with_perf_mode(
+            SentrySource::Desktop,
+            sentry_perf_mode,
+        ))
         .init();
 
     // Shared token so we can tell the server to shut down when the app quits.
