@@ -2,7 +2,10 @@ use axum::{
     Router,
     routing::{IntoMakeService, get},
 };
-use tower_http::{compression::CompressionLayer, validate_request::ValidateRequestHeaderLayer};
+use tower_http::{
+    compression::CompressionLayer, trace::TraceLayer,
+    validate_request::ValidateRequestHeaderLayer,
+};
 
 use crate::{DeploymentImpl, middleware};
 
@@ -82,6 +85,7 @@ pub fn router(deployment: DeploymentImpl) -> IntoMakeService<Router> {
         .route("/", get(frontend::serve_frontend_root))
         .route("/{*path}", get(frontend::serve_frontend))
         .nest("/api", api_routes)
+        .layer(TraceLayer::new_for_http())
         .layer(CompressionLayer::new())
         .into_make_service()
 }

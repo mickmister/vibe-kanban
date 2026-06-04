@@ -1,6 +1,7 @@
 use axum::extract::ws::Message as AxumWsMessage;
 use futures_util::{Sink, SinkExt, Stream, StreamExt};
 use tokio_tungstenite::{tungstenite, tungstenite::client::IntoClientRequest};
+use tracing::Instrument;
 
 use crate::ws_io::{axum_to_tungstenite, tungstenite_to_axum};
 
@@ -75,8 +76,10 @@ where
     let forward = async {
         while let Some(msg) = a_stream.next().await {
             let msg = msg.map_err(|error| WsBridgeError::ReadFromSource(error.into()))?;
-            b_sink
+            let send = b_sink
                 .send(a_to_b(msg))
+                .instrument(tracing::trace_span!("ws.bridge.send", direction = "a_to_b"));
+            send
                 .await
                 .map_err(|error| WsBridgeError::WriteToDestination(error.into()))?;
         }
@@ -87,8 +90,10 @@ where
     let backward = async {
         while let Some(msg) = b_stream.next().await {
             let msg = msg.map_err(|error| WsBridgeError::ReadFromDestination(error.into()))?;
-            a_sink
+            let send = a_sink
                 .send(b_to_a(msg))
+                .instrument(tracing::trace_span!("ws.bridge.send", direction = "b_to_a"));
+            send
                 .await
                 .map_err(|error| WsBridgeError::WriteToSource(error.into()))?;
         }
