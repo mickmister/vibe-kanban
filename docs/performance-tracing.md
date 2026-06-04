@@ -25,6 +25,26 @@ RUST_LOG='server=trace,services=debug,db=debug,sqlx::query=debug,tower_http=debu
 pnpm run backend:dev:watch
 ```
 
+## Sending traces to Sentry
+
+The backend already initializes Sentry when `SENTRY_DSN` is configured. During a
+profiling run, `VK_PERF_TRACING=1` also enables Sentry Performance span capture
+with a default trace sample rate of `1.0`.
+
+Use a lower sample rate for longer or higher-volume runs:
+
+```bash
+SENTRY_DSN='https://public-key@o0.ingest.sentry.io/project-id' \
+VK_PERF_TRACING=1 \
+VK_SENTRY_TRACES_SAMPLE_RATE=0.2 \
+RUST_LOG=info \
+pnpm run backend:dev:watch
+```
+
+`VK_SENTRY_TRACES_SAMPLE_RATE` and `SENTRY_TRACES_SAMPLE_RATE` are clamped to the
+Sentry-supported `0.0` to `1.0` range. Prefer short, sampled profiling windows
+for noisy WebSocket sessions to avoid excessive span volume.
+
 ## WebSocket notes
 
 HTTP tracing records the upgrade request/response only. After a connection is
