@@ -18,6 +18,7 @@ interface ChatUserMessageProps {
   onEdit?: () => void;
   onReset?: () => void;
   isGreyed?: boolean;
+  kitchenTime?: string | null;
   renderMarkdown: (props: ChatUserMessageRenderProps) => ReactNode;
 }
 
@@ -30,14 +31,18 @@ export function ChatUserMessage({
   onEdit,
   onReset,
   isGreyed,
+  kitchenTime,
   renderMarkdown,
 }: ChatUserMessageProps) {
   const { t } = useTranslation('tasks');
 
-  const headerActions =
-    !isGreyed && (onEdit || onReset) ? (
-      <div className="flex items-center gap-1">
-        {onReset && (
+  const headerRight =
+    kitchenTime || (!isGreyed && (onEdit || onReset)) ? (
+      <div className="flex items-center gap-2">
+        {kitchenTime && (
+          <time className="text-xs text-low tabular-nums">{kitchenTime}</time>
+        )}
+        {!isGreyed && onReset && (
           <Tooltip content={t('conversation.actions.resetTooltip')}>
             <button
               type="button"
@@ -52,7 +57,7 @@ export function ChatUserMessage({
             </button>
           </Tooltip>
         )}
-        {onEdit && (
+        {!isGreyed && onEdit && (
           <Tooltip content={t('conversation.actions.edit')}>
             <button
               type="button"
@@ -78,7 +83,7 @@ export function ChatUserMessage({
       onToggle={onToggle}
       className={className}
       isGreyed={isGreyed}
-      headerRight={headerActions}
+      headerRight={headerRight}
     >
       {renderMarkdown({ content, workspaceId })}
     </ChatEntryContainer>

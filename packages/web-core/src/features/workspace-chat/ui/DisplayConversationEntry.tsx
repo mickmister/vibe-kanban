@@ -66,6 +66,7 @@ import {
   GlobeIcon,
   PencilSimpleIcon,
 } from '@phosphor-icons/react';
+import { formatKitchenTime } from '../model/formatKitchenTime';
 
 type Props = {
   expansionKey: string;
@@ -353,6 +354,7 @@ function DisplayConversationEntry(props: Props) {
       return (
         <UserMessageEntry
           content={entry.content}
+          timestamp={entry.timestamp}
           expansionKey={expansionKey}
           workspaceId={workspaceWithSession?.id}
           sessionId={sessionId}
@@ -366,6 +368,7 @@ function DisplayConversationEntry(props: Props) {
       return (
         <AssistantMessageEntry
           content={entry.content}
+          timestamp={entry.timestamp}
           workspaceId={workspaceWithSession?.id}
           sessionId={sessionId}
         />
@@ -705,6 +708,7 @@ function GenericToolApprovalEntry({
  */
 function UserMessageEntry({
   content,
+  timestamp,
   expansionKey,
   workspaceId,
   sessionId,
@@ -713,6 +717,7 @@ function UserMessageEntry({
   resetAction,
 }: {
   content: string;
+  timestamp: string | null | undefined;
   expansionKey: string;
   workspaceId: string | undefined;
   sessionId: string | undefined;
@@ -725,6 +730,7 @@ function UserMessageEntry({
   const { resetProcess, canResetProcess, isResetPending } = resetAction;
 
   const isGreyed = isEntryGreyed(expansionKey);
+  const kitchenTime = formatKitchenTime(timestamp);
 
   const handleEdit = () => {
     if (executionProcessId) {
@@ -755,6 +761,7 @@ function UserMessageEntry({
       onEdit={canEdit ? handleEdit : undefined}
       onReset={canReset ? handleReset : undefined}
       isGreyed={isGreyed}
+      kitchenTime={kitchenTime}
       renderMarkdown={({ content, workspaceId }) => (
         <AppChatMarkdown
           content={content}
@@ -874,16 +881,21 @@ function LoadingEntry() {
  */
 function AssistantMessageEntry({
   content,
+  timestamp,
   workspaceId,
   sessionId,
 }: {
   content: string;
+  timestamp: string | null | undefined;
   workspaceId: string | undefined;
   sessionId: string | undefined;
 }) {
+  const kitchenTime = formatKitchenTime(timestamp);
+
   return (
     <ChatAssistantMessage
       content={content}
+      kitchenTime={kitchenTime}
       workspaceId={workspaceId}
       renderMarkdown={({ content, workspaceId }) => (
         <AppChatMarkdown

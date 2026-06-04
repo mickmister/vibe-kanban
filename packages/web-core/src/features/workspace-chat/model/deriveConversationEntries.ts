@@ -37,6 +37,42 @@ function patchWithKey(
   };
 }
 
+function withFinalAssistantMessageTimestamp(
+  entries: ReadonlyArray<PatchTypeWithKey>,
+  fallbackTimestamp: string | null | undefined,
+  shouldStampFinalAssistantMessage: boolean
+): PatchTypeWithKey[] {
+  const finalAssistantIndex = entries.findLastIndex(
+    (entry) =>
+      entry.type === 'NORMALIZED_ENTRY' &&
+      entry.content.entry_type.type === 'assistant_message'
+  );
+
+  if (finalAssistantIndex === -1) {
+    return [...entries];
+  }
+
+  return entries.map((entry, index) => {
+    if (
+      entry.type !== 'NORMALIZED_ENTRY' ||
+      entry.content.entry_type.type !== 'assistant_message'
+    ) {
+      return entry;
+    }
+
+    return {
+      ...entry,
+      content: {
+        ...entry.content,
+        timestamp:
+          index === finalAssistantIndex && shouldStampFinalAssistantMessage
+            ? (entry.content.timestamp ?? fallbackTimestamp ?? null)
+            : null,
+      },
+    };
+  });
+}
+
 function appendAgentTurnEntries(
   turn: ConversationAgentTurn,
   turnEntries: PatchTypeWithKey[]
@@ -45,7 +81,7 @@ function appendAgentTurnEntries(
     const userNormalizedEntry: NormalizedEntry = {
       entry_type: { type: 'user_message' },
       content: turn.prompt,
-      timestamp: null,
+      timestamp: turn.process.executionProcess.created_at,
     };
 
     turnEntries.push(
@@ -57,7 +93,14 @@ function appendAgentTurnEntries(
     );
   }
 
-  turnEntries.push(...turn.visibleEntries);
+  turnEntries.push(
+    ...withFinalAssistantMessageTimestamp(
+      turn.visibleEntries,
+      turn.process.liveExecutionProcess?.completed_at ??
+        turn.process.executionProcess.updated_at,
+      turn.kind === 'agent_idle' || turn.kind === 'agent_failed'
+    )
+  );
 
   if (turn.shouldEmitLoading) {
     turnEntries.push(makeLoadingPatch(turn.process.executionProcess.id));
@@ -126,7 +169,7 @@ function appendScriptTurnEntries(
             content: {
               entry_type: { type: 'user_message' },
               content: process.initialPromptAfterSetup,
-              timestamp: null,
+              timestamp: process.process.executionProcess.created_at,
             },
           },
           processId,
