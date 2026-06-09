@@ -438,8 +438,7 @@
       "renameTitle": "세션 이름 변경",
       "renameDescription": "이 세션의 새 이름을 입력하세요.",
       "renamePlaceholder": "세션 이름 입력",
-      "renaming": "이름 변경 중...",
-      "forkSession": "세션 포크"
+      "renaming": "이름 변경 중..."
     },
     "reviewComments": {
       "count_one": "{{count}}개의 리뷰 댓글이 포함됩니다",

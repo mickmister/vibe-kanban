@@ -195,19 +195,6 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     [queryClient, hostId, workspaceId]
   );
 
-  const handleForkSession = useCallback(async () => {
-    if (!sessionId || !workspaceId || !onSelectSession) return;
-    try {
-      const forked = await sessionsApi.fork(sessionId);
-      await queryClient.invalidateQueries({
-        queryKey: workspaceSessionKeys.byWorkspace(workspaceId, hostId),
-      });
-      onSelectSession(forked.id);
-    } catch (error) {
-      console.error('Failed to fork session', error);
-    }
-  }, [hostId, onSelectSession, queryClient, sessionId, workspaceId]);
-
   const appNavigation = useAppNavigation();
 
   const { executeAction } = useActions();
@@ -1068,7 +1055,6 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
         onSelectSession: onSelectSession ?? (() => {}),
         isNewSessionMode: needsExecutorSelection,
         onNewSession: onStartNewSession,
-        onForkSession: handleForkSession,
         onRenameSession: handleRenameSession,
       }}
       toolbarActions={{

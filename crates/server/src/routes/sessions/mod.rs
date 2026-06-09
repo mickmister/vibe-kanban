@@ -13,7 +13,7 @@ use db::models::{
     execution_process::{ExecutionProcess, ExecutionProcessRunReason},
     requests::UpdateSession,
     scratch::{Scratch, ScratchType},
-    session::{CreateSession, ForkSessionSeed, Session, SessionError},
+    session::{CreateSession, Session, SessionError},
     workspace::{Workspace, WorkspaceError},
     workspace_repo::WorkspaceRepo,
 };
@@ -91,44 +91,6 @@ pub async fn create_session(
     Ok(ResponseJson(ApiResponse::success(session)))
 }
 
-pub async fn fork_session(
-    Extension(session): Extension<Session>,
-    State(deployment): State<DeploymentImpl>,
-) -> Result<ResponseJson<ApiResponse<Session>>, ApiError> {
-    let pool = &deployment.db().pool;
-
-    let latest_session_info = latest_resume_info(pool, &session).await?;
-    let Some(info) = latest_session_info else {
-        return Err(ApiError::Session(SessionError::ValidationError(
-            "No active agent session to fork".to_string(),
-        )));
-    };
-    let executor = match &session.executor {
-        Some(executor) => Some(executor.clone()),
-        None => ExecutionProcess::latest_executor_profile_for_session(pool, session.id)
-            .await?
-            .map(|profile| profile.executor.to_string()),
-    };
-
-    let forked = Session::create_fork(
-        pool,
-        &CreateSession {
-            executor,
-            name: Some("Fork".to_string()),
-        },
-        Uuid::new_v4(),
-        session.workspace_id,
-        ForkSessionSeed {
-            forked_from_session_id: session.id,
-            resume_agent_session_id: info.session_id,
-            resume_agent_message_id: info.message_id,
-        },
-    )
-    .await?;
-
-    Ok(ResponseJson(ApiResponse::success(forked)))
-}
-
 pub async fn update_session(
     Extension(session): Extension<Session>,
     State(deployment): State<DeploymentImpl>,
@@ -168,22 +130,6 @@ pub(super) fn parse_session_command(prompt: &str) -> Option<SessionCommand> {
         }),
         _ => None,
     }
-}
-
-async fn latest_resume_info(
-    pool: &sqlx::SqlitePool,
-    session: &Session,
-) -> Result<Option<db::models::coding_agent_turn::CodingAgentResumeInfo>, ApiError> {
-    if let Some(info) = CodingAgentTurn::find_latest_session_info(pool, session.id).await? {
-        return Ok(Some(info));
-    }
-
-    Ok(session.resume_agent_session_id.as_ref().map(|session_id| {
-        db::models::coding_agent_turn::CodingAgentResumeInfo {
-            session_id: session_id.clone(),
-            message_id: session.resume_agent_message_id.clone(),
-        }
-    }))
 }
 
 #[derive(Debug, Deserialize, TS)]
@@ -259,20 +205,22 @@ pub async fn follow_up(
         .cloned();
 
     let action_type = if let Some(command) = parse_session_command(&prompt) {
-        let latest_session_info = match &command {
-            SessionCommand::Clear => None,
-            SessionCommand::Compact { .. } => latest_resume_info(pool, &session).await?,
+        let latest_session_info = if command.requires_provider_context(
+            payload.executor_config.executor,
+        ) {
+            CodingAgentTurn::find_latest_session_info(pool, session.id).await?
+        } else {
+            None
         };
         ExecutorActionType::CodingAgentSessionCommandRequest(CodingAgentSessionCommandRequest {
             command,
             session_id: latest_session_info
                 .as_ref()
                 .map(|info| info.session_id.clone()),
-            message_id: latest_session_info.and_then(|info| info.message_id),
             executor_config: payload.executor_config.clone(),
             working_dir: working_dir.clone(),
         })
-    } else if let Some(info) = latest_resume_info(pool, &session).await? {
+    } else if let Some(info) = CodingAgentTurn::find_latest_session_info(pool, session.id).await? {
         let is_reset = payload.retry_process_id.is_some();
         ExecutorActionType::CodingAgentFollowUpRequest(CodingAgentFollowUpRequest {
             prompt: prompt.clone(),
@@ -401,7 +349,6 @@ pub fn router(deployment: &DeploymentImpl) -> Router<DeploymentImpl> {
         .route("/follow-up", post(follow_up))
         .route("/reset", post(reset_process))
         .route("/setup", post(run_setup_script))
-        .route("/fork", post(fork_session))
         .route("/review", post(review::start_review))
         .layer(from_fn_with_state(
             deployment.clone(),

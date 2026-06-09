@@ -953,39 +953,27 @@ pub trait ContainerService {
                     }
                 }
                 ExecutorActionType::CodingAgentSessionCommandRequest(request) => {
-                    match &request.command {
-                        executors::actions::session_command::SessionCommand::Clear => {
-                            executors::actions::session_command::normalize_static_session_command_logs(
-                                temp_store.clone(),
-                            )
-                        }
-                        executors::actions::session_command::SessionCommand::Compact { .. }
-                            if request.session_id.is_none() =>
+                    if request.static_message().is_some() {
+                        executors::actions::session_command::normalize_static_session_command_logs(
+                            temp_store.clone(),
+                        )
+                    } else {
+                        #[cfg(feature = "qa-mode")]
                         {
-                            executors::actions::session_command::normalize_static_session_command_logs(
+                            let executor = QaMockExecutor;
+                            executor.normalize_logs(
                                 temp_store.clone(),
+                                &request.effective_dir(&current_dir),
                             )
                         }
-                        executors::actions::session_command::SessionCommand::Compact { .. } => {
-                            #[cfg(feature = "qa-mode")]
-                            {
-                                let executor = QaMockExecutor;
-                                executor.normalize_logs(
-                                    temp_store.clone(),
-                                    &request.effective_dir(&current_dir),
-                                )
-                            }
-                            #[cfg(not(feature = "qa-mode"))]
-                            {
-                                let executor = ExecutorConfigs::get_cached()
-                                    .get_coding_agent_or_default(
-                                        &request.executor_config.profile_id(),
-                                    );
-                                executor.normalize_logs(
-                                    temp_store.clone(),
-                                    &request.effective_dir(&current_dir),
-                                )
-                            }
+                        #[cfg(not(feature = "qa-mode"))]
+                        {
+                            let executor = ExecutorConfigs::get_cached()
+                                .get_coding_agent_or_default(&request.executor_config.profile_id());
+                            executor.normalize_logs(
+                                temp_store.clone(),
+                                &request.effective_dir(&current_dir),
+                            )
                         }
                     }
                 }
@@ -1265,7 +1253,7 @@ pub trait ContainerService {
             }
         }
 
-        if matches!(
+        let is_clear_session_command = matches!(
             executor_action.typ(),
             ExecutorActionType::CodingAgentSessionCommandRequest(
                 executors::actions::session_command::CodingAgentSessionCommandRequest {
@@ -1273,14 +1261,7 @@ pub trait ContainerService {
                     ..
                 }
             )
-        ) && let Err(e) = Session::mark_context_cleared(&self.db().pool, session.id).await
-        {
-            self.msg_stores()
-                .write()
-                .await
-                .remove(&execution_process.id);
-            return Err(e.into());
-        }
+        );
 
         if let Err(start_error) = self
             .start_execution_inner(workspace, &execution_process, executor_action)
@@ -1352,6 +1333,12 @@ pub trait ContainerService {
             return Err(start_error);
         }
 
+        if is_clear_session_command
+            && let Err(e) = Session::mark_context_cleared(&self.db().pool, session.id).await
+        {
+            return Err(e.into());
+        }
+
         // Start processing normalised logs for executor requests and follow ups
         let workspace_root = self.workspace_to_current_dir(workspace);
         #[cfg_attr(feature = "qa-mode", allow(unused_variables))]
@@ -1365,39 +1352,23 @@ pub trait ContainerService {
                 request.effective_dir(&workspace_root),
             )),
             ExecutorActionType::CodingAgentSessionCommandRequest(request) => {
-                match &request.command {
-                    executors::actions::session_command::SessionCommand::Clear => {
-                        executors::actions::session_command::normalize_static_session_command_logs(
-                            self.get_msg_store_by_id(&execution_process.id)
-                                .await
-                                .ok_or_else(|| {
-                                    ContainerError::Other(anyhow!(
-                                        "MsgStore missing for session command execution {}",
-                                        execution_process.id
-                                    ))
-                                })?,
-                        );
-                        None
-                    }
-                    executors::actions::session_command::SessionCommand::Compact { .. }
-                        if request.session_id.is_none() =>
-                    {
-                        executors::actions::session_command::normalize_static_session_command_logs(
-                            self.get_msg_store_by_id(&execution_process.id)
-                                .await
-                                .ok_or_else(|| {
-                                    ContainerError::Other(anyhow!(
-                                        "MsgStore missing for session command execution {}",
-                                        execution_process.id
-                                    ))
-                                })?,
-                        );
-                        None
-                    }
-                    executors::actions::session_command::SessionCommand::Compact { .. } => Some((
+                if request.static_message().is_some() {
+                    executors::actions::session_command::normalize_static_session_command_logs(
+                        self.get_msg_store_by_id(&execution_process.id)
+                            .await
+                            .ok_or_else(|| {
+                                ContainerError::Other(anyhow!(
+                                    "MsgStore missing for session command execution {}",
+                                    execution_process.id
+                                ))
+                            })?,
+                    );
+                    None
+                } else {
+                    Some((
                         request.executor_config.profile_id(),
                         request.effective_dir(&workspace_root),
-                    )),
+                    ))
                 }
             }
             ExecutorActionType::ReviewRequest(request) => Some((

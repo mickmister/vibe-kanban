@@ -35,9 +35,6 @@ pub struct CodingAgentSessionCommandRequest {
     /// Agent session/thread id to resume when the command needs provider context.
     #[serde(default)]
     pub session_id: Option<String>,
-    /// Last known agent message id. Reserved for providers that can fork/resume at a message.
-    #[serde(default)]
-    pub message_id: Option<String>,
     #[serde(alias = "executor_profile_id", alias = "profile_variant_label")]
     pub executor_config: ExecutorConfig,
     #[serde(default)]
@@ -54,6 +51,20 @@ impl SessionCommand {
                 .map(|s| format!("/compact {}", s.trim()))
                 .unwrap_or_else(|| "/compact".to_string()),
         }
+    }
+
+    pub fn is_supported_for(&self, executor: BaseCodingAgent) -> bool {
+        match self {
+            Self::Clear => true,
+            Self::Compact { .. } => matches!(
+                executor,
+                BaseCodingAgent::ClaudeCode | BaseCodingAgent::Codex | BaseCodingAgent::Opencode
+            ),
+        }
+    }
+
+    pub fn requires_provider_context(&self, executor: BaseCodingAgent) -> bool {
+        matches!(self, Self::Compact { .. }) && self.is_supported_for(executor)
     }
 }
 
@@ -73,7 +84,14 @@ impl CodingAgentSessionCommandRequest {
         self.command.prompt()
     }
 
-    fn static_message(&self) -> Option<String> {
+    pub fn static_message(&self) -> Option<String> {
+        if !self.command.is_supported_for(self.base_executor()) {
+            return Some(format!(
+                "Compact is not supported for {}.",
+                self.base_executor()
+            ));
+        }
+
         match (&self.command, self.session_id.as_deref()) {
             (SessionCommand::Clear, _) => Some("Context cleared".to_string()),
             (SessionCommand::Compact { .. }, None) => {
@@ -186,4 +204,29 @@ pub fn normalize_static_session_command_logs(
             }
         }
     })]
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{
+        actions::session_command::SessionCommand,
+        executors::BaseCodingAgent,
+    };
+
+    #[test]
+    fn compact_support_is_limited_to_providers_with_native_handling() {
+        let compact = SessionCommand::Compact { instructions: None };
+
+        assert!(compact.is_supported_for(BaseCodingAgent::ClaudeCode));
+        assert!(compact.is_supported_for(BaseCodingAgent::Codex));
+        assert!(compact.is_supported_for(BaseCodingAgent::Opencode));
+        assert!(!compact.is_supported_for(BaseCodingAgent::Gemini));
+        assert!(!compact.is_supported_for(BaseCodingAgent::QwenCode));
+    }
+
+    #[test]
+    fn clear_is_vk_level_for_all_providers() {
+        assert!(SessionCommand::Clear.is_supported_for(BaseCodingAgent::ClaudeCode));
+        assert!(SessionCommand::Clear.is_supported_for(BaseCodingAgent::Gemini));
+    }
 }

@@ -420,8 +420,7 @@
       "renameTitle": "重命名会话",
       "renameDescription": "输入此会话的新名称。",
       "renamePlaceholder": "输入会话名称",
-      "renaming": "正在重命名...",
-      "forkSession": "派生会话"
+      "renaming": "正在重命名..."
     },
     "reviewComments": {
       "count_one": "{{count}} 条审查评论将被包含",

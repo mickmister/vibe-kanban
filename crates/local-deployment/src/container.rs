@@ -1106,21 +1106,8 @@ impl LocalContainerService {
         }
 
         // Get latest agent turn for session continuity (from coding agent turns).
-        let latest_session_info = if let Some(info) =
-            CodingAgentTurn::find_latest_session_info(&self.db.pool, ctx.session.id).await?
-        {
-            Some(info)
-        } else {
-            ctx.session
-                .resume_agent_session_id
-                .as_ref()
-                .map(
-                    |session_id| db::models::coding_agent_turn::CodingAgentResumeInfo {
-                        session_id: session_id.clone(),
-                        message_id: ctx.session.resume_agent_message_id.clone(),
-                    },
-                )
-        };
+        let latest_session_info =
+            CodingAgentTurn::find_latest_session_info(&self.db.pool, ctx.session.id).await?;
 
         let repos =
             WorkspaceRepo::find_repos_for_workspace(&self.db.pool, ctx.workspace.id).await?;
@@ -1134,16 +1121,17 @@ impl LocalContainerService {
             .cloned();
 
         let action_type = if let Some(command) = queued_data.session_command.clone() {
-            let latest_session_info = match &command {
-                SessionCommand::Clear => None,
-                SessionCommand::Compact { .. } => latest_session_info,
-            };
+            let latest_session_info =
+                if command.requires_provider_context(queued_data.executor_config.executor) {
+                    latest_session_info
+                } else {
+                    None
+                };
             ExecutorActionType::CodingAgentSessionCommandRequest(CodingAgentSessionCommandRequest {
                 command,
                 session_id: latest_session_info
                     .as_ref()
                     .map(|info| info.session_id.clone()),
-                message_id: latest_session_info.and_then(|info| info.message_id),
                 executor_config: queued_data.executor_config.clone(),
                 working_dir: working_dir.clone(),
             })
