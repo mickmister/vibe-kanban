@@ -72,6 +72,7 @@ interface SessionProps<TExecutor extends string = string> {
   onSelectSession: (sessionId: string) => void;
   isNewSessionMode?: boolean;
   onNewSession?: () => void;
+  onForkSession?: () => void;
   onRenameSession?: (sessionId: string, currentName: string) => void;
 }
 
@@ -364,6 +365,7 @@ export function SessionChatBox<TExecutor extends string = string>({
     onSelectSession,
     isNewSessionMode,
     onNewSession,
+    onForkSession,
     onRenameSession,
   } = session;
   const isLatestSelected =
@@ -841,6 +843,11 @@ export function SessionChatBox<TExecutor extends string = string>({
               >
                 {t('conversation.sessions.newSession')}
               </DropdownMenuItem>
+              {onForkSession && selectedSessionId && !isNewSessionMode && (
+                <DropdownMenuItem icon={PlusIcon} onClick={onForkSession}>
+                  {t('conversation.sessions.forkSession')}
+                </DropdownMenuItem>
+              )}
               {sessions.length > 0 && <DropdownMenuSeparator />}
               {sessions.length > 0 ? (
                 <>

@@ -438,7 +438,8 @@
       "renameTitle": "Renombrar sesión",
       "renameDescription": "Ingrese un nuevo nombre para esta sesión.",
       "renamePlaceholder": "Ingrese el nombre de la sesión",
-      "renaming": "Renombrando..."
+      "renaming": "Renombrando...",
+      "forkSession": "Bifurcar sesión"
     },
     "reviewComments": {
       "count_one": "{{count}} comentario de revisión será incluido",

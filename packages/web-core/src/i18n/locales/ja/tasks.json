@@ -438,7 +438,8 @@
       "renameTitle": "セッション名の変更",
       "renameDescription": "このセッションの新しい名前を入力してください。",
       "renamePlaceholder": "セッション名を入力",
-      "renaming": "名前を変更中..."
+      "renaming": "名前を変更中...",
+      "forkSession": "セッションをフォーク"
     },
     "reviewComments": {
       "count_one": "{{count}}件のレビューコメントが含まれます",

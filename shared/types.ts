@@ -30,7 +30,7 @@ export type CreateTag = { tag_name: string, content: string, };
 
 export type UpdateTag = { tag_name: string | null, content: string | null, };
 
-export type DraftFollowUpData = { message: string, executor_config: ExecutorConfig, };
+export type DraftFollowUpData = { message: string, executor_config: ExecutorConfig, session_command?: SessionCommand | null, };
 
 export type DraftWorkspaceData = { message: string, repos: Array<DraftWorkspaceRepo>, executor_config: ExecutorConfig | null, linked_issue: DraftWorkspaceLinkedIssue | null, attachments: Array<DraftWorkspaceAttachment>, };
 
@@ -156,7 +156,7 @@ export type Workspace = { id: string, task_id: string | null, container_ref: str
 
 export type WorkspaceWithStatus = { is_running: boolean, is_errored: boolean, id: string, task_id: string | null, container_ref: string | null, branch: string, setup_completed_at: string | null, created_at: string, updated_at: string, archived: boolean, pinned: boolean, name: string | null, worktree_deleted: boolean, };
 
-export type Session = { id: string, workspace_id: string, name: string | null, executor: string | null, agent_working_dir: string | null, created_at: string, updated_at: string, };
+export type Session = { id: string, workspace_id: string, name: string | null, executor: string | null, agent_working_dir: string | null, context_reset_at: string | null, forked_from_session_id: string | null, resume_agent_session_id: string | null, resume_agent_message_id: string | null, created_at: string, updated_at: string, };
 
 export type ExecutionProcess = { id: string, session_id: string, run_reason: ExecutionProcessRunReason, executor_action: ExecutorAction, status: ExecutionProcessStatus, exit_code: bigint | null, 
 /**
@@ -534,7 +534,7 @@ export type ExecutorAction = { typ: ExecutorActionType, next_action: ExecutorAct
 
 export type McpConfig = { servers: { [key in string]?: JsonValue }, servers_path: Array<string>, template: JsonValue, preconfigured: JsonValue, is_toml_config: boolean, };
 
-export type ExecutorActionType = { "type": "CodingAgentInitialRequest" } & CodingAgentInitialRequest | { "type": "CodingAgentFollowUpRequest" } & CodingAgentFollowUpRequest | { "type": "ScriptRequest" } & ScriptRequest | { "type": "ReviewRequest" } & ReviewRequest;
+export type ExecutorActionType = { "type": "CodingAgentInitialRequest" } & CodingAgentInitialRequest | { "type": "CodingAgentFollowUpRequest" } & CodingAgentFollowUpRequest | { "type": "CodingAgentSessionCommandRequest" } & CodingAgentSessionCommandRequest | { "type": "ScriptRequest" } & ScriptRequest | { "type": "ReviewRequest" } & ReviewRequest;
 
 export type ExecutorConfig = { 
 /**
@@ -686,6 +686,18 @@ executor_config: ExecutorConfig,
  * If None, uses the container_ref directory directly.
  */
 working_dir: string | null, };
+
+export type SessionCommand = { "type": "clear" } | { "type": "compact", instructions: string | null };
+
+export type CodingAgentSessionCommandRequest = { command: SessionCommand,
+/**
+ * Agent session/thread id to resume when the command needs provider context.
+ */
+session_id: string | null,
+/**
+ * Last known agent message id. Reserved for providers that can fork/resume at a message.
+ */
+message_id: string | null, executor_config: ExecutorConfig, working_dir: string | null, };
 
 export type ReviewRequest = { 
 /**

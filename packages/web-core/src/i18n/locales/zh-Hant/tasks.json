@@ -438,7 +438,8 @@
       "renameTitle": "重新命名工作階段",
       "renameDescription": "輸入此工作階段的新名稱。",
       "renamePlaceholder": "輸入工作階段名稱",
-      "renaming": "正在重新命名..."
+      "renaming": "正在重新命名...",
+      "forkSession": "分叉工作階段"
     },
     "reviewComments": {
       "count_one": "{{count}} 則審查評論將被包含",

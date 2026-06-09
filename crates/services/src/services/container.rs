@@ -952,6 +952,43 @@ pub trait ContainerService {
                         )
                     }
                 }
+                ExecutorActionType::CodingAgentSessionCommandRequest(request) => {
+                    match &request.command {
+                        executors::actions::session_command::SessionCommand::Clear => {
+                            executors::actions::session_command::normalize_static_session_command_logs(
+                                temp_store.clone(),
+                            )
+                        }
+                        executors::actions::session_command::SessionCommand::Compact { .. }
+                            if request.session_id.is_none() =>
+                        {
+                            executors::actions::session_command::normalize_static_session_command_logs(
+                                temp_store.clone(),
+                            )
+                        }
+                        executors::actions::session_command::SessionCommand::Compact { .. } => {
+                            #[cfg(feature = "qa-mode")]
+                            {
+                                let executor = QaMockExecutor;
+                                executor.normalize_logs(
+                                    temp_store.clone(),
+                                    &request.effective_dir(&current_dir),
+                                )
+                            }
+                            #[cfg(not(feature = "qa-mode"))]
+                            {
+                                let executor = ExecutorConfigs::get_cached()
+                                    .get_coding_agent_or_default(
+                                        &request.executor_config.profile_id(),
+                                    );
+                                executor.normalize_logs(
+                                    temp_store.clone(),
+                                    &request.effective_dir(&current_dir),
+                                )
+                            }
+                        }
+                    }
+                }
                 #[cfg(feature = "qa-mode")]
                 ExecutorActionType::ReviewRequest(_request) => {
                     let executor = QaMockExecutor;
@@ -1198,6 +1235,9 @@ pub trait ContainerService {
             ExecutorActionType::CodingAgentFollowUpRequest(follow_up_request) => {
                 Some(follow_up_request.prompt.clone())
             }
+            ExecutorActionType::CodingAgentSessionCommandRequest(command_request) => {
+                Some(command_request.prompt())
+            }
             ExecutorActionType::ReviewRequest(review_request) => {
                 Some(review_request.prompt.clone())
             }
@@ -1223,6 +1263,23 @@ pub trait ContainerService {
                     .remove(&execution_process.id);
                 return Err(e.into());
             }
+        }
+
+        if matches!(
+            executor_action.typ(),
+            ExecutorActionType::CodingAgentSessionCommandRequest(
+                executors::actions::session_command::CodingAgentSessionCommandRequest {
+                    command: executors::actions::session_command::SessionCommand::Clear,
+                    ..
+                }
+            )
+        ) && let Err(e) = Session::mark_context_cleared(&self.db().pool, session.id).await
+        {
+            self.msg_stores()
+                .write()
+                .await
+                .remove(&execution_process.id);
+            return Err(e.into());
         }
 
         if let Err(start_error) = self
@@ -1307,6 +1364,42 @@ pub trait ContainerService {
                 request.executor_config.profile_id(),
                 request.effective_dir(&workspace_root),
             )),
+            ExecutorActionType::CodingAgentSessionCommandRequest(request) => {
+                match &request.command {
+                    executors::actions::session_command::SessionCommand::Clear => {
+                        executors::actions::session_command::normalize_static_session_command_logs(
+                            self.get_msg_store_by_id(&execution_process.id)
+                                .await
+                                .ok_or_else(|| {
+                                    ContainerError::Other(anyhow!(
+                                        "MsgStore missing for session command execution {}",
+                                        execution_process.id
+                                    ))
+                                })?,
+                        );
+                        None
+                    }
+                    executors::actions::session_command::SessionCommand::Compact { .. }
+                        if request.session_id.is_none() =>
+                    {
+                        executors::actions::session_command::normalize_static_session_command_logs(
+                            self.get_msg_store_by_id(&execution_process.id)
+                                .await
+                                .ok_or_else(|| {
+                                    ContainerError::Other(anyhow!(
+                                        "MsgStore missing for session command execution {}",
+                                        execution_process.id
+                                    ))
+                                })?,
+                        );
+                        None
+                    }
+                    executors::actions::session_command::SessionCommand::Compact { .. } => Some((
+                        request.executor_config.profile_id(),
+                        request.effective_dir(&workspace_root),
+                    )),
+                }
+            }
             ExecutorActionType::ReviewRequest(request) => Some((
                 request.executor_config.profile_id(),
                 request.effective_dir(&workspace_root),
@@ -1372,6 +1465,7 @@ pub trait ContainerService {
             (
                 ExecutorActionType::CodingAgentInitialRequest(_)
                 | ExecutorActionType::CodingAgentFollowUpRequest(_)
+                | ExecutorActionType::CodingAgentSessionCommandRequest(_)
                 | ExecutorActionType::ReviewRequest(_),
                 ExecutorActionType::ScriptRequest(_),
             ) => ExecutionProcessRunReason::CleanupScript,
@@ -1379,6 +1473,7 @@ pub trait ContainerService {
                 _,
                 ExecutorActionType::CodingAgentFollowUpRequest(_)
                 | ExecutorActionType::CodingAgentInitialRequest(_)
+                | ExecutorActionType::CodingAgentSessionCommandRequest(_)
                 | ExecutorActionType::ReviewRequest(_),
             ) => ExecutionProcessRunReason::CodingAgent,
         };

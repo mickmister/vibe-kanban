@@ -163,7 +163,8 @@
       "renameTitle": "Renommer la session",
       "renameDescription": "Entrez un nouveau nom pour cette session.",
       "renamePlaceholder": "Entrez le nom de la session",
-      "renaming": "Renommage..."
+      "renaming": "Renommage...",
+      "forkSession": "Dupliquer la session"
     },
     "reviewComments": {
       "count_one": "{{count}} commentaire de révision sera inclus",

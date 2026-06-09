@@ -144,6 +144,13 @@ impl ClaudeCode {
         KNOWN_SLASH_COMMANDS.get_or_init(|| {
             vec![
                 SlashCommandDescription {
+                    name: "clear".to_string(),
+                    description: Some(
+                        "Clear VK's session context while keeping conversation history visible"
+                            .to_string(),
+                    ),
+                },
+                SlashCommandDescription {
                     name: "compact".to_string(),
                     description: Some(
                         "Clear conversation history but keep a summary in context. Optional: /compact [instructions for summarization]"

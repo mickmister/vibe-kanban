@@ -1,5 +1,5 @@
 use chrono::{DateTime, Utc};
-use executors::profile::ExecutorConfig;
+use executors::{actions::session_command::SessionCommand, profile::ExecutorConfig};
 use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, SqlitePool};
 use strum_macros::{Display, EnumDiscriminants, EnumString};
@@ -23,6 +23,8 @@ pub struct DraftFollowUpData {
     pub message: String,
     #[serde(alias = "executor_profile_id", alias = "config")]
     pub executor_config: ExecutorConfig,
+    #[serde(default)]
+    pub session_command: Option<SessionCommand>,
 }
 
 /// Data for preview settings scratch (URL override and screen size)

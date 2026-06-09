@@ -350,6 +350,9 @@ impl IntoResponse for ApiError {
                     ),
                 )
             }
+            ApiError::Session(SessionError::ValidationError(msg)) => {
+                ErrorInfo::bad_request("SessionError", msg.clone())
+            }
 
             ApiError::ScratchError(ScratchError::Database(_)) => {
                 ErrorInfo::internal("ScratchError")

@@ -26,6 +26,7 @@ async fn queue_message(
     Json(payload): Json<QueueMessageRequest>,
 ) -> Result<ResponseJson<ApiResponse<QueueStatus>>, ApiError> {
     let data = DraftFollowUpData {
+        session_command: super::parse_session_command(&payload.message),
         message: payload.message,
         executor_config: payload.executor_config,
     };

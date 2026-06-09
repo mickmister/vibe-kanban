@@ -394,6 +394,13 @@ export const sessionsApi = {
     });
     return handleApiResponse<Session>(response);
   },
+
+  fork: async (sessionId: string): Promise<Session> => {
+    const response = await makeRequest(`/api/sessions/${sessionId}/fork`, {
+      method: 'POST',
+    });
+    return handleApiResponse<Session>(response);
+  },
 };
 
 // Workspace APIs

@@ -13,14 +13,16 @@ use db::models::{
     execution_process::{ExecutionProcess, ExecutionProcessRunReason},
     requests::UpdateSession,
     scratch::{Scratch, ScratchType},
-    session::{CreateSession, Session, SessionError},
+    session::{CreateSession, ForkSessionSeed, Session, SessionError},
     workspace::{Workspace, WorkspaceError},
     workspace_repo::WorkspaceRepo,
 };
 use deployment::Deployment;
 use executors::{
     actions::{
-        ExecutorAction, ExecutorActionType, coding_agent_follow_up::CodingAgentFollowUpRequest,
+        ExecutorAction, ExecutorActionType,
+        coding_agent_follow_up::CodingAgentFollowUpRequest,
+        session_command::{CodingAgentSessionCommandRequest, SessionCommand},
     },
     profile::ExecutorConfig,
 };
@@ -89,6 +91,44 @@ pub async fn create_session(
     Ok(ResponseJson(ApiResponse::success(session)))
 }
 
+pub async fn fork_session(
+    Extension(session): Extension<Session>,
+    State(deployment): State<DeploymentImpl>,
+) -> Result<ResponseJson<ApiResponse<Session>>, ApiError> {
+    let pool = &deployment.db().pool;
+
+    let latest_session_info = latest_resume_info(pool, &session).await?;
+    let Some(info) = latest_session_info else {
+        return Err(ApiError::Session(SessionError::ValidationError(
+            "No active agent session to fork".to_string(),
+        )));
+    };
+    let executor = match &session.executor {
+        Some(executor) => Some(executor.clone()),
+        None => ExecutionProcess::latest_executor_profile_for_session(pool, session.id)
+            .await?
+            .map(|profile| profile.executor.to_string()),
+    };
+
+    let forked = Session::create_fork(
+        pool,
+        &CreateSession {
+            executor,
+            name: Some("Fork".to_string()),
+        },
+        Uuid::new_v4(),
+        session.workspace_id,
+        ForkSessionSeed {
+            forked_from_session_id: session.id,
+            resume_agent_session_id: info.session_id,
+            resume_agent_message_id: info.message_id,
+        },
+    )
+    .await?;
+
+    Ok(ResponseJson(ApiResponse::success(forked)))
+}
+
 pub async fn update_session(
     Extension(session): Extension<Session>,
     State(deployment): State<DeploymentImpl>,
@@ -112,6 +152,38 @@ pub struct CreateFollowUpAttempt {
     pub retry_process_id: Option<Uuid>,
     pub force_when_dirty: Option<bool>,
     pub perform_git_reset: Option<bool>,
+}
+
+pub(super) fn parse_session_command(prompt: &str) -> Option<SessionCommand> {
+    let trimmed = prompt.trim_start();
+    let without_slash = trimmed.strip_prefix('/')?;
+    let mut parts = without_slash.splitn(2, |ch: char| ch.is_whitespace());
+    let name = parts.next()?.trim().to_lowercase();
+    let arguments = parts.next().map(str::trim).unwrap_or("");
+
+    match name.as_str() {
+        "clear" => Some(SessionCommand::Clear),
+        "compact" => Some(SessionCommand::Compact {
+            instructions: (!arguments.is_empty()).then(|| arguments.to_string()),
+        }),
+        _ => None,
+    }
+}
+
+async fn latest_resume_info(
+    pool: &sqlx::SqlitePool,
+    session: &Session,
+) -> Result<Option<db::models::coding_agent_turn::CodingAgentResumeInfo>, ApiError> {
+    if let Some(info) = CodingAgentTurn::find_latest_session_info(pool, session.id).await? {
+        return Ok(Some(info));
+    }
+
+    Ok(session.resume_agent_session_id.as_ref().map(|session_id| {
+        db::models::coding_agent_turn::CodingAgentResumeInfo {
+            session_id: session_id.clone(),
+            message_id: session.resume_agent_message_id.clone(),
+        }
+    }))
 }
 
 #[derive(Debug, Deserialize, TS)]
@@ -175,8 +247,6 @@ pub async fn follow_up(
             .await?;
     }
 
-    let latest_session_info = CodingAgentTurn::find_latest_session_info(pool, session.id).await?;
-
     let prompt = payload.prompt;
 
     let repos = WorkspaceRepo::find_repos_for_workspace(pool, workspace.id).await?;
@@ -188,7 +258,21 @@ pub async fn follow_up(
         .filter(|dir| !dir.is_empty())
         .cloned();
 
-    let action_type = if let Some(info) = latest_session_info {
+    let action_type = if let Some(command) = parse_session_command(&prompt) {
+        let latest_session_info = match &command {
+            SessionCommand::Clear => None,
+            SessionCommand::Compact { .. } => latest_resume_info(pool, &session).await?,
+        };
+        ExecutorActionType::CodingAgentSessionCommandRequest(CodingAgentSessionCommandRequest {
+            command,
+            session_id: latest_session_info
+                .as_ref()
+                .map(|info| info.session_id.clone()),
+            message_id: latest_session_info.and_then(|info| info.message_id),
+            executor_config: payload.executor_config.clone(),
+            working_dir: working_dir.clone(),
+        })
+    } else if let Some(info) = latest_resume_info(pool, &session).await? {
         let is_reset = payload.retry_process_id.is_some();
         ExecutorActionType::CodingAgentFollowUpRequest(CodingAgentFollowUpRequest {
             prompt: prompt.clone(),
@@ -317,6 +401,7 @@ pub fn router(deployment: &DeploymentImpl) -> Router<DeploymentImpl> {
         .route("/follow-up", post(follow_up))
         .route("/reset", post(reset_process))
         .route("/setup", post(run_setup_script))
+        .route("/fork", post(fork_session))
         .route("/review", post(review::start_review))
         .layer(from_fn_with_state(
             deployment.clone(),
@@ -329,4 +414,27 @@ pub fn router(deployment: &DeploymentImpl) -> Router<DeploymentImpl> {
         .nest("/{session_id}/queue", queue::router(deployment));
 
     Router::new().nest("/sessions", sessions_router)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{SessionCommand, parse_session_command};
+
+    #[test]
+    fn parses_clear_and_compact_session_commands() {
+        assert!(matches!(
+            parse_session_command("/clear"),
+            Some(SessionCommand::Clear)
+        ));
+
+        assert!(matches!(
+            parse_session_command("  /compact focus on current TODOs"),
+            Some(SessionCommand::Compact {
+                instructions: Some(instructions)
+            }) if instructions == "focus on current TODOs"
+        ));
+
+        assert!(parse_session_command("please /clear").is_none());
+        assert!(parse_session_command("/status").is_none());
+    }
 }

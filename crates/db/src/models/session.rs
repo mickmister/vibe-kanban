@@ -17,6 +17,8 @@ pub enum SessionError {
     WorkspaceNotFound,
     #[error("Executor mismatch: session uses {expected} but request specified {actual}")]
     ExecutorMismatch { expected: String, actual: String },
+    #[error("{0}")]
+    ValidationError(String),
 }
 
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize, TS)]
@@ -26,6 +28,10 @@ pub struct Session {
     pub name: Option<String>,
     pub executor: Option<String>,
     pub agent_working_dir: Option<String>,
+    pub context_reset_at: Option<DateTime<Utc>>,
+    pub forked_from_session_id: Option<Uuid>,
+    pub resume_agent_session_id: Option<String>,
+    pub resume_agent_message_id: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -34,6 +40,13 @@ pub struct Session {
 pub struct CreateSession {
     pub executor: Option<String>,
     pub name: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ForkSessionSeed {
+    pub forked_from_session_id: Uuid,
+    pub resume_agent_session_id: String,
+    pub resume_agent_message_id: Option<String>,
 }
 
 impl Session {
@@ -45,6 +58,10 @@ impl Session {
                       name,
                       executor,
                       agent_working_dir,
+                      context_reset_at AS "context_reset_at?: DateTime<Utc>",
+                      forked_from_session_id AS "forked_from_session_id?: Uuid",
+                      resume_agent_session_id,
+                      resume_agent_message_id,
                       created_at AS "created_at!: DateTime<Utc>",
                       updated_at AS "updated_at!: DateTime<Utc>"
                FROM sessions
@@ -69,6 +86,10 @@ impl Session {
                       s.name,
                       s.executor,
                       s.agent_working_dir,
+                      s.context_reset_at AS "context_reset_at?: DateTime<Utc>",
+                      s.forked_from_session_id AS "forked_from_session_id?: Uuid",
+                      s.resume_agent_session_id,
+                      s.resume_agent_message_id,
                       s.created_at AS "created_at!: DateTime<Utc>",
                       s.updated_at AS "updated_at!: DateTime<Utc>"
                FROM sessions s
@@ -100,6 +121,10 @@ impl Session {
                       s.name,
                       s.executor,
                       s.agent_working_dir,
+                      s.context_reset_at AS "context_reset_at?: DateTime<Utc>",
+                      s.forked_from_session_id AS "forked_from_session_id?: Uuid",
+                      s.resume_agent_session_id,
+                      s.resume_agent_message_id,
                       s.created_at AS "created_at!: DateTime<Utc>",
                       s.updated_at AS "updated_at!: DateTime<Utc>"
                FROM sessions s
@@ -130,6 +155,10 @@ impl Session {
                       name,
                       executor,
                       agent_working_dir,
+                      context_reset_at,
+                      forked_from_session_id,
+                      resume_agent_session_id,
+                      resume_agent_message_id,
                       created_at,
                       updated_at
                FROM sessions
@@ -160,6 +189,10 @@ impl Session {
                          name,
                          executor,
                          agent_working_dir,
+                         context_reset_at AS "context_reset_at?: DateTime<Utc>",
+                         forked_from_session_id AS "forked_from_session_id?: Uuid",
+                         resume_agent_session_id,
+                         resume_agent_message_id,
                          created_at AS "created_at!: DateTime<Utc>",
                          updated_at AS "updated_at!: DateTime<Utc>""#,
             id,
@@ -167,6 +200,47 @@ impl Session {
             name,
             data.executor,
             agent_working_dir
+        )
+        .fetch_one(pool)
+        .await?)
+    }
+
+    pub async fn create_fork(
+        pool: &SqlitePool,
+        data: &CreateSession,
+        id: Uuid,
+        workspace_id: Uuid,
+        seed: ForkSessionSeed,
+    ) -> Result<Self, SessionError> {
+        let agent_working_dir = Self::resolve_agent_working_dir(pool, workspace_id).await?;
+        let name = data.name.as_deref().filter(|s| !s.is_empty());
+
+        Ok(sqlx::query_as!(
+            Session,
+            r#"INSERT INTO sessions (
+                    id, workspace_id, name, executor, agent_working_dir,
+                    forked_from_session_id, resume_agent_session_id, resume_agent_message_id
+               )
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+               RETURNING id AS "id!: Uuid",
+                         workspace_id AS "workspace_id!: Uuid",
+                         name,
+                         executor,
+                         agent_working_dir,
+                         context_reset_at AS "context_reset_at?: DateTime<Utc>",
+                         forked_from_session_id AS "forked_from_session_id?: Uuid",
+                         resume_agent_session_id,
+                         resume_agent_message_id,
+                         created_at AS "created_at!: DateTime<Utc>",
+                         updated_at AS "updated_at!: DateTime<Utc>""#,
+            id,
+            workspace_id,
+            name,
+            data.executor,
+            agent_working_dir,
+            seed.forked_from_session_id,
+            seed.resume_agent_session_id,
+            seed.resume_agent_message_id
         )
         .fetch_one(pool)
         .await?)
@@ -220,6 +294,21 @@ impl Session {
         sqlx::query!(
             r#"UPDATE sessions SET executor = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2"#,
             executor,
+            id
+        )
+        .execute(pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn mark_context_cleared(pool: &SqlitePool, id: Uuid) -> Result<(), sqlx::Error> {
+        sqlx::query!(
+            r#"UPDATE sessions
+               SET context_reset_at = datetime('now', 'subsec'),
+                   resume_agent_session_id = NULL,
+                   resume_agent_message_id = NULL,
+                   updated_at = datetime('now', 'subsec')
+               WHERE id = $1"#,
             id
         )
         .execute(pool)
