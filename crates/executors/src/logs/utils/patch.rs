@@ -238,7 +238,8 @@ pub fn fix_patch_ops(mut patch: Patch, sent_paths: &mut HashSet<String>) -> Patc
     patch
 }
 
-pub fn executor_discovered_options(options: ExecutorDiscoveredOptions) -> Patch {
+pub fn executor_discovered_options(mut options: ExecutorDiscoveredOptions) -> Patch {
+    ensure_vk_session_commands(&mut options.slash_commands);
     serde_json::from_value(json!([
         {"op": "replace", "path": "/options", "value": options},
     ]))
@@ -287,12 +288,25 @@ pub fn agents_loaded() -> Patch {
 }
 
 pub fn update_slash_commands(
-    slash_commands: Vec<crate::executors::SlashCommandDescription>,
+    mut slash_commands: Vec<crate::executors::SlashCommandDescription>,
 ) -> Patch {
+    ensure_vk_session_commands(&mut slash_commands);
     serde_json::from_value(json!([
         {"op": "replace", "path": "/options/slash_commands", "value": slash_commands},
     ]))
     .unwrap_or_default()
+}
+
+fn ensure_vk_session_commands(slash_commands: &mut Vec<SlashCommandDescription>) {
+    if !slash_commands.iter().any(|command| command.name == "clear") {
+        slash_commands.push(SlashCommandDescription {
+            name: "clear".to_string(),
+            description: Some(
+                "Clear VK's session context while keeping conversation history visible"
+                    .to_string(),
+            ),
+        });
+    }
 }
 
 pub fn slash_commands_loaded() -> Patch {
@@ -324,4 +338,27 @@ pub fn discovery_error(error: String) -> Patch {
         {"op": "replace", "path": "/options/loading_slash_commands", "value": false},
     ]))
     .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::executors::SlashCommandDescription;
+
+    use super::ensure_vk_session_commands;
+
+    #[test]
+    fn ensure_vk_session_commands_adds_clear_once() {
+        let mut commands = vec![SlashCommandDescription {
+            name: "compact".to_string(),
+            description: None,
+        }];
+
+        ensure_vk_session_commands(&mut commands);
+        ensure_vk_session_commands(&mut commands);
+
+        assert_eq!(
+            commands.iter().filter(|command| command.name == "clear").count(),
+            1
+        );
+    }
 }

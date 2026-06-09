@@ -124,10 +124,26 @@ pub(super) fn parse_session_command(prompt: &str) -> Option<SessionCommand> {
     let arguments = parts.next().map(str::trim).unwrap_or("");
 
     match name.as_str() {
-        "clear" => Some(SessionCommand::Clear),
+        "clear" if arguments.is_empty() => Some(SessionCommand::Clear),
+        "clear" => None,
         "compact" => Some(SessionCommand::Compact {
             instructions: (!arguments.is_empty()).then(|| arguments.to_string()),
         }),
+        _ => None,
+    }
+}
+
+pub(super) fn invalid_session_command_message(prompt: &str) -> Option<String> {
+    let trimmed = prompt.trim_start();
+    let without_slash = trimmed.strip_prefix('/')?;
+    let mut parts = without_slash.splitn(2, |ch: char| ch.is_whitespace());
+    let name = parts.next()?.trim().to_lowercase();
+    let arguments = parts.next().map(str::trim).unwrap_or("");
+
+    match name.as_str() {
+        "clear" if !arguments.is_empty() => {
+            Some("`/clear` does not accept arguments.".to_string())
+        }
         _ => None,
     }
 }
@@ -194,6 +210,11 @@ pub async fn follow_up(
     }
 
     let prompt = payload.prompt;
+    if let Some(message) = invalid_session_command_message(&prompt) {
+        return Err(ApiError::Session(SessionError::InvalidSessionCommand(
+            message,
+        )));
+    }
 
     let repos = WorkspaceRepo::find_repos_for_workspace(pool, workspace.id).await?;
     let cleanup_action = deployment.container().cleanup_actions_for_repos(&repos);
@@ -238,6 +259,14 @@ pub async fn follow_up(
         )
     };
 
+    let cleanup_action = if matches!(
+        &action_type,
+        ExecutorActionType::CodingAgentSessionCommandRequest(_)
+    ) {
+        None
+    } else {
+        cleanup_action
+    };
     let action = ExecutorAction::new(action_type, cleanup_action.map(Box::new));
 
     let execution_process = deployment
@@ -364,7 +393,7 @@ pub fn router(deployment: &DeploymentImpl) -> Router<DeploymentImpl> {
 
 #[cfg(test)]
 mod tests {
-    use super::{SessionCommand, parse_session_command};
+    use super::{SessionCommand, invalid_session_command_message, parse_session_command};
 
     #[test]
     fn parses_clear_and_compact_session_commands() {
@@ -381,6 +410,17 @@ mod tests {
         ));
 
         assert!(parse_session_command("please /clear").is_none());
+        assert!(parse_session_command("/clear now").is_none());
         assert!(parse_session_command("/status").is_none());
+    }
+
+    #[test]
+    fn rejects_clear_with_arguments() {
+        assert_eq!(
+            invalid_session_command_message("/clear now"),
+            Some("`/clear` does not accept arguments.".to_string())
+        );
+        assert!(invalid_session_command_message("/compact focus").is_none());
+        assert!(invalid_session_command_message("please /clear now").is_none());
     }
 }

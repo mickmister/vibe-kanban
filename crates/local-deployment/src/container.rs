@@ -1151,6 +1151,14 @@ impl LocalContainerService {
             })
         };
 
+        let cleanup_action = if matches!(
+            &action_type,
+            ExecutorActionType::CodingAgentSessionCommandRequest(_)
+        ) {
+            None
+        } else {
+            cleanup_action
+        };
         let action = ExecutorAction::new(action_type, cleanup_action.map(Box::new));
 
         self.start_execution(

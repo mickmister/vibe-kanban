@@ -93,7 +93,10 @@ impl CodingAgentSessionCommandRequest {
         }
 
         match (&self.command, self.session_id.as_deref()) {
-            (SessionCommand::Clear, _) => Some("Context cleared".to_string()),
+            (SessionCommand::Clear, _) => Some(
+                "Context cleared. Previous messages remain visible but will not be included in future agent context."
+                    .to_string(),
+            ),
             (SessionCommand::Compact { .. }, None) => {
                 Some("No active context to compact.".to_string())
             }
@@ -225,5 +228,22 @@ mod tests {
     fn clear_is_vk_level_for_all_providers() {
         assert!(SessionCommand::Clear.is_supported_for(BaseCodingAgent::ClaudeCode));
         assert!(SessionCommand::Clear.is_supported_for(BaseCodingAgent::Gemini));
+    }
+
+    #[test]
+    fn clear_static_message_explains_visible_history_boundary() {
+        let request = super::CodingAgentSessionCommandRequest {
+            command: SessionCommand::Clear,
+            session_id: None,
+            executor_config: crate::profile::ExecutorConfig {
+                executor: BaseCodingAgent::ClaudeCode,
+                ..Default::default()
+            },
+            working_dir: None,
+        };
+
+        let message = request.static_message().unwrap();
+        assert!(message.contains("Previous messages remain visible"));
+        assert!(message.contains("future agent context"));
     }
 }

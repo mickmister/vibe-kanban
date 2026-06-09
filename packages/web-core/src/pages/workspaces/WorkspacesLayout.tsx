@@ -131,7 +131,7 @@ export function WorkspacesLayout() {
     !hasForcedInitialExistingSessionZen.current;
   const effectiveChatViewMode = hasZenContext
     ? shouldForceInitialExistingSessionZen
-      ? 'zen'
+      ? 'mostly-zen'
       : chatViewMode
     : 'full';
   const isDesktopZenMode =
@@ -197,8 +197,8 @@ export function WorkspacesLayout() {
       return;
 
     hasForcedInitialExistingSessionZen.current = true;
-    if (chatViewMode !== 'zen') {
-      setChatViewMode('zen');
+    if (chatViewMode !== 'mostly-zen') {
+      setChatViewMode('mostly-zen');
     }
   }, [
     chatViewMode,
