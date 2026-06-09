@@ -30,7 +30,7 @@ export type CreateTag = { tag_name: string, content: string, };
 
 export type UpdateTag = { tag_name: string | null, content: string | null, };
 
-export type DraftFollowUpData = { message: string, executor_config: ExecutorConfig, session_command?: SessionCommand | null, };
+export type DraftFollowUpData = { message: string, executor_config: ExecutorConfig, session_command: SessionCommand | null, };
 
 export type DraftWorkspaceData = { message: string, repos: Array<DraftWorkspaceRepo>, executor_config: ExecutorConfig | null, linked_issue: DraftWorkspaceLinkedIssue | null, attachments: Array<DraftWorkspaceAttachment>, };
 
@@ -571,6 +571,14 @@ export type ScriptRequest = { script: string, language: ScriptRequestLanguage, c
  */
 working_dir: string | null, };
 
+export type SessionCommand = { "type": "clear" } | { "type": "compact", instructions: string | null, };
+
+export type CodingAgentSessionCommandRequest = { command: SessionCommand, 
+/**
+ * Agent session/thread id to resume when the command needs provider context.
+ */
+session_id: string | null, executor_config: ExecutorConfig, working_dir: string | null, };
+
 export type ScriptRequestLanguage = "Bash";
 
 export enum BaseCodingAgent { CLAUDE_CODE = "CLAUDE_CODE", AMP = "AMP", GEMINI = "GEMINI", CODEX = "CODEX", OPENCODE = "OPENCODE", CURSOR_AGENT = "CURSOR_AGENT", QWEN_CODE = "QWEN_CODE", COPILOT = "COPILOT", DROID = "DROID" }
@@ -686,14 +694,6 @@ executor_config: ExecutorConfig,
  * If None, uses the container_ref directory directly.
  */
 working_dir: string | null, };
-
-export type SessionCommand = { "type": "clear" } | { "type": "compact", instructions: string | null };
-
-export type CodingAgentSessionCommandRequest = { command: SessionCommand,
-/**
- * Agent session/thread id to resume when the command needs provider context.
- */
-session_id: string | null, executor_config: ExecutorConfig, working_dir: string | null, };
 
 export type ReviewRequest = { 
 /**

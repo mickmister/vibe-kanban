@@ -30,7 +30,7 @@ use executors::{
         Executable, ExecutorAction, ExecutorActionType,
         coding_agent_follow_up::CodingAgentFollowUpRequest,
         coding_agent_initial::CodingAgentInitialRequest,
-        session_command::{CodingAgentSessionCommandRequest, SessionCommand},
+        session_command::CodingAgentSessionCommandRequest,
     },
     approvals::{ExecutorApprovalService, NoopExecutorApprovalService},
     env::{ExecutionEnv, RepoContext},

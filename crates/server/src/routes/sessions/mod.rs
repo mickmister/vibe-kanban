@@ -205,13 +205,12 @@ pub async fn follow_up(
         .cloned();
 
     let action_type = if let Some(command) = parse_session_command(&prompt) {
-        let latest_session_info = if command.requires_provider_context(
-            payload.executor_config.executor,
-        ) {
-            CodingAgentTurn::find_latest_session_info(pool, session.id).await?
-        } else {
-            None
-        };
+        let latest_session_info =
+            if command.requires_provider_context(payload.executor_config.executor) {
+                CodingAgentTurn::find_latest_session_info(pool, session.id).await?
+            } else {
+                None
+            };
         ExecutorActionType::CodingAgentSessionCommandRequest(CodingAgentSessionCommandRequest {
             command,
             session_id: latest_session_info

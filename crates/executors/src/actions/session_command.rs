@@ -208,10 +208,7 @@ pub fn normalize_static_session_command_logs(
 
 #[cfg(test)]
 mod tests {
-    use crate::{
-        actions::session_command::SessionCommand,
-        executors::BaseCodingAgent,
-    };
+    use crate::{actions::session_command::SessionCommand, executors::BaseCodingAgent};
 
     #[test]
     fn compact_support_is_limited_to_providers_with_native_handling() {
