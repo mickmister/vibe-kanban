@@ -120,20 +120,9 @@ export function WorkspacesLayout() {
   const chatViewMode = useUiPreferencesStore((s) => s.chatViewMode);
   const setChatViewMode = useUiPreferencesStore((s) => s.setChatViewMode);
   const mainContainerRef = useRef<WorkspacesMainContainerHandle>(null);
-  const hasForcedInitialExistingSessionZen = useRef(false);
   const hasWorkspaceRoute = !!workspaceId;
   const hasZenContext = isCreateMode || hasWorkspaceRoute;
-  const shouldForceInitialExistingSessionZen =
-    !isMobile &&
-    hasWorkspaceRoute &&
-    !isNewSessionMode &&
-    !isCreateMode &&
-    !hasForcedInitialExistingSessionZen.current;
-  const effectiveChatViewMode = hasZenContext
-    ? shouldForceInitialExistingSessionZen
-      ? 'mostly-zen'
-      : chatViewMode
-    : 'full';
+  const effectiveChatViewMode = hasZenContext ? chatViewMode : 'full';
   const isDesktopZenMode =
     !isMobile && effectiveChatViewMode !== 'full' && hasZenContext;
 
@@ -185,30 +174,6 @@ export function WorkspacesLayout() {
   }, [configLoading, config, updateAndSaveConfig]);
 
   // Ensure left panels visible when right main panel hidden
-  useEffect(() => {
-    if (!hasZenContext && chatViewMode !== 'full') {
-      setChatViewMode('full');
-    }
-  }, [chatViewMode, hasZenContext, setChatViewMode]);
-
-  useEffect(() => {
-    if (hasForcedInitialExistingSessionZen.current) return;
-    if (isMobile || isCreateMode || isNewSessionMode || !hasWorkspaceRoute)
-      return;
-
-    hasForcedInitialExistingSessionZen.current = true;
-    if (chatViewMode !== 'mostly-zen') {
-      setChatViewMode('mostly-zen');
-    }
-  }, [
-    chatViewMode,
-    hasWorkspaceRoute,
-    isCreateMode,
-    isMobile,
-    isNewSessionMode,
-    setChatViewMode,
-  ]);
-
   useEffect(() => {
     if (rightMainPanelMode === null) {
       setLeftSidebarVisible(true);

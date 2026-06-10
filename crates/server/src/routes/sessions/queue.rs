@@ -2,10 +2,7 @@ use axum::{
     Extension, Json, Router, extract::State, middleware::from_fn_with_state,
     response::Json as ResponseJson, routing::get,
 };
-use db::models::{
-    scratch::DraftFollowUpData,
-    session::{Session, SessionError},
-};
+use db::models::{scratch::DraftFollowUpData, session::Session};
 use deployment::Deployment;
 use executors::profile::ExecutorConfig;
 use serde::Deserialize;
@@ -29,9 +26,7 @@ async fn queue_message(
     Json(payload): Json<QueueMessageRequest>,
 ) -> Result<ResponseJson<ApiResponse<QueueStatus>>, ApiError> {
     if let Some(message) = super::invalid_session_command_message(&payload.message) {
-        return Err(ApiError::Session(SessionError::InvalidSessionCommand(
-            message,
-        )));
+        return Err(ApiError::BadRequest(message));
     }
 
     let data = DraftFollowUpData {

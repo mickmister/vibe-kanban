@@ -211,9 +211,7 @@ pub async fn follow_up(
 
     let prompt = payload.prompt;
     if let Some(message) = invalid_session_command_message(&prompt) {
-        return Err(ApiError::Session(SessionError::InvalidSessionCommand(
-            message,
-        )));
+        return Err(ApiError::BadRequest(message));
     }
 
     let repos = WorkspaceRepo::find_repos_for_workspace(pool, workspace.id).await?;
