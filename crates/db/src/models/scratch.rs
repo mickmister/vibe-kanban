@@ -128,6 +128,9 @@ pub struct UiPreferencesData {
     /// Global terminal visibility
     #[serde(default)]
     pub is_terminal_visible: Option<bool>,
+    /// Workspace chat view mode (full, mostly-zen, zen)
+    #[serde(default)]
+    pub chat_view_mode: Option<String>,
     /// Workspace-specific panel states
     #[serde(default)]
     pub workspace_panel_states: std::collections::HashMap<String, WorkspacePanelStateData>,

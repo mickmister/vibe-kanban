@@ -108,6 +108,10 @@ is_right_sidebar_visible: boolean | null,
  */
 is_terminal_visible: boolean | null, 
 /**
+ * Workspace chat view mode (full, mostly-zen, zen)
+ */
+chat_view_mode: string | null,
+/**
  * Workspace-specific panel states
  */
 workspace_panel_states: { [key in string]?: WorkspacePanelStateData }, 
@@ -573,7 +577,7 @@ working_dir: string | null, };
 
 export type SessionCommand = { "type": "clear" } | { "type": "compact", instructions: string | null, };
 
-export type CodingAgentSessionCommandRequest = { command: SessionCommand, 
+export type CodingAgentSessionCommandRequest = { command: SessionCommand,
 /**
  * Agent session/thread id to resume when the command needs provider context.
  */

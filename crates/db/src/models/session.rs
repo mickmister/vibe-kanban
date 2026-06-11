@@ -234,13 +234,16 @@ impl Session {
     }
 
     pub async fn mark_context_cleared(pool: &SqlitePool, id: Uuid) -> Result<(), sqlx::Error> {
-        sqlx::query!(
+        let now = Utc::now().format("%Y-%m-%d %H:%M:%S%.3f").to_string();
+
+        sqlx::query(
             r#"UPDATE sessions
-               SET context_reset_at = datetime('now', 'subsec'),
-                   updated_at = datetime('now', 'subsec')
+               SET context_reset_at = $2,
+                   updated_at = $2
                WHERE id = $1"#,
-            id
         )
+        .bind(id)
+        .bind(now)
         .execute(pool)
         .await?;
         Ok(())
