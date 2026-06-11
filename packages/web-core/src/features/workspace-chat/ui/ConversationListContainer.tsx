@@ -17,9 +17,17 @@ import {
   findPreviousUserMessageIndex,
   type ConversationRow,
 } from '../model/conversation-row-model';
+import {
+  findRowIndexForViewportAnchor,
+  getViewportAnchorPatchKeys,
+  type PendingViewportAnchor,
+} from '../model/conversation-viewport-anchor';
 import { deriveConversationEntries } from '../model/deriveConversationEntries';
 import { deriveConversationTimeline } from '../model/deriveConversationTimeline';
-import { NEAR_BOTTOM_THRESHOLD_PX } from '../model/conversation-scroll-commands';
+import {
+  NEAR_BOTTOM_THRESHOLD_PX,
+  resolveScrollIntent,
+} from '../model/conversation-scroll-commands';
 import { useConversationVirtualizer } from '../model/useConversationVirtualizer';
 import { useScrollCommandExecutor } from '../model/useScrollCommandExecutor';
 
@@ -67,17 +75,6 @@ export interface ConversationListHandle {
 
 const ALWAYS_UNVIRTUALIZED_TAIL_ROWS = 8;
 const STREAMING_UNVIRTUALIZED_BUFFER_ROWS = 24;
-
-type PendingViewportAnchor =
-  | {
-      mode: 'bottom';
-      distanceFromBottom: number;
-    }
-  | {
-      mode: 'row';
-      semanticKey: string;
-      top: number;
-    };
 
 function renderRowContent(
   entry: DisplayEntry,
@@ -185,6 +182,8 @@ export const ConversationList = forwardRef<
   const scrollOnEntriesChangedRef = useRef<
     ((addType: AddEntryType, isInitialLoad: boolean) => void) | null
   >(null);
+  const prevEntriesRef = useRef<DisplayEntry[]>([]);
+  const prevRowsRef = useRef<ConversationRow[]>([]);
   const pendingUpdateRef = useRef<{
     source: ConversationTimelineSource;
     addType: AddEntryType;
@@ -209,6 +208,10 @@ export const ConversationList = forwardRef<
   const pendingViewportAnchorRef = useRef<PendingViewportAnchor | null>(null);
   const pendingViewportAnchorFrameRef = useRef<number | null>(null);
   const pendingViewportAnchorDeadlineRef = useRef(0);
+  const conversationRows = useMemo(
+    () => prevRowsRef.current,
+    [filteredEntries]
+  );
 
   // Use ref to access current repos without causing callback recreation
   const reposRef = useRef(repos);
@@ -315,21 +318,19 @@ export const ConversationList = forwardRef<
     pendingViewportAnchorDeadlineRef.current = 0;
   }, []);
 
-  const findRowNodeBySemanticKey = useCallback(
-    (semanticKey: string): HTMLElement | null => {
+  const findRenderedRowNodeByIndex = useCallback(
+    (rowIndex: number): HTMLElement | null => {
       const scrollContainer = tanstackScrollRef.current;
       if (!scrollContainer) return null;
 
-      return (
-        Array.from(
-          scrollContainer.querySelectorAll<HTMLElement>('[data-semantic-key]')
-        ).find((node) => node.dataset.semanticKey === semanticKey) ?? null
+      return scrollContainer.querySelector<HTMLElement>(
+        `[data-row-index="${rowIndex}"]`
       );
     },
     []
   );
 
-  const captureHistoricViewportAnchor = useCallback(() => {
+  const captureViewportAnchor = useCallback(() => {
     const scrollContainer = tanstackScrollRef.current;
     if (!scrollContainer) return;
 
@@ -346,14 +347,31 @@ export const ConversationList = forwardRef<
     }
 
     const containerTop = scrollContainer.getBoundingClientRect().top;
-    const firstVisibleRow =
+    const firstVisibleRowNode =
       Array.from(
-        scrollContainer.querySelectorAll<HTMLElement>('[data-semantic-key]')
+        scrollContainer.querySelectorAll<HTMLElement>('[data-row-index]')
       ).find(
         (node) => node.getBoundingClientRect().bottom > containerTop + 1
       ) ?? null;
 
-    if (!firstVisibleRow?.dataset.semanticKey) {
+    if (!firstVisibleRowNode) {
+      pendingViewportAnchorRef.current = null;
+      pendingViewportAnchorDeadlineRef.current = 0;
+      return;
+    }
+
+    const firstVisibleRowIndex = Number.parseInt(
+      firstVisibleRowNode.dataset.rowIndex ?? '',
+      10
+    );
+    if (!Number.isFinite(firstVisibleRowIndex)) {
+      pendingViewportAnchorRef.current = null;
+      pendingViewportAnchorDeadlineRef.current = 0;
+      return;
+    }
+
+    const visibleRow = conversationRows[firstVisibleRowIndex];
+    if (!visibleRow) {
       pendingViewportAnchorRef.current = null;
       pendingViewportAnchorDeadlineRef.current = 0;
       return;
@@ -361,11 +379,11 @@ export const ConversationList = forwardRef<
 
     pendingViewportAnchorRef.current = {
       mode: 'row',
-      semanticKey: firstVisibleRow.dataset.semanticKey,
-      top: firstVisibleRow.getBoundingClientRect().top,
+      patchKeys: getViewportAnchorPatchKeys(visibleRow.entry),
+      top: firstVisibleRowNode.getBoundingClientRect().top,
     };
     pendingViewportAnchorDeadlineRef.current = performance.now() + 250;
-  }, []);
+  }, [conversationRows]);
 
   const runInteractionAnchorCorrection = useCallback(() => {
     pendingInteractionAnchorFrameRef.current = null;
@@ -425,8 +443,14 @@ export const ConversationList = forwardRef<
     const pending = pendingUpdateRef.current;
     if (!pending) return;
 
-    if (pending.addType === 'historic') {
-      captureHistoricViewportAnchor();
+    const scrollIntent = resolveScrollIntent(
+      pending.addType,
+      pending.isInitialLoad,
+      conversationVirtualizer.checkIsAtBottom()
+    );
+
+    if (scrollIntent.type === 'preserve-anchor') {
+      captureViewportAnchor();
     } else {
       clearPendingViewportAnchor();
     }
@@ -484,13 +508,6 @@ export const ConversationList = forwardRef<
       onTimelineUpdated,
       scopeKey: conversationScopeKey,
     });
-
-  const prevEntriesRef = useRef<DisplayEntry[]>([]);
-  const prevRowsRef = useRef<ConversationRow[]>([]);
-  const conversationRows = useMemo(
-    () => prevRowsRef.current,
-    [filteredEntries]
-  );
 
   const hasActiveStreamingTurn = useMemo(
     () =>
@@ -895,7 +912,16 @@ export const ConversationList = forwardRef<
         return;
       }
 
-      const anchorNode = findRowNodeBySemanticKey(activeAnchor.semanticKey);
+      const anchorRowIndex = findRowIndexForViewportAnchor(
+        conversationRows,
+        activeAnchor
+      );
+      if (anchorRowIndex < 0) {
+        clearPendingViewportAnchor();
+        return;
+      }
+
+      const anchorNode = findRenderedRowNodeByIndex(anchorRowIndex);
       if (!anchorNode) {
         if (performance.now() < pendingViewportAnchorDeadlineRef.current) {
           pendingViewportAnchorFrameRef.current = requestAnimationFrame(
@@ -926,8 +952,9 @@ export const ConversationList = forwardRef<
     runViewportAnchorCorrection();
   }, [
     clearPendingViewportAnchor,
+    conversationRows,
     dataVersion,
-    findRowNodeBySemanticKey,
+    findRenderedRowNodeByIndex,
     firstUnvirtualizedRowIndex,
     totalSize,
     virtualItems,
