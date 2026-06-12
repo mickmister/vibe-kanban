@@ -63,6 +63,13 @@
           "autonomy": "skip-permissions-unsafe"
         }
       }
+    },
+    "HERMES": {
+      "DEFAULT": {
+        "HERMES": {
+          "auto_approve": true
+        }
+      }
     }
   }
 }
