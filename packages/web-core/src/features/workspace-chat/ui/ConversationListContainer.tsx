@@ -55,6 +55,7 @@ import type { RepoWithTargetBranch } from 'shared/types';
 import { Alert, AlertDescription } from '@vibe/ui/components/Alert';
 import { ChatEmptyState } from '@vibe/ui/components/ChatEmptyState';
 import { ChatScriptPlaceholder } from '@vibe/ui/components/ChatScriptPlaceholder';
+import { PrimaryButton } from '@vibe/ui/components/PrimaryButton';
 import { ScriptFixerDialog } from '@/shared/dialogs/scripts/ScriptFixerDialog';
 
 interface ConversationListProps {
@@ -502,12 +503,18 @@ export const ConversationList = forwardRef<
     }
   };
 
-  const { isFirstTurn, isLoadingHistory, historyError } =
-    useConversationHistory({
-      attempt,
-      onTimelineUpdated,
-      scopeKey: conversationScopeKey,
-    });
+  const {
+    isFirstTurn,
+    isLoadingHistory,
+    historyError,
+    canRetryHistory,
+    isRetryingHistory,
+    retryHistory,
+  } = useConversationHistory({
+    attempt,
+    onTimelineUpdated,
+    scopeKey: conversationScopeKey,
+  });
 
   const hasActiveStreamingTurn = useMemo(
     () =>
@@ -1013,11 +1020,22 @@ export const ConversationList = forwardRef<
             <div className="px-double py-3">
               <Alert variant="destructive">
                 <AlertCircle className="h-4 w-4" />
-                <AlertDescription>
+                <AlertDescription className="space-y-3">
                   {t('conversation.historyLoadError', {
                     defaultValue:
-                      'Failed to load some earlier conversation messages. You can keep working, but older history may be incomplete until you retry.',
+                      'Failed to load some earlier conversation messages. You can keep working, but older history may be incomplete until the retry succeeds.',
                   })}
+                  {canRetryHistory && (
+                    <div>
+                      <PrimaryButton
+                        variant="tertiary"
+                        onClick={retryHistory}
+                        disabled={isRetryingHistory}
+                        actionIcon={isRetryingHistory ? 'spinner' : undefined}
+                        value={t('retry')}
+                      />
+                    </div>
+                  )}
                 </AlertDescription>
               </Alert>
             </div>

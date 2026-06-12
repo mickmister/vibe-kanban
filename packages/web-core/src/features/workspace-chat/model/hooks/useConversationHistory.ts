@@ -27,6 +27,12 @@ export interface UseConversationHistoryResult {
   isLoadingHistory: boolean;
   /** Error state when earlier conversation history could not be fully replayed */
   historyError: string | null;
+  /** Whether failed history replay entries can be retried explicitly */
+  canRetryHistory: boolean;
+  /** Whether a manual retry is currently in progress */
+  isRetryingHistory: boolean;
+  /** Retry failed historic conversation history loads */
+  retryHistory: () => void;
 }
 import {
   MIN_INITIAL_ENTRIES,
@@ -69,6 +75,7 @@ export const useConversationHistory = ({
   const historicRetryInFlightRef = useRef<Set<string>>(new Set());
   const historicRetryTimerRef = useRef<number | null>(null);
   const [isLoadingHistoryState, setIsLoadingHistory] = useState(false);
+  const [isRetryingHistory, setIsRetryingHistory] = useState(false);
   const scopeGenerationRef = useRef(0);
   const [failedHistoricProcessIds, setFailedHistoricProcessIds] = useState<
     Set<string>
@@ -467,6 +474,40 @@ export const useConversationHistory = ({
     ]
   );
 
+  const retryHistory = useCallback(() => {
+    const generation = scopeGenerationRef.current;
+    const failedProcessIds = [...failedHistoricProcessIdsRef.current];
+    if (failedProcessIds.length === 0) return;
+
+    clearHistoricRetryTimer();
+    failedProcessIds.forEach((processId) => {
+      historicRetryAttemptsRef.current.delete(processId);
+      historicRetryDueAtRef.current.delete(processId);
+    });
+
+    setIsRetryingHistory(true);
+
+    void Promise.all(
+      failedProcessIds.map(async (processId) => {
+        historicRetryInFlightRef.current.add(processId);
+        try {
+          await retryHistoricProcessInBackground(processId, generation);
+        } finally {
+          historicRetryInFlightRef.current.delete(processId);
+        }
+      })
+    ).finally(() => {
+      if (!isCurrentGeneration(generation)) return;
+      setIsRetryingHistory(false);
+      scheduleHistoricReplayRetry(generation);
+    });
+  }, [
+    clearHistoricRetryTimer,
+    isCurrentGeneration,
+    retryHistoricProcessInBackground,
+    scheduleHistoricReplayRetry,
+  ]);
+
   useEffect(() => {
     failedHistoricProcessIdsRef.current = failedHistoricProcessIds;
 
@@ -791,6 +832,7 @@ export const useConversationHistory = ({
     streamingProcessIdsRef.current.clear();
     previousStatusMapRef.current.clear();
     setIsLoadingHistory(false);
+    setIsRetryingHistory(false);
     setFailedHistoricProcessIds(new Set());
     emitEntries(displayedExecutionProcesses.current, 'initial', true);
   }, [
@@ -1027,10 +1069,14 @@ export const useConversationHistory = ({
 
   const historyError =
     failedHistoricProcessIds.size > 0 ? HISTORIC_REPLAY_ERROR : null;
+  const canRetryHistory = failedHistoricProcessIds.size > 0;
 
   return {
     isFirstTurn,
     isLoadingHistory: isLoadingHistoryState,
     historyError,
+    canRetryHistory,
+    isRetryingHistory,
+    retryHistory,
   };
 };
