@@ -63,6 +63,20 @@ impl AcpClient {
     }
 }
 
+fn preferred_auto_approval_option(
+    options: &[acp::PermissionOption],
+) -> Option<&acp::PermissionOption> {
+    options
+        .iter()
+        .find(|o| matches!(o.kind, acp::PermissionOptionKind::AllowOnce))
+        .or_else(|| {
+            options
+                .iter()
+                .find(|o| matches!(o.kind, acp::PermissionOptionKind::AllowAlways))
+        })
+        .or_else(|| options.first())
+}
+
 #[async_trait(?Send)]
 impl acp::Client for AcpClient {
     async fn request_permission(
@@ -72,17 +86,11 @@ impl acp::Client for AcpClient {
         self.send_event(AcpEvent::RequestPermission(args.clone()));
 
         if self.approvals.is_none() {
-            // Auto-approve with best available option when no approval service is configured
-            let chosen_option = args
-                .options
-                .iter()
-                .find(|o| matches!(o.kind, acp::PermissionOptionKind::AllowAlways))
-                .or_else(|| {
-                    args.options
-                        .iter()
-                        .find(|o| matches!(o.kind, acp::PermissionOptionKind::AllowOnce))
-                })
-                .or_else(|| args.options.first());
+            // Auto-approve with the least-persistent allow option available.
+            // Some ACP servers persist AllowAlways choices to user config; VK's
+            // "dangerously skip permissions" should approve this run without
+            // silently mutating permanent allowlists when AllowOnce exists.
+            let chosen_option = preferred_auto_approval_option(&args.options);
 
             let outcome = if let Some(opt) = chosen_option {
                 debug!("Auto-approving permission with option: {}", opt.option_id);
@@ -252,6 +260,34 @@ impl acp::Client for AcpClient {
 
     async fn ext_notification(&self, _args: acp::ExtNotification) -> Result<(), acp::Error> {
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use agent_client_protocol as acp;
+
+    use super::preferred_auto_approval_option;
+
+    #[test]
+    fn auto_approval_prefers_allow_once_over_persistent_allow_always() {
+        let allow_always = acp::PermissionOption::new(
+            acp::PermissionOptionId::new("allow_always"),
+            "Allow always",
+            acp::PermissionOptionKind::AllowAlways,
+        );
+        let allow_once = acp::PermissionOption::new(
+            acp::PermissionOptionId::new("allow_once"),
+            "Allow once",
+            acp::PermissionOptionKind::AllowOnce,
+        );
+
+        let options = vec![allow_always, allow_once];
+
+        assert_eq!(
+            preferred_auto_approval_option(&options).map(|option| option.option_id.0.as_ref()),
+            Some("allow_once")
+        );
     }
 }
 

@@ -31,85 +31,19 @@ use crate::{
 
 const HERMES_ACP_CHECK_TIMEOUT: Duration = Duration::from_secs(5);
 
-const CURATED_MODELS: &[(&str, &str, &[&str])] = &[
-    (
-        "openrouter",
-        "OpenRouter",
-        &[
-            "anthropic/claude-opus-4.6",
-            "anthropic/claude-sonnet-4.6",
-            "google/gemini-3-pro-preview",
-            "google/gemini-3.1-pro-preview",
-            "openai/gpt-5.4",
-            "openai/gpt-5.3-codex",
-            "x-ai/grok-4.3",
-            "moonshotai/kimi-k2.6",
-        ],
-    ),
-    (
-        "nous",
-        "Nous Portal",
-        &[
-            "anthropic/claude-opus-4.8",
-            "anthropic/claude-sonnet-4.6",
-            "openai/gpt-5.5",
-            "google/gemini-3-pro-preview",
-            "moonshotai/kimi-k2.6",
-        ],
-    ),
-    (
-        "anthropic",
-        "Anthropic",
-        &[
-            "claude-opus-4-6",
-            "claude-sonnet-4-6",
-            "claude-sonnet-4-5",
-            "claude-haiku-4-5",
-        ],
-    ),
-    (
-        "gemini",
-        "Google Gemini",
-        &[
-            "gemini-3.1-pro-preview",
-            "gemini-3-pro-preview",
-            "gemini-3.5-flash",
-            "gemini-3-flash-preview",
-        ],
-    ),
-    (
-        "openai-api",
-        "OpenAI API",
-        &[
-            "gpt-5.5",
-            "gpt-5.5-pro",
-            "gpt-5.4",
-            "gpt-5.4-mini",
-            "gpt-5.3-codex",
-            "gpt-4.1",
-        ],
-    ),
-    (
-        "copilot",
-        "GitHub Copilot",
-        &[
-            "gpt-5.4",
-            "gpt-5.3-codex",
-            "claude-sonnet-4.6",
-            "gemini-3-pro-preview",
-        ],
-    ),
-    (
-        "minimax-oauth",
-        "MiniMax OAuth",
-        &["MiniMax-M2.7", "MiniMax-M2.7-highspeed"],
-    ),
-    ("xai", "xAI", &["grok-4", "grok-4-fast"]),
-    (
-        "opencode-go",
-        "OpenCode Go",
-        &["claude-sonnet-4.6", "gpt-5.4"],
-    ),
+const KNOWN_PROVIDER_LABELS: &[(&str, &str)] = &[
+    ("openrouter", "OpenRouter"),
+    ("nous", "Nous Portal"),
+    ("anthropic", "Anthropic"),
+    ("gemini", "Google Gemini"),
+    ("openai", "OpenAI"),
+    ("openai-api", "OpenAI API"),
+    ("openai-codex", "OpenAI Codex"),
+    ("copilot", "GitHub Copilot"),
+    ("minimax-oauth", "MiniMax OAuth"),
+    ("xai", "xAI"),
+    ("xai-oauth", "xAI OAuth"),
+    ("opencode-go", "OpenCode Go"),
 ];
 
 #[derive(Debug, Default)]
@@ -144,7 +78,10 @@ impl Hermes {
     fn build_harness(&self) -> AcpAgentHarness {
         let mut harness = AcpAgentHarness::with_session_namespace("hermes_sessions");
         if let Some(model) = &self.model {
-            harness = harness.with_model(model);
+            harness = harness.with_model(to_hermes_model_choice(
+                model,
+                &configured_provider_ids(&self.cmd),
+            ));
         }
         harness
     }
@@ -159,7 +96,11 @@ impl Hermes {
 }
 
 fn hermes_home() -> Option<PathBuf> {
-    if let Ok(home) = std::env::var("HERMES_HOME")
+    hermes_home_from_var(std::env::var("HERMES_HOME").ok().as_deref())
+}
+
+fn hermes_home_from_var(hermes_home: Option<&str>) -> Option<PathBuf> {
+    if let Some(home) = hermes_home
         && !home.trim().is_empty()
     {
         return Some(PathBuf::from(home));
@@ -167,8 +108,33 @@ fn hermes_home() -> Option<PathBuf> {
     dirs::home_dir().map(|home| home.join(".hermes"))
 }
 
-fn hermes_config_path() -> Option<PathBuf> {
-    hermes_home().map(|home| home.join("config.yaml"))
+fn hermes_config_path_for_cmd(cmd: &CmdOverrides) -> Option<PathBuf> {
+    let hermes_home = cmd
+        .env
+        .as_ref()
+        .and_then(|env| env.get("HERMES_HOME"))
+        .map(String::as_str);
+    hermes_home_from_var(hermes_home).map(|home| home.join("config.yaml"))
+}
+
+fn configured_provider_ids(cmd: &CmdOverrides) -> BTreeSet<String> {
+    let Some(content) =
+        hermes_config_path_for_cmd(cmd).and_then(|path| std::fs::read_to_string(path).ok())
+    else {
+        return BTreeSet::new();
+    };
+    let config = parse_hermes_config(&content);
+    let mut providers = BTreeSet::new();
+    if let Some(provider) = config.provider.as_deref() {
+        providers.insert(normalize_provider(Some(provider)));
+    }
+    providers.extend(
+        config
+            .configured_models
+            .iter()
+            .map(|(provider, _)| normalize_provider(Some(provider))),
+    );
+    providers
 }
 
 fn executable_in_path(binary: &str) -> bool {
@@ -310,7 +276,7 @@ fn parse_hermes_config(content: &str) -> HermesConfig {
         if in_model {
             if let Some((key, value)) = split_yaml_key_value(trimmed) {
                 match key {
-                    "default" | "model" => {
+                    "default" | "model" | "name" => {
                         if let Some(model) = parse_yaml_scalar(value) {
                             config.model = Some(model);
                         }
@@ -326,6 +292,16 @@ fn parse_hermes_config(content: &str) -> HermesConfig {
         }
 
         if in_providers {
+            if let Some(item) = trimmed.strip_prefix("- ")
+                && let Some((key, value)) = split_yaml_key_value(item)
+                && matches!(key, "name" | "id" | "provider")
+                && let Some(provider) = parse_yaml_scalar(value)
+            {
+                current_provider = Some((indent, provider));
+                in_provider_models = false;
+                continue;
+            }
+
             if !in_provider_models
                 && let Some((key, value)) = split_yaml_key_value(trimmed)
                 && value.is_empty()
@@ -381,9 +357,9 @@ fn normalize_provider(provider: Option<&str>) -> String {
 }
 
 fn provider_label(provider: &str) -> String {
-    CURATED_MODELS
+    KNOWN_PROVIDER_LABELS
         .iter()
-        .find_map(|(id, label, _)| (*id == provider).then(|| (*label).to_string()))
+        .find_map(|(id, label)| (*id == provider).then(|| (*label).to_string()))
         .unwrap_or_else(|| {
             provider
                 .split(['-', '_'])
@@ -400,13 +376,32 @@ fn provider_label(provider: &str) -> String {
         })
 }
 
-fn encode_model_choice(provider: &str, model: &str) -> String {
+fn encode_model_selector_choice(provider: &str, model: &str) -> String {
     let model = model.trim();
     if provider.trim().is_empty() {
         model.to_string()
     } else {
-        format!("{}:{model}", normalize_provider(Some(provider)))
+        format!("{}/{model}", normalize_provider(Some(provider)))
     }
+}
+
+fn to_hermes_model_choice(model_choice: &str, configured_providers: &BTreeSet<String>) -> String {
+    let model_choice = model_choice.trim();
+
+    if let Some((provider, model)) = model_choice.split_once('/') {
+        let provider = normalize_provider(Some(provider));
+        if configured_providers.contains(&provider)
+            || (is_known_provider(&provider) && model.contains('/'))
+        {
+            return format!("{provider}:{model}");
+        }
+    }
+
+    model_choice.to_string()
+}
+
+fn is_known_provider(provider: &str) -> bool {
+    KNOWN_PROVIDER_LABELS.iter().any(|(id, _)| *id == provider)
 }
 
 fn model_display_name(model: &str) -> String {
@@ -424,8 +419,12 @@ fn add_model_info(
     model: &str,
 ) {
     let provider = normalize_provider(Some(provider));
-    let id = encode_model_choice(&provider, model);
-    if !seen_models.insert(id.clone()) {
+    let id = model.trim().to_string();
+    if id.is_empty() {
+        return;
+    }
+    let seen_key = encode_model_selector_choice(&provider, &id);
+    if !seen_models.insert(seen_key) {
         return;
     }
     models.push(ModelInfo {
@@ -443,8 +442,12 @@ fn build_model_selector_config(config: &HermesConfig) -> ModelSelectorConfig {
     for (provider, _) in &config.configured_models {
         provider_ids.insert(normalize_provider(Some(provider)));
     }
-    for (provider, _, _) in CURATED_MODELS {
-        provider_ids.insert((*provider).to_string());
+    for (provider, _) in KNOWN_PROVIDER_LABELS {
+        if config.provider.as_deref().is_some_and(|current| {
+            normalize_provider(Some(current)) == normalize_provider(Some(provider))
+        }) {
+            provider_ids.insert((*provider).to_string());
+        }
     }
 
     let providers = provider_ids
@@ -466,46 +469,45 @@ fn build_model_selector_config(config: &HermesConfig) -> ModelSelectorConfig {
         add_model_info(&mut models, &mut seen_models, provider, model);
     }
 
-    for (provider, _, provider_models) in CURATED_MODELS {
-        if *provider == current_provider {
-            for model in *provider_models {
-                add_model_info(&mut models, &mut seen_models, provider, model);
-            }
-        }
-    }
-
-    let only_default_model = models.len() <= usize::from(config.model.is_some());
-    if only_default_model {
-        for (provider, _, provider_models) in CURATED_MODELS {
-            for model in *provider_models {
-                add_model_info(&mut models, &mut seen_models, provider, model);
-            }
-        }
-    }
-
     ModelSelectorConfig {
         providers,
         models,
         default_model: config
             .model
             .as_ref()
-            .map(|model| encode_model_choice(&current_provider, model)),
+            .map(|model| encode_model_selector_choice(&current_provider, model)),
         agents: vec![],
         permissions: vec![PermissionPolicy::Auto, PermissionPolicy::Supervised],
     }
 }
 
-async fn run_hermes_acp_check() -> Option<String> {
-    if !executable_in_path("hermes") {
-        return Some("Hermes executable not found in PATH. Install Hermes and run `hermes model` to configure a provider.".to_string());
-    }
+async fn run_hermes_acp_check(hermes: &Hermes) -> Option<String> {
+    let command_parts = match hermes
+        .build_command_builder()
+        .and_then(|builder| builder.build_follow_up(&["--check".to_string()]))
+    {
+        Ok(parts) => parts,
+        Err(error) => return Some(format!("Failed to build Hermes ACP check command: {error}")),
+    };
 
-    let mut command = Command::new("hermes");
+    let (program_path, args) = match command_parts.into_resolved().await {
+        Ok(resolved) => resolved,
+        Err(error) => {
+            return Some(format!(
+                "Failed to resolve Hermes ACP check command: {error}"
+            ));
+        }
+    };
+
+    let mut command = Command::new(program_path);
     command
-        .args(["acp", "--check"])
+        .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    if let Some(env) = &hermes.cmd.env {
+        command.envs(env);
+    }
 
     match tokio::time::timeout(HERMES_ACP_CHECK_TIMEOUT, command.output()).await {
         Ok(Ok(output)) if output.status.success() => None,
@@ -606,13 +608,7 @@ impl StandardCodingAgentExecutor for Hermes {
         let installation_found = executable_in_path("hermes");
         let config_paths = home
             .as_ref()
-            .map(|home| {
-                vec![
-                    home.join("auth.json"),
-                    home.join(".env"),
-                    home.join("config.yaml"),
-                ]
-            })
+            .map(|home| vec![home.join("auth.json"), home.join(".env")])
             .unwrap_or_default();
 
         if installation_found && let Some(timestamp) = latest_auth_timestamp(config_paths) {
@@ -656,8 +652,8 @@ impl StandardCodingAgentExecutor for Hermes {
             ..Default::default()
         };
 
-        let config_content =
-            hermes_config_path().and_then(|path| std::fs::read_to_string(path).ok());
+        let config_content = hermes_config_path_for_cmd(&self.cmd)
+            .and_then(|path| std::fs::read_to_string(path).ok());
         let hermes_config = config_content
             .as_deref()
             .map(parse_hermes_config)
@@ -665,7 +661,7 @@ impl StandardCodingAgentExecutor for Hermes {
         options.model_selector = build_model_selector_config(&hermes_config);
 
         let mut errors = Vec::new();
-        if let Some(error) = run_hermes_acp_check().await {
+        if let Some(error) = run_hermes_acp_check(self).await {
             errors.push(error);
         }
         if hermes_config.model.is_none() {
@@ -770,7 +766,36 @@ providers:
     }
 
     #[test]
-    fn model_selector_uses_provider_encoded_ids() {
+    fn parses_custom_provider_list_config() {
+        let parsed = parse_hermes_config(
+            r#"
+model:
+  provider: openrouter
+  name: anthropic/claude-sonnet-4.6
+custom_providers:
+  - name: local
+    base_url: http://localhost:1234/v1
+    models:
+      - llama:3.3
+      - qwen3-coder
+"#,
+        );
+
+        assert_eq!(parsed.model.as_deref(), Some("anthropic/claude-sonnet-4.6"));
+        assert!(
+            parsed
+                .configured_models
+                .contains(&("local".to_string(), "llama:3.3".to_string()))
+        );
+        assert!(
+            parsed
+                .configured_models
+                .contains(&("local".to_string(), "qwen3-coder".to_string()))
+        );
+    }
+
+    #[test]
+    fn model_selector_uses_vibe_provider_model_ids() {
         let parsed = HermesConfig {
             provider: Some("openrouter".to_string()),
             model: Some("anthropic/claude-sonnet-4.6".to_string()),
@@ -781,18 +806,56 @@ providers:
 
         assert_eq!(
             selector.default_model.as_deref(),
-            Some("openrouter:anthropic/claude-sonnet-4.6")
+            Some("openrouter/anthropic/claude-sonnet-4.6")
         );
         assert!(selector.models.iter().any(|model| {
-            model.id == "openrouter:anthropic/claude-sonnet-4.6"
+            model.id == "anthropic/claude-sonnet-4.6"
                 && model.provider_id.as_deref() == Some("openrouter")
         }));
         assert!(selector.models.iter().any(|model| {
-            model.id == "local:qwen3-coder" && model.provider_id.as_deref() == Some("local")
+            model.id == "qwen3-coder" && model.provider_id.as_deref() == Some("local")
         }));
         assert_eq!(
             selector.permissions,
             vec![PermissionPolicy::Auto, PermissionPolicy::Supervised]
+        );
+    }
+
+    #[test]
+    fn converts_vibe_model_choice_to_hermes_model_choice() {
+        let configured_providers = BTreeSet::from(["local".to_string()]);
+        assert_eq!(
+            to_hermes_model_choice(
+                "openrouter/anthropic/claude-sonnet-4.6",
+                &configured_providers
+            ),
+            "openrouter:anthropic/claude-sonnet-4.6"
+        );
+        assert_eq!(
+            to_hermes_model_choice(
+                "openrouter/meta-llama/llama-3.1:free",
+                &configured_providers
+            ),
+            "openrouter:meta-llama/llama-3.1:free"
+        );
+        assert_eq!(
+            to_hermes_model_choice(
+                "openrouter:anthropic/claude-sonnet-4.6",
+                &configured_providers
+            ),
+            "openrouter:anthropic/claude-sonnet-4.6"
+        );
+        assert_eq!(
+            to_hermes_model_choice("local/qwen3-coder", &configured_providers),
+            "local:qwen3-coder"
+        );
+        assert_eq!(
+            to_hermes_model_choice("custom-provider/model-with/slash", &configured_providers),
+            "custom-provider/model-with/slash"
+        );
+        assert_eq!(
+            to_hermes_model_choice("anthropic/claude-sonnet-4.6", &BTreeSet::new()),
+            "anthropic/claude-sonnet-4.6"
         );
     }
 }
