@@ -105,7 +105,11 @@ const CURATED_MODELS: &[(&str, &str, &[&str])] = &[
         &["MiniMax-M2.7", "MiniMax-M2.7-highspeed"],
     ),
     ("xai", "xAI", &["grok-4", "grok-4-fast"]),
-    ("opencode-go", "OpenCode Go", &["claude-sonnet-4.6", "gpt-5.4"]),
+    (
+        "opencode-go",
+        "OpenCode Go",
+        &["claude-sonnet-4.6", "gpt-5.4"],
+    ),
 ];
 
 #[derive(Debug, Default)]
@@ -363,7 +367,12 @@ fn parse_hermes_config(content: &str) -> HermesConfig {
 }
 
 fn normalize_provider(provider: Option<&str>) -> String {
-    match provider.unwrap_or("openrouter").trim().to_lowercase().as_str() {
+    match provider
+        .unwrap_or("openrouter")
+        .trim()
+        .to_lowercase()
+        .as_str()
+    {
         "" | "auto" => "openrouter".to_string(),
         "openai" => "openai-api".to_string(),
         "google" | "google-ai" => "gemini".to_string(),
@@ -382,9 +391,7 @@ fn provider_label(provider: &str) -> String {
                 .map(|part| {
                     let mut chars = part.chars();
                     match chars.next() {
-                        Some(first) => {
-                            first.to_uppercase().collect::<String>() + chars.as_str()
-                        }
+                        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
                         None => String::new(),
                     }
                 })
@@ -410,6 +417,25 @@ fn model_display_name(model: &str) -> String {
         .to_string()
 }
 
+fn add_model_info(
+    models: &mut Vec<ModelInfo>,
+    seen_models: &mut BTreeSet<String>,
+    provider: &str,
+    model: &str,
+) {
+    let provider = normalize_provider(Some(provider));
+    let id = encode_model_choice(&provider, model);
+    if !seen_models.insert(id.clone()) {
+        return;
+    }
+    models.push(ModelInfo {
+        id,
+        name: model_display_name(model),
+        provider_id: Some(provider),
+        reasoning_options: vec![],
+    });
+}
+
 fn build_model_selector_config(config: &HermesConfig) -> ModelSelectorConfig {
     let current_provider = normalize_provider(config.provider.as_deref());
     let mut provider_ids = BTreeSet::new();
@@ -432,40 +458,27 @@ fn build_model_selector_config(config: &HermesConfig) -> ModelSelectorConfig {
     let mut seen_models = BTreeSet::new();
     let mut models = Vec::new();
 
-    let mut add_model = |provider: &str, model: &str| {
-        let provider = normalize_provider(Some(provider));
-        let id = encode_model_choice(&provider, model);
-        if !seen_models.insert(id.clone()) {
-            return;
-        }
-        models.push(ModelInfo {
-            id,
-            name: model_display_name(model),
-            provider_id: Some(provider),
-            reasoning_options: vec![],
-        });
-    };
-
     if let Some(model) = &config.model {
-        add_model(&current_provider, model);
+        add_model_info(&mut models, &mut seen_models, &current_provider, model);
     }
 
     for (provider, model) in &config.configured_models {
-        add_model(provider, model);
+        add_model_info(&mut models, &mut seen_models, provider, model);
     }
 
     for (provider, _, provider_models) in CURATED_MODELS {
         if *provider == current_provider {
             for model in *provider_models {
-                add_model(provider, model);
+                add_model_info(&mut models, &mut seen_models, provider, model);
             }
         }
     }
 
-    if models.len() <= usize::from(config.model.is_some()) {
+    let only_default_model = models.len() <= usize::from(config.model.is_some());
+    if only_default_model {
         for (provider, _, provider_models) in CURATED_MODELS {
             for model in *provider_models {
-                add_model(provider, model);
+                add_model_info(&mut models, &mut seen_models, provider, model);
             }
         }
     }
@@ -602,9 +615,7 @@ impl StandardCodingAgentExecutor for Hermes {
             })
             .unwrap_or_default();
 
-        if installation_found
-            && let Some(timestamp) = latest_auth_timestamp(config_paths)
-        {
+        if installation_found && let Some(timestamp) = latest_auth_timestamp(config_paths) {
             return AvailabilityInfo::LoginDetected {
                 last_auth_timestamp: timestamp,
             };
@@ -645,8 +656,8 @@ impl StandardCodingAgentExecutor for Hermes {
             ..Default::default()
         };
 
-        let config_content = hermes_config_path()
-            .and_then(|path| std::fs::read_to_string(path).ok());
+        let config_content =
+            hermes_config_path().and_then(|path| std::fs::read_to_string(path).ok());
         let hermes_config = config_content
             .as_deref()
             .map(parse_hermes_config)
@@ -745,18 +756,17 @@ providers:
         );
 
         assert_eq!(parsed.provider.as_deref(), Some("openrouter"));
-        assert_eq!(
-            parsed.model.as_deref(),
-            Some("anthropic/claude-sonnet-4.6")
+        assert_eq!(parsed.model.as_deref(), Some("anthropic/claude-sonnet-4.6"));
+        assert!(
+            parsed
+                .configured_models
+                .contains(&("local".to_string(), "qwen3-coder".to_string()))
         );
-        assert!(parsed.configured_models.contains(&(
-            "local".to_string(),
-            "qwen3-coder".to_string()
-        )));
-        assert!(parsed.configured_models.contains(&(
-            "local".to_string(),
-            "llama-coder".to_string()
-        )));
+        assert!(
+            parsed
+                .configured_models
+                .contains(&("local".to_string(), "llama-coder".to_string()))
+        );
     }
 
     #[test]
