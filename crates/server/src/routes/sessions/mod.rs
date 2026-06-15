@@ -141,9 +141,7 @@ pub(super) fn invalid_session_command_message(prompt: &str) -> Option<String> {
     let arguments = parts.next().map(str::trim).unwrap_or("");
 
     match name.as_str() {
-        "clear" if !arguments.is_empty() => {
-            Some("`/clear` does not accept arguments.".to_string())
-        }
+        "clear" if !arguments.is_empty() => Some("`/clear` does not accept arguments.".to_string()),
         _ => None,
     }
 }
