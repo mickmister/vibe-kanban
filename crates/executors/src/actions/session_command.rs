@@ -235,10 +235,7 @@ mod tests {
         let request = super::CodingAgentSessionCommandRequest {
             command: SessionCommand::Clear,
             session_id: None,
-            executor_config: crate::profile::ExecutorConfig {
-                executor: BaseCodingAgent::ClaudeCode,
-                ..Default::default()
-            },
+            executor_config: crate::profile::ExecutorConfig::new(BaseCodingAgent::ClaudeCode),
             working_dir: None,
         };
 
