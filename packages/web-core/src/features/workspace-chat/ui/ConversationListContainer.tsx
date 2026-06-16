@@ -975,6 +975,60 @@ export const ConversationList = forwardRef<
             <SpinnerIcon className="size-6 animate-spin text-low" />
           </div>
         )}
+        {!showLoader && (isLoadingHistory || historyError) && (
+          <div className="pointer-events-none absolute inset-x-0 top-0 z-10 flex justify-center px-double pt-3">
+            <div className="pointer-events-auto flex w-full max-w-md flex-col gap-3">
+              {isLoadingHistory && (
+                <div className="rounded border bg-panel/95 px-double py-3 shadow-sm backdrop-blur-sm">
+                  <div className="flex flex-col items-center gap-2">
+                    <div className="flex w-full flex-col gap-1.5">
+                      <div className="flex items-center gap-2">
+                        <div className="h-2.5 w-16 animate-pulse rounded-full bg-foreground/10" />
+                        <div className="h-2.5 flex-1 animate-pulse rounded-full bg-foreground/[0.06]" />
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <div
+                          className="h-2.5 w-24 animate-pulse rounded-full bg-foreground/[0.07]"
+                          style={{ animationDelay: '150ms' }}
+                        />
+                        <div
+                          className="h-2.5 w-32 animate-pulse rounded-full bg-foreground/[0.05]"
+                          style={{ animationDelay: '150ms' }}
+                        />
+                      </div>
+                    </div>
+                    <span className="text-xs text-low">
+                      {t('conversation.loadingEarlierMessages')}
+                    </span>
+                  </div>
+                </div>
+              )}
+
+              {historyError && (
+                <Alert variant="destructive">
+                  <AlertCircle className="h-4 w-4" />
+                  <AlertDescription className="space-y-3">
+                    {t('conversation.historyLoadError', {
+                      defaultValue:
+                        'Failed to load some earlier conversation messages. You can keep working, but older history may be incomplete until the retry succeeds.',
+                    })}
+                    {canRetryHistory && (
+                      <div>
+                        <PrimaryButton
+                          variant="tertiary"
+                          onClick={retryHistory}
+                          disabled={isRetryingHistory}
+                          actionIcon={isRetryingHistory ? 'spinner' : undefined}
+                          value={t('retry')}
+                        />
+                      </div>
+                    )}
+                  </AlertDescription>
+                </Alert>
+              )}
+            </div>
+          </div>
+        )}
         <div
           ref={tanstackScrollRef}
           className="h-full overflow-y-auto scrollbar-none"
@@ -991,55 +1045,6 @@ export const ConversationList = forwardRef<
               </div>
             )}
           </div>
-
-          {isLoadingHistory && !showLoader && (
-            <div className="flex flex-col items-center gap-2 px-double py-3">
-              <div className="flex w-full max-w-md flex-col gap-1.5">
-                <div className="flex items-center gap-2">
-                  <div className="h-2.5 w-16 animate-pulse rounded-full bg-foreground/10" />
-                  <div className="h-2.5 flex-1 animate-pulse rounded-full bg-foreground/[0.06]" />
-                </div>
-                <div className="flex items-center gap-2">
-                  <div
-                    className="h-2.5 w-24 animate-pulse rounded-full bg-foreground/[0.07]"
-                    style={{ animationDelay: '150ms' }}
-                  />
-                  <div
-                    className="h-2.5 w-32 animate-pulse rounded-full bg-foreground/[0.05]"
-                    style={{ animationDelay: '150ms' }}
-                  />
-                </div>
-              </div>
-              <span className="text-xs text-low">
-                {t('conversation.loadingEarlierMessages')}
-              </span>
-            </div>
-          )}
-
-          {historyError && !showLoader && (
-            <div className="px-double py-3">
-              <Alert variant="destructive">
-                <AlertCircle className="h-4 w-4" />
-                <AlertDescription className="space-y-3">
-                  {t('conversation.historyLoadError', {
-                    defaultValue:
-                      'Failed to load some earlier conversation messages. You can keep working, but older history may be incomplete until the retry succeeds.',
-                  })}
-                  {canRetryHistory && (
-                    <div>
-                      <PrimaryButton
-                        variant="tertiary"
-                        onClick={retryHistory}
-                        disabled={isRetryingHistory}
-                        actionIcon={isRetryingHistory ? 'spinner' : undefined}
-                        value={t('retry')}
-                      />
-                    </div>
-                  )}
-                </AlertDescription>
-              </Alert>
-            </div>
-          )}
 
           {showEmptyState && (
             <div className="flex min-h-full items-center justify-center px-double py-12">
