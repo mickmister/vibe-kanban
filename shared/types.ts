@@ -577,7 +577,7 @@ working_dir: string | null, };
 
 export type SessionCommand = { "type": "clear" } | { "type": "compact", instructions: string | null, };
 
-export type CodingAgentSessionCommandRequest = { command: SessionCommand,
+export type CodingAgentSessionCommandRequest = { command: SessionCommand, 
 /**
  * Agent session/thread id to resume when the command needs provider context.
  */
