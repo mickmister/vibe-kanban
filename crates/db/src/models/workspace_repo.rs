@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use sqlx::{FromRow, SqlitePool};
+use sqlx::{FromRow, QueryBuilder, Row, Sqlite, SqlitePool};
 use ts_rs::TS;
 use uuid::Uuid;
 
@@ -31,6 +31,12 @@ pub struct RepoWithTargetBranch {
     #[serde(flatten)]
     pub repo: Repo,
     pub target_branch: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+pub struct WorkspaceReposWithTargetBranch {
+    pub workspace_id: Uuid,
+    pub repos: Vec<RepoWithTargetBranch>,
 }
 
 /// Repo info with copy_files configuration.
@@ -183,6 +189,86 @@ impl WorkspaceRepo {
                     updated_at: row.updated_at,
                 },
                 target_branch: row.target_branch,
+            })
+            .collect())
+    }
+
+    pub async fn find_repos_with_target_branch_for_workspaces(
+        pool: &SqlitePool,
+        workspace_ids: &[Uuid],
+    ) -> Result<Vec<WorkspaceReposWithTargetBranch>, sqlx::Error> {
+        if workspace_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut repos_by_workspace = workspace_ids
+            .iter()
+            .map(|workspace_id| (*workspace_id, Vec::new()))
+            .collect::<std::collections::HashMap<_, _>>();
+
+        // Keep each SQL statement comfortably below SQLite's bind-variable
+        // limits and avoid building one very large response in intermediate
+        // row buffers for callers with many workspaces.
+        for workspace_id_chunk in workspace_ids.chunks(250) {
+            let mut query = QueryBuilder::<Sqlite>::new(
+                r#"SELECT wr.workspace_id,
+                          r.id,
+                          r.path,
+                          r.name,
+                          r.display_name,
+                          r.setup_script,
+                          r.cleanup_script,
+                          r.archive_script,
+                          r.copy_files,
+                          r.parallel_setup_script,
+                          r.dev_server_script,
+                          r.default_target_branch,
+                          r.default_working_dir,
+                          r.created_at,
+                          r.updated_at,
+                          wr.target_branch
+                   FROM repos r
+                   JOIN workspace_repos wr ON r.id = wr.repo_id
+                   WHERE wr.workspace_id IN ("#,
+            );
+            let mut separated = query.separated(", ");
+            for workspace_id in workspace_id_chunk {
+                separated.push_bind(workspace_id);
+            }
+            separated.push_unseparated(") ORDER BY wr.workspace_id ASC, r.display_name ASC");
+
+            let rows = query.build().fetch_all(pool).await?;
+            for row in rows {
+                let workspace_id: Uuid = row.try_get("workspace_id")?;
+                if let Some(repos) = repos_by_workspace.get_mut(&workspace_id) {
+                    repos.push(RepoWithTargetBranch {
+                        repo: Repo {
+                            id: row.try_get("id")?,
+                            path: PathBuf::from(row.try_get::<String, _>("path")?),
+                            name: row.try_get("name")?,
+                            display_name: row.try_get("display_name")?,
+                            setup_script: row.try_get("setup_script")?,
+                            cleanup_script: row.try_get("cleanup_script")?,
+                            archive_script: row.try_get("archive_script")?,
+                            copy_files: row.try_get("copy_files")?,
+                            parallel_setup_script: row.try_get("parallel_setup_script")?,
+                            dev_server_script: row.try_get("dev_server_script")?,
+                            default_target_branch: row.try_get("default_target_branch")?,
+                            default_working_dir: row.try_get("default_working_dir")?,
+                            created_at: row.try_get("created_at")?,
+                            updated_at: row.try_get("updated_at")?,
+                        },
+                        target_branch: row.try_get("target_branch")?,
+                    });
+                }
+            }
+        }
+
+        Ok(workspace_ids
+            .iter()
+            .map(|workspace_id| WorkspaceReposWithTargetBranch {
+                workspace_id: *workspace_id,
+                repos: repos_by_workspace.remove(workspace_id).unwrap_or_default(),
             })
             .collect())
     }

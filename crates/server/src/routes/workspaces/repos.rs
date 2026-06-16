@@ -2,7 +2,7 @@ use axum::{Extension, Json, Router, extract::State, response::Json as ResponseJs
 use db::models::{
     requests::WorkspaceRepoInput,
     workspace::{Workspace, WorkspaceError},
-    workspace_repo::{RepoWithTargetBranch, WorkspaceRepo},
+    workspace_repo::{RepoWithTargetBranch, WorkspaceRepo, WorkspaceReposWithTargetBranch},
 };
 use deployment::Deployment;
 use serde::{Deserialize, Serialize};
@@ -13,10 +13,17 @@ use uuid::Uuid;
 
 use crate::{DeploymentImpl, error::ApiError};
 
+const MAX_BATCH_WORKSPACE_REPOS_IDS: usize = 500;
+
 #[derive(Debug, Deserialize, Serialize, TS)]
 pub struct AddWorkspaceRepoRequest {
     pub repo_id: Uuid,
     pub target_branch: String,
+}
+
+#[derive(Debug, Deserialize, Serialize, TS)]
+pub struct BatchWorkspaceReposRequest {
+    pub workspace_ids: Vec<Uuid>,
 }
 
 #[derive(Debug, Serialize, TS)]
@@ -36,6 +43,25 @@ pub async fn get_workspace_repos(
     let pool = &deployment.db().pool;
     let repos =
         WorkspaceRepo::find_repos_with_target_branch_for_workspace(pool, workspace.id).await?;
+    Ok(ResponseJson(ApiResponse::success(repos)))
+}
+
+pub async fn get_workspace_repos_batch(
+    State(deployment): State<DeploymentImpl>,
+    Json(payload): Json<BatchWorkspaceReposRequest>,
+) -> Result<ResponseJson<ApiResponse<Vec<WorkspaceReposWithTargetBranch>>>, ApiError> {
+    if payload.workspace_ids.len() > MAX_BATCH_WORKSPACE_REPOS_IDS {
+        return Err(ApiError::BadRequest(format!(
+            "Cannot fetch repos for more than {MAX_BATCH_WORKSPACE_REPOS_IDS} workspaces at once"
+        )));
+    }
+
+    let repos = WorkspaceRepo::find_repos_with_target_branch_for_workspaces(
+        &deployment.db().pool,
+        &payload.workspace_ids,
+    )
+    .await?;
+
     Ok(ResponseJson(ApiResponse::success(repos)))
 }
 
