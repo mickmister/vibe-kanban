@@ -43,6 +43,7 @@ use services::services::{
     analytics::AnalyticsContext,
     approvals::{Approvals, executor_approvals::ExecutorApprovalBridge},
     config::{Config, DEFAULT_COMMIT_REMINDER_PROMPT},
+    conversation_preview,
     container::{ContainerError, ContainerRef, ContainerService},
     diff_stream::{self, DiffStreamHandle},
     file::FileService,
@@ -966,6 +967,19 @@ impl LocalContainerService {
                 } else {
                     tracing::debug!("No assistant message found for execution {}", exec_id);
                 }
+            }
+
+            if let Err(error) = conversation_preview::refresh_execution_process_preview(
+                &self.db.pool,
+                *exec_id,
+            )
+            .await
+            {
+                tracing::warn!(
+                    "Failed to refresh conversation preview for execution {}: {}",
+                    exec_id,
+                    error
+                );
             }
         }
 
