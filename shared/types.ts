@@ -110,7 +110,7 @@ is_terminal_visible: boolean | null,
 /**
  * Workspace chat view mode (full, mostly-zen, zen)
  */
-chat_view_mode: string | null,
+chat_view_mode: string | null, 
 /**
  * Workspace-specific panel states
  */
