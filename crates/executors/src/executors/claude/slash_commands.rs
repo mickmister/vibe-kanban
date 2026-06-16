@@ -153,7 +153,7 @@ impl ClaudeCode {
                 SlashCommandDescription {
                     name: "compact".to_string(),
                     description: Some(
-                        "Clear conversation history but keep a summary in context. Optional: /compact [instructions for summarization]"
+                        "Clear conversation history but keep a summary in context. Optional instructions are provider-dependent best-effort."
                             .to_string(),
                     ),
                 },

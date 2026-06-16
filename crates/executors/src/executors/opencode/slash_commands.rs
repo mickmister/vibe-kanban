@@ -87,7 +87,10 @@ pub(super) fn hardcoded_slash_commands() -> Vec<SlashCommandDescription> {
         },
         SlashCommandDescription {
             name: "compact".to_string(),
-            description: Some("compact the session".to_string()),
+            description: Some(
+                "compact the session; extra instructions are provider-dependent best-effort"
+                    .to_string(),
+            ),
         },
         SlashCommandDescription {
             name: "commands".to_string(),
