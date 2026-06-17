@@ -698,7 +698,28 @@ pub trait ContainerService {
             }
         }
 
-        self.try_stop(&workspace, false).await;
+        if let Ok(processes) =
+            ExecutionProcess::find_by_session_id(pool, session_id, false).await
+        {
+            for process in processes {
+                // Skip dev server processes; retries should only cancel work for this session.
+                if process.run_reason == ExecutionProcessRunReason::DevServer {
+                    continue;
+                }
+                if process.status == ExecutionProcessStatus::Running {
+                    self.stop_execution(&process, ExecutionProcessStatus::Killed)
+                        .await
+                        .unwrap_or_else(|e| {
+                            tracing::debug!(
+                                "Failed to stop execution process {} for session {}: {}",
+                                process.id,
+                                session_id,
+                                e
+                            );
+                        });
+                }
+            }
+        }
         ExecutionProcess::drop_at_and_after(pool, session_id, target_process_id).await?;
 
         Ok(())
