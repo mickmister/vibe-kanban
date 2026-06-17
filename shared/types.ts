@@ -579,6 +579,10 @@ export type SessionCommand = { "type": "clear" } | { "type": "compact", instruct
 
 export type CodingAgentSessionCommandRequest = { command: SessionCommand, 
 /**
+ * Original user-entered slash command text for chat display and executor input.
+ */
+prompt: string,
+/**
  * Agent session/thread id to resume when the command needs provider context.
  */
 session_id: string | null, executor_config: ExecutorConfig, working_dir: string | null, };

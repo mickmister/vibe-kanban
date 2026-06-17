@@ -32,6 +32,9 @@ pub enum SessionCommand {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
 pub struct CodingAgentSessionCommandRequest {
     pub command: SessionCommand,
+    /// Original user-entered slash command text for chat display and executor input.
+    #[serde(default)]
+    pub prompt: String,
     /// Agent session/thread id to resume when the command needs provider context.
     #[serde(default)]
     pub session_id: Option<String>,
@@ -81,7 +84,12 @@ impl CodingAgentSessionCommandRequest {
     }
 
     pub fn prompt(&self) -> String {
-        self.command.prompt()
+        let prompt = self.prompt.trim();
+        if prompt.is_empty() {
+            self.command.prompt()
+        } else {
+            prompt.to_string()
+        }
     }
 
     pub fn static_message(&self) -> Option<String> {
@@ -234,6 +242,7 @@ mod tests {
     fn clear_static_message_explains_visible_history_boundary() {
         let request = super::CodingAgentSessionCommandRequest {
             command: SessionCommand::Clear,
+            prompt: "/clear".to_string(),
             session_id: None,
             executor_config: crate::profile::ExecutorConfig::new(BaseCodingAgent::ClaudeCode),
             working_dir: None,
@@ -242,5 +251,33 @@ mod tests {
         let message = request.static_message().unwrap();
         assert!(message.contains("Previous messages remain visible"));
         assert!(message.contains("future agent context"));
+    }
+
+    #[test]
+    fn session_command_request_prefers_original_prompt() {
+        let request = super::CodingAgentSessionCommandRequest {
+            command: SessionCommand::Compact {
+                instructions: Some("trimmed".to_string()),
+            },
+            prompt: " /compact   keep spacing ".to_string(),
+            session_id: Some("thread-1".to_string()),
+            executor_config: crate::profile::ExecutorConfig::new(BaseCodingAgent::Codex),
+            working_dir: None,
+        };
+
+        assert_eq!(request.prompt(), "/compact   keep spacing");
+    }
+
+    #[test]
+    fn session_command_request_falls_back_for_legacy_actions() {
+        let request = super::CodingAgentSessionCommandRequest {
+            command: SessionCommand::Clear,
+            prompt: String::new(),
+            session_id: None,
+            executor_config: crate::profile::ExecutorConfig::new(BaseCodingAgent::Codex),
+            working_dir: None,
+        };
+
+        assert_eq!(request.prompt(), "/clear");
     }
 }

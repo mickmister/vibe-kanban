@@ -12,7 +12,10 @@ import type {
   PatchTypeWithKey,
 } from '@/shared/hooks/useConversationHistory/types';
 
-function executorAction(command: 'clear' | 'compact'): ExecutorAction {
+function executorAction(
+  command: 'clear' | 'compact',
+  prompt = `/${command}`
+): ExecutorAction {
   return {
     typ: {
       type: 'CodingAgentSessionCommandRequest',
@@ -20,6 +23,7 @@ function executorAction(command: 'clear' | 'compact'): ExecutorAction {
         command === 'clear'
           ? { type: 'clear' }
           : { type: 'compact', instructions: null },
+      prompt,
       session_id: 'thread-1',
       executor_config: {
         executor: BaseCodingAgent.CODEX,
@@ -152,7 +156,7 @@ describe('deriveConversationEntries', () => {
     });
   });
 
-  it('emits /compact as a user message and does not retain stale token usage', () => {
+  it('emits the original /compact prompt and does not retain stale token usage', () => {
     const initialProcessId = 'initial-process';
     const compactProcessId = 'compact-process';
     const result = deriveConversationEntries({
@@ -196,7 +200,7 @@ describe('deriveConversationEntries', () => {
         processState(
           compactProcessId,
           '2026-06-17T00:01:00.000Z',
-          executorAction('compact'),
+          executorAction('compact', '/compact keep imports stable'),
           [
             normalEntry(
               compactProcessId,
@@ -218,7 +222,7 @@ describe('deriveConversationEntries', () => {
         (entry) =>
           entry.type === 'NORMALIZED_ENTRY' &&
           entry.content.entry_type.type === 'user_message' &&
-          entry.content.content === '/compact'
+          entry.content.content === '/compact keep imports stable'
       )
     ).toBe(true);
     expect(result.latestTokenUsageInfo).toBeNull();

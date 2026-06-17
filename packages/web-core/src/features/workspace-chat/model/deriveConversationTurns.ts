@@ -7,6 +7,7 @@ import {
 
 import type { ConversationSemanticProcessItem } from './deriveConversationSemanticTimeline';
 import { deriveConversationSemanticTimeline } from './deriveConversationSemanticTimeline';
+import { getSessionCommandPrompt } from './sessionCommandDisplay';
 import type { ConversationTimelineSource } from '@/shared/hooks/useConversationHistory/types';
 
 type ScriptTurnKind =
@@ -81,26 +82,12 @@ function getPromptFromActionChain(
       typ.type === 'ReviewRequest'
     ) {
       return typ.type === 'CodingAgentSessionCommandRequest'
-        ? formatSessionCommandPrompt(typ.command)
+        ? getSessionCommandPrompt(typ)
         : typ.prompt;
     }
     current = current.next_action;
   }
   return null;
-}
-
-function formatSessionCommandPrompt(
-  command: Extract<
-    ExecutorAction['typ'],
-    { type: 'CodingAgentSessionCommandRequest' }
-  >['command']
-): string {
-  if (command.type === 'clear') {
-    return '/clear';
-  }
-
-  const instructions = command.instructions?.trim();
-  return instructions ? `/compact ${instructions}` : '/compact';
 }
 
 function getLatestTokenUsageInfo(

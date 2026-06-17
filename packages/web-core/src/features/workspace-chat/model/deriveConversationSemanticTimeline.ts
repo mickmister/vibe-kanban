@@ -5,6 +5,7 @@ import type {
   ExecutionProcessState,
   PatchTypeWithKey,
 } from '@/shared/hooks/useConversationHistory/types';
+import { getSessionCommandPrompt } from './sessionCommandDisplay';
 
 export type ConversationSemanticProcessKind = 'agent' | 'script' | 'unknown';
 
@@ -40,26 +41,12 @@ function extractPromptFromActionChain(
       typ.type === 'ReviewRequest'
     ) {
       return typ.type === 'CodingAgentSessionCommandRequest'
-        ? formatSessionCommandPrompt(typ.command)
+        ? getSessionCommandPrompt(typ)
         : typ.prompt;
     }
     current = current.next_action;
   }
   return null;
-}
-
-function formatSessionCommandPrompt(
-  command: Extract<
-    ExecutionProcessState['executionProcess']['executor_action']['typ'],
-    { type: 'CodingAgentSessionCommandRequest' }
-  >['command']
-): string {
-  if (command.type === 'clear') {
-    return '/clear';
-  }
-
-  const instructions = command.instructions?.trim();
-  return instructions ? `/compact ${instructions}` : '/compact';
 }
 
 // This is the first semantic reshape after the raw source model.

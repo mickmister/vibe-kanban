@@ -1129,6 +1129,7 @@ impl LocalContainerService {
                 };
             ExecutorActionType::CodingAgentSessionCommandRequest(CodingAgentSessionCommandRequest {
                 command,
+                prompt: queued_data.message.clone(),
                 session_id: latest_session_info
                     .as_ref()
                     .map(|info| info.session_id.clone()),

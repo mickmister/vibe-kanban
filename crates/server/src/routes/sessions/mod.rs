@@ -230,6 +230,7 @@ pub async fn follow_up(
             };
         ExecutorActionType::CodingAgentSessionCommandRequest(CodingAgentSessionCommandRequest {
             command,
+            prompt: prompt.clone(),
             session_id: latest_session_info
                 .as_ref()
                 .map(|info| info.session_id.clone()),

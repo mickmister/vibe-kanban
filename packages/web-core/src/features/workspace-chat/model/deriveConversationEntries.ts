@@ -11,6 +11,7 @@ import {
   type ConversationScriptTurn,
   type ConversationTurn,
 } from './deriveConversationTurns';
+import { getSessionCommandType } from './sessionCommandDisplay';
 
 export interface DerivedConversationEntriesResult {
   readonly entries: PatchTypeWithKey[];
@@ -62,10 +63,6 @@ function appendAgentTurnEntries(
   if (turn.shouldEmitLoading) {
     turnEntries.push(makeLoadingPatch(turn.process.executionProcess.id));
   }
-}
-
-function isSessionCommandPrompt(prompt: string | null): boolean {
-  return prompt === '/clear' || prompt?.startsWith('/compact') === true;
 }
 
 function appendScriptTurnEntries(
@@ -171,11 +168,14 @@ export function deriveConversationEntries({
     const turnEntries: PatchTypeWithKey[] = [];
 
     if (isAgentTurn(turn)) {
+      const sessionCommandType = getSessionCommandType(
+        turn.process.executionProcess.executor_action.typ
+      );
       if (turn.latestTokenUsageInfo) {
         latestTokenUsageInfo = turn.latestTokenUsageInfo;
-      } else if (isSessionCommandPrompt(turn.prompt)) {
+      } else if (sessionCommandType) {
         latestTokenUsageInfo =
-          turn.prompt === '/clear' && latestTokenUsageInfo
+          sessionCommandType === 'clear' && latestTokenUsageInfo
             ? {
                 total_tokens: 0,
                 model_context_window: latestTokenUsageInfo.model_context_window,
