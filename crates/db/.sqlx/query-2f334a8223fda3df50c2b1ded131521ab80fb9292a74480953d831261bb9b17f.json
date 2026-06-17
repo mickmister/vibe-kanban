@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "INSERT INTO sessions (id, workspace_id, name, executor, agent_working_dir)\n               VALUES ($1, $2, $3, $4, $5)\n               RETURNING id AS \"id!: Uuid\",\n                         workspace_id AS \"workspace_id!: Uuid\",\n                         name,\n                         executor,\n                         agent_working_dir,\n                         context_reset_at AS \"context_reset_at?: DateTime<Utc>\",\n                         created_at AS \"created_at!: DateTime<Utc>\",\n                         updated_at AS \"updated_at!: DateTime<Utc>\"",
+  "query": "INSERT INTO sessions (id, workspace_id, name, executor, agent_working_dir)\n               VALUES ($1, $2, $3, $4, $5)\n               RETURNING id AS \"id!: Uuid\",\n                         workspace_id AS \"workspace_id!: Uuid\",\n                         name,\n                         executor,\n                         agent_working_dir,\n                         context_reset_execution_process_id AS \"context_reset_execution_process_id?: Uuid\",\n                         created_at AS \"created_at!: DateTime<Utc>\",\n                         updated_at AS \"updated_at!: DateTime<Utc>\"",
   "describe": {
     "columns": [
       {
@@ -29,9 +29,9 @@
         "type_info": "Text"
       },
       {
-        "name": "context_reset_at?: DateTime<Utc>",
+        "name": "context_reset_execution_process_id?: Uuid",
         "ordinal": 5,
-        "type_info": "Text"
+        "type_info": "Blob"
       },
       {
         "name": "created_at!: DateTime<Utc>",
@@ -58,5 +58,5 @@
       false
     ]
   },
-  "hash": "c5f5fab705f085c5e9ae8ef919327cff155ac16837db8111b1a90ac1b88a8af9"
+  "hash": "2f334a8223fda3df50c2b1ded131521ab80fb9292a74480953d831261bb9b17f"
 }

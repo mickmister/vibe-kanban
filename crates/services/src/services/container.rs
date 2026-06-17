@@ -1334,7 +1334,9 @@ pub trait ContainerService {
         }
 
         if is_clear_session_command
-            && let Err(e) = Session::mark_context_cleared(&self.db().pool, session.id).await
+            && let Err(e) =
+                Session::mark_context_cleared(&self.db().pool, session.id, execution_process.id)
+                    .await
         {
             return Err(e.into());
         }

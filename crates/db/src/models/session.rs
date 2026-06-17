@@ -26,7 +26,7 @@ pub struct Session {
     pub name: Option<String>,
     pub executor: Option<String>,
     pub agent_working_dir: Option<String>,
-    pub context_reset_at: Option<DateTime<Utc>>,
+    pub context_reset_execution_process_id: Option<Uuid>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -46,7 +46,7 @@ impl Session {
                       name,
                       executor,
                       agent_working_dir,
-                      context_reset_at AS "context_reset_at?: DateTime<Utc>",
+                      context_reset_execution_process_id AS "context_reset_execution_process_id?: Uuid",
                       created_at AS "created_at!: DateTime<Utc>",
                       updated_at AS "updated_at!: DateTime<Utc>"
                FROM sessions
@@ -71,7 +71,7 @@ impl Session {
                       s.name,
                       s.executor,
                       s.agent_working_dir,
-                      s.context_reset_at AS "context_reset_at?: DateTime<Utc>",
+                      s.context_reset_execution_process_id AS "context_reset_execution_process_id?: Uuid",
                       s.created_at AS "created_at!: DateTime<Utc>",
                       s.updated_at AS "updated_at!: DateTime<Utc>"
                FROM sessions s
@@ -103,7 +103,7 @@ impl Session {
                       s.name,
                       s.executor,
                       s.agent_working_dir,
-                      s.context_reset_at AS "context_reset_at?: DateTime<Utc>",
+                      s.context_reset_execution_process_id AS "context_reset_execution_process_id?: Uuid",
                       s.created_at AS "created_at!: DateTime<Utc>",
                       s.updated_at AS "updated_at!: DateTime<Utc>"
                FROM sessions s
@@ -134,7 +134,7 @@ impl Session {
                       name,
                       executor,
                       agent_working_dir,
-                      context_reset_at,
+                      context_reset_execution_process_id,
                       created_at,
                       updated_at
                FROM sessions
@@ -165,7 +165,7 @@ impl Session {
                          name,
                          executor,
                          agent_working_dir,
-                         context_reset_at AS "context_reset_at?: DateTime<Utc>",
+                         context_reset_execution_process_id AS "context_reset_execution_process_id?: Uuid",
                          created_at AS "created_at!: DateTime<Utc>",
                          updated_at AS "updated_at!: DateTime<Utc>""#,
             id,
@@ -233,17 +233,19 @@ impl Session {
         Ok(())
     }
 
-    pub async fn mark_context_cleared(pool: &SqlitePool, id: Uuid) -> Result<(), sqlx::Error> {
-        let now = Utc::now().format("%Y-%m-%d %H:%M:%S%.3f").to_string();
-
+    pub async fn mark_context_cleared(
+        pool: &SqlitePool,
+        id: Uuid,
+        execution_process_id: Uuid,
+    ) -> Result<(), sqlx::Error> {
         sqlx::query(
             r#"UPDATE sessions
-               SET context_reset_at = $2,
-                   updated_at = $2
+               SET context_reset_execution_process_id = $2,
+                   updated_at = datetime('now', 'subsec')
                WHERE id = $1"#,
         )
         .bind(id)
-        .bind(now)
+        .bind(execution_process_id)
         .execute(pool)
         .await?;
         Ok(())
