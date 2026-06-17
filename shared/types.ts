@@ -581,7 +581,7 @@ export type CodingAgentSessionCommandRequest = { command: SessionCommand,
 /**
  * Original user-entered slash command text for chat display and executor input.
  */
-prompt: string,
+prompt: string, 
 /**
  * Agent session/thread id to resume when the command needs provider context.
  */
