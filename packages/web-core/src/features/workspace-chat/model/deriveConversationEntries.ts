@@ -64,6 +64,10 @@ function appendAgentTurnEntries(
   }
 }
 
+function isSessionCommandPrompt(prompt: string | null): boolean {
+  return prompt === '/clear' || prompt?.startsWith('/compact') === true;
+}
+
 function appendScriptTurnEntries(
   turn: ConversationScriptTurn,
   turnEntries: PatchTypeWithKey[],
@@ -169,6 +173,14 @@ export function deriveConversationEntries({
     if (isAgentTurn(turn)) {
       if (turn.latestTokenUsageInfo) {
         latestTokenUsageInfo = turn.latestTokenUsageInfo;
+      } else if (isSessionCommandPrompt(turn.prompt)) {
+        latestTokenUsageInfo =
+          turn.prompt === '/clear' && latestTokenUsageInfo
+            ? {
+                total_tokens: 0,
+                model_context_window: latestTokenUsageInfo.model_context_window,
+              }
+            : null;
       }
 
       if (turn.kind === 'agent_pending_approval') {

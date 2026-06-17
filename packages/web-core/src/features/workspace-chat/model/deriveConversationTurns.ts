@@ -77,13 +77,30 @@ function getPromptFromActionChain(
     if (
       typ.type === 'CodingAgentInitialRequest' ||
       typ.type === 'CodingAgentFollowUpRequest' ||
+      typ.type === 'CodingAgentSessionCommandRequest' ||
       typ.type === 'ReviewRequest'
     ) {
-      return typ.prompt;
+      return typ.type === 'CodingAgentSessionCommandRequest'
+        ? formatSessionCommandPrompt(typ.command)
+        : typ.prompt;
     }
     current = current.next_action;
   }
   return null;
+}
+
+function formatSessionCommandPrompt(
+  command: Extract<
+    ExecutorAction['typ'],
+    { type: 'CodingAgentSessionCommandRequest' }
+  >['command']
+): string {
+  if (command.type === 'clear') {
+    return '/clear';
+  }
+
+  const instructions = command.instructions?.trim();
+  return instructions ? `/compact ${instructions}` : '/compact';
 }
 
 function getLatestTokenUsageInfo(
