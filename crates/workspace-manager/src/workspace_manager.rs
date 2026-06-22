@@ -11,7 +11,10 @@ use db::{
         requests::WorkspaceRepoInput,
         session::Session,
         workspace::Workspace as DbWorkspace,
-        workspace_repo::{CreateWorkspaceRepo, RepoWithTargetBranch, WorkspaceRepo},
+        workspace_repo::{
+            CreateWorkspaceRepo, RepoWithTargetBranch, WorkspaceRepo,
+            branch_names_conflict_as_self_target,
+        },
     },
 };
 use git::{GitService, GitServiceError};
@@ -164,6 +167,41 @@ mod tests {
         );
 
         assert_eq!(repo.branch_name("vk/workspace"), "vk/workspace");
+    }
+
+    #[test]
+    fn direct_checkout_rejects_self_targeting_before_git_lookup() {
+        let repo = repo("repo");
+        let git = git::GitService::new();
+
+        let err = super::WorkspaceManager::validate_direct_checkout_branch(
+            &repo, "feature", "feature", &git,
+        )
+        .expect_err("direct checkout branch must not match target/base branch");
+
+        assert!(matches!(
+            err,
+            super::WorkspaceError::DirectCheckoutBranchMatchesTarget { .. }
+        ));
+    }
+
+    #[test]
+    fn direct_checkout_rejects_remote_tracking_form_of_same_branch() {
+        let repo = repo("repo");
+        let git = git::GitService::new();
+
+        let err = super::WorkspaceManager::validate_direct_checkout_branch(
+            &repo,
+            "main",
+            "origin/main",
+            &git,
+        )
+        .expect_err("direct checkout branch must not match remote target/base branch");
+
+        assert!(matches!(
+            err,
+            super::WorkspaceError::DirectCheckoutBranchMatchesTarget { .. }
+        ));
     }
 }
 
@@ -347,7 +385,7 @@ impl WorkspaceManager {
         target_branch: &str,
         git: &GitService,
     ) -> Result<(), WorkspaceError> {
-        if checkout_branch == target_branch {
+        if branch_names_conflict_as_self_target(checkout_branch, target_branch) {
             return Err(WorkspaceError::DirectCheckoutBranchMatchesTarget {
                 repo_name: repo.name.clone(),
             });

@@ -74,7 +74,16 @@ function safeLocalCheckoutBranches(
 ) {
   return branches.filter(
     (branch) =>
-      !branch.is_remote && !branch.is_current && branch.name !== targetBranch
+      !branch.is_remote &&
+      !branch.is_current &&
+      (!targetBranch || !isSelfTargetingBranch(branch.name, targetBranch))
+  );
+}
+
+function isSelfTargetingBranch(sourceBranch: string, targetBranch: string) {
+  return (
+    sourceBranch === targetBranch ||
+    targetBranch.split('/').slice(1).join('/') === sourceBranch
   );
 }
 
@@ -298,7 +307,11 @@ export function CreateModeRepoPickerBar({
           const selectedBranch = await pickBranchForRepo(repo);
           if (!selectedBranch) return;
           setTargetBranch(repo.id, selectedBranch);
-          if (checkoutBranches[repo.id] === selectedBranch) {
+          const checkoutBranch = checkoutBranches[repo.id];
+          if (
+            checkoutBranch &&
+            isSelfTargetingBranch(checkoutBranch, selectedBranch)
+          ) {
             setCheckoutBranch(repo.id, null);
           }
         },

@@ -15,7 +15,7 @@ use db::models::{
     merge::{Merge, MergeStatus, PrMerge, PullRequestInfo},
     repo::{Repo, RepoError},
     workspace::Workspace,
-    workspace_repo::WorkspaceRepo,
+    workspace_repo::{WorkspaceRepo, branch_names_conflict_as_self_target},
 };
 use deployment::Deployment;
 use git::{ConflictOp, GitCliError, GitServiceError};
@@ -132,6 +132,21 @@ fn git_status_cache_fresh(entry: &CachedGitStatusResponse) -> bool {
     entry.computed_at.elapsed() < GIT_STATUS_CACHE_TTL
 }
 
+fn ensure_distinct_source_and_target(
+    source_branch: &str,
+    target_branch: &str,
+    repo_name: &str,
+) -> Result<(), ApiError> {
+    if branch_names_conflict_as_self_target(source_branch, target_branch) {
+        return Err(ApiError::BadRequest(format!(
+            "Cannot use branch '{}' as both the workspace branch and target/base branch for repository '{}'. Select a different target/base branch.",
+            source_branch, repo_name
+        )));
+    }
+
+    Ok(())
+}
+
 async fn invalidate_git_status_cache(workspace_id: Uuid) {
     let cache = git_status_cache();
     let mut cache_guard = cache.lock().await;
@@ -244,6 +259,11 @@ pub async fn merge_workspace(
     let is_target_remote = deployment
         .git()
         .is_remote_branch(&repo.path, &workspace_repo.target_branch)?;
+    ensure_distinct_source_and_target(
+        workspace_repo.branch_name(&workspace.branch),
+        &workspace_repo.target_branch,
+        &repo.name,
+    )?;
     if is_target_remote {
         return Err(ApiError::BadRequest(
             "Cannot merge directly into a remote branch. Please create a pull request instead."
@@ -502,6 +522,7 @@ async fn compute_workspace_branch_status(
         };
         let target_branch = workspace_repo.target_branch.clone();
         let branch_name = workspace_repo.branch_name(&workspace.branch);
+        ensure_distinct_source_and_target(branch_name, &target_branch, &repo.name)?;
 
         let repo_merges = merges_by_repo.get(&repo.id).cloned().unwrap_or_default();
         let worktree_path = workspace_dir.join(&repo.name);
@@ -633,6 +654,12 @@ pub async fn change_target_branch(
             .as_str(),
         )));
     };
+
+    ensure_distinct_source_and_target(
+        workspace_repo.branch_name(&workspace.branch),
+        &new_target_branch,
+        &repo.name,
+    )?;
 
     WorkspaceRepo::update_target_branch(pool, workspace.id, repo_id, &new_target_branch).await?;
 
@@ -825,6 +852,9 @@ pub async fn rebase_workspace(
     let new_base_branch = payload
         .new_base_branch
         .unwrap_or_else(|| workspace_repo.target_branch.clone());
+    let source_branch = workspace_repo.branch_name(&workspace.branch);
+
+    ensure_distinct_source_and_target(source_branch, &new_base_branch, &repo.name)?;
 
     match deployment
         .git()
@@ -862,7 +892,7 @@ pub async fn rebase_workspace(
         &worktree_path,
         &new_base_branch,
         &old_base_branch,
-        workspace_repo.branch_name(&workspace.branch),
+        source_branch,
     );
     if let Err(e) = result {
         return match e {

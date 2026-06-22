@@ -4,6 +4,7 @@ use axum::{Json, extract::State, response::Json as ResponseJson};
 use db::models::{
     requests::{
         CreateAndStartWorkspaceRequest, CreateAndStartWorkspaceResponse, CreateWorkspaceApiRequest,
+        WorkspaceRepoInput,
     },
     workspace::{CreateWorkspace, Workspace},
 };
@@ -45,6 +46,73 @@ pub(crate) async fn create_workspace_record(
     .await?;
 
     Ok(workspace)
+}
+
+fn shared_direct_checkout_branch(repos: &[WorkspaceRepoInput]) -> Option<&str> {
+    let mut direct_branch: Option<&str> = None;
+
+    for repo in repos {
+        if repo.create_branch {
+            return None;
+        }
+
+        let checkout_branch = repo.checkout_branch.as_deref()?;
+        match direct_branch {
+            Some(existing) if existing != checkout_branch => return None,
+            Some(_) => {}
+            None => direct_branch = Some(checkout_branch),
+        }
+    }
+
+    direct_branch
+}
+
+#[cfg(test)]
+mod tests {
+    use db::models::requests::WorkspaceRepoInput;
+    use uuid::Uuid;
+
+    use super::shared_direct_checkout_branch;
+
+    fn repo_input(
+        create_branch: bool,
+        target_branch: &str,
+        checkout_branch: Option<&str>,
+    ) -> WorkspaceRepoInput {
+        WorkspaceRepoInput {
+            repo_id: Uuid::new_v4(),
+            target_branch: target_branch.to_string(),
+            create_branch,
+            checkout_branch: checkout_branch.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn shared_direct_checkout_branch_uses_pr_like_source_branch_semantics() {
+        let repos = vec![repo_input(false, "main", Some("feature"))];
+
+        assert_eq!(shared_direct_checkout_branch(&repos), Some("feature"));
+    }
+
+    #[test]
+    fn shared_direct_checkout_branch_keeps_generated_branch_for_mixed_modes() {
+        let repos = vec![
+            repo_input(false, "main", Some("feature")),
+            repo_input(true, "main", None),
+        ];
+
+        assert_eq!(shared_direct_checkout_branch(&repos), None);
+    }
+
+    #[test]
+    fn shared_direct_checkout_branch_requires_all_direct_repos_to_share_branch() {
+        let repos = vec![
+            repo_input(false, "main", Some("feature-a")),
+            repo_input(false, "main", Some("feature-b")),
+        ];
+
+        assert_eq!(shared_direct_checkout_branch(&repos), None);
+    }
 }
 
 pub async fn create_workspace(
@@ -244,6 +312,16 @@ pub async fn create_and_start_workspace(
         .workspace_manager()
         .load_managed_workspace(create_workspace_record(&deployment, name).await?)
         .await?;
+
+    if let Some(branch_name) = shared_direct_checkout_branch(&repos) {
+        Workspace::update_branch_name(
+            &deployment.db().pool,
+            managed_workspace.workspace.id,
+            branch_name,
+        )
+        .await?;
+        managed_workspace.workspace.branch = branch_name.to_string();
+    }
 
     for repo in &repos {
         managed_workspace

@@ -39,6 +39,13 @@ function truncateBranchLabel(branch: string) {
     : branch;
 }
 
+function isSelfTargetingBranch(sourceBranch: string, targetBranch: string) {
+  return (
+    sourceBranch === targetBranch ||
+    targetBranch.split('/').slice(1).join('/') === sourceBranch
+  );
+}
+
 interface CreateChatBoxContainerProps {
   onWorkspaceCreated: (workspaceId: string) => void;
   chatViewMode?: ChatViewMode;
@@ -195,7 +202,11 @@ export function CreateChatBoxContainer({
     (repo) =>
       !!targetBranches[repo.id] &&
       ((createBranchByRepo[repo.id] ?? true) || !!checkoutBranches[repo.id]) &&
-      targetBranches[repo.id] !== checkoutBranches[repo.id]
+      ((createBranchByRepo[repo.id] ?? true) ||
+        !isSelfTargetingBranch(
+          checkoutBranches[repo.id]!,
+          targetBranches[repo.id]!
+        ))
   );
 
   // Determine if we can submit

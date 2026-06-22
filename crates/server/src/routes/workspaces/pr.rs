@@ -15,7 +15,9 @@ use db::models::{
     repo::{Repo, RepoError},
     session::{CreateSession, Session},
     workspace::{CreateWorkspace, Workspace, WorkspaceError},
-    workspace_repo::{CreateWorkspaceRepo, WorkspaceRepo},
+    workspace_repo::{
+        CreateWorkspaceRepo, WorkspaceRepo, branch_names_conflict_as_self_target,
+    },
 };
 use deployment::Deployment;
 use executors::actions::{
@@ -91,6 +93,34 @@ pub enum GetPrCommentsError {
 #[derive(Debug, Deserialize, TS)]
 pub struct GetPrCommentsQuery {
     pub repo_id: Uuid,
+}
+
+fn remote_branch_ref(remote_name: &str, branch: &str) -> String {
+    format!("{remote_name}/{branch}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{branch_names_conflict_as_self_target, remote_branch_ref};
+
+    #[test]
+    fn pr_created_workspace_keeps_head_and_base_branch_semantics_distinct() {
+        let head_branch = "contributor/feature";
+        let target_branch = remote_branch_ref("origin", "main");
+
+        assert_eq!(head_branch, "contributor/feature");
+        assert_eq!(target_branch, "origin/main");
+        assert_ne!(head_branch, target_branch);
+    }
+
+    #[test]
+    fn pr_creation_rejects_remote_tracking_form_of_same_branch() {
+        assert!(branch_names_conflict_as_self_target("main", "origin/main"));
+        assert!(!branch_names_conflict_as_self_target(
+            "feature",
+            "origin/main"
+        ));
+    }
 }
 
 async fn trigger_pr_description_follow_up(
@@ -217,6 +247,12 @@ pub async fn create_pr(
 
     let git = deployment.git();
     let branch_name = workspace_repo.branch_name(&workspace.branch);
+    if branch_names_conflict_as_self_target(branch_name, &target_branch) {
+        return Err(ApiError::BadRequest(format!(
+            "Cannot create a pull request from branch '{branch_name}' to itself. Select a different target/base branch."
+        )));
+    }
+
     let push_remote = git.resolve_remote_for_branch(&repo_path, branch_name)?;
 
     // Try to get the remote from the branch name (works for remote-tracking branches like "upstream/main").
@@ -715,7 +751,7 @@ pub async fn create_workspace_from_pr(
     };
 
     // Use target branch initially - we'll switch to PR branch via gh pr checkout
-    let target_branch_ref = format!("{}/{}", remote.name, payload.base_branch);
+    let target_branch_ref = remote_branch_ref(&remote.name, &payload.base_branch);
 
     // Create workspace with target branch initially
     let workspace_id = Uuid::new_v4();
@@ -789,7 +825,7 @@ pub async fn create_workspace_from_pr(
         pool,
         workspace.id,
         payload.repo_id,
-        &format!("{}/{}", remote.name, payload.base_branch),
+        &remote_branch_ref(&remote.name, &payload.base_branch),
         payload.pr_number,
         &payload.pr_url,
     )

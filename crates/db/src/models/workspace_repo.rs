@@ -8,6 +8,13 @@ use uuid::Uuid;
 
 use super::repo::Repo;
 
+pub fn branch_names_conflict_as_self_target(source_branch: &str, target_branch: &str) -> bool {
+    source_branch == target_branch
+        || target_branch
+            .split_once('/')
+            .is_some_and(|(_, short_target)| short_target == source_branch)
+}
+
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize, TS)]
 pub struct WorkspaceRepo {
     pub id: Uuid,
@@ -350,5 +357,26 @@ mod tests {
 
         assert_eq!(repo_a.branch_name("vk/workspace"), "feature-a");
         assert_eq!(repo_b.branch_name("vk/workspace"), "feature-b");
+    }
+
+    #[test]
+    fn direct_mode_keeps_source_branch_distinct_from_target_branch() {
+        let repo = workspace_repo(false, Some("feature"));
+
+        assert_eq!(repo.branch_name("vk/workspace"), "feature");
+        assert_eq!(repo.target_branch, "main");
+        assert_ne!(repo.branch_name("vk/workspace"), repo.target_branch);
+    }
+
+    #[test]
+    fn self_target_detection_handles_remote_tracking_branch_names() {
+        assert!(super::branch_names_conflict_as_self_target(
+            "main",
+            "origin/main"
+        ));
+        assert!(!super::branch_names_conflict_as_self_target(
+            "feature",
+            "origin/main"
+        ));
     }
 }
