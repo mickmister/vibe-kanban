@@ -154,6 +154,59 @@ async fn invalidate_git_status_cache(workspace_id: Uuid) {
     cache_guard.remove(&workspace_id);
 }
 
+#[cfg(test)]
+mod tests {
+    use super::ensure_distinct_source_and_target;
+
+    #[test]
+    fn target_branch_change_allows_distinct_direct_checkout_branch() {
+        let result = ensure_distinct_source_and_target(
+            "feature",
+            "main",
+            false,
+            "repo",
+        );
+
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn target_branch_change_rejects_exact_source_branch() {
+        let result = ensure_distinct_source_and_target(
+            "feature",
+            "feature",
+            false,
+            "repo",
+        );
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn target_branch_change_rejects_remote_tracking_source_branch() {
+        let result = ensure_distinct_source_and_target(
+            "main",
+            "origin/main",
+            true,
+            "repo",
+        );
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn target_branch_change_allows_local_slash_branch_names() {
+        let result = ensure_distinct_source_and_target(
+            "bar/baz",
+            "foo/bar/baz",
+            false,
+            "repo",
+        );
+
+        assert!(result.is_ok());
+    }
+}
+
 #[derive(Deserialize, Debug, TS)]
 pub struct ChangeTargetBranchRequest {
     pub repo_id: Uuid,

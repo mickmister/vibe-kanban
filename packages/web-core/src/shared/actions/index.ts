@@ -74,6 +74,7 @@ import { WorkspacesGuideDialog } from '@/shared/dialogs/shared/WorkspacesGuideDi
 import { SettingsDialog } from '@/shared/dialogs/settings/SettingsDialog';
 import { CreateWorkspaceFromPrDialog } from '@/shared/dialogs/command-bar/CreateWorkspaceFromPrDialog';
 import { buildWorkspaceCreateInitialState } from '@/shared/lib/workspaceCreateState';
+import { filterSelfTargetBranches } from '@/shared/lib/branchNames';
 import { setCreateModeSeedState } from '@/features/create-mode/model/createModeSeedStore';
 
 // Mirrored sidebar icon for right sidebar toggle
@@ -126,6 +127,15 @@ async function getWorkspace(
   }
   // Fetch from API if not in cache
   return workspacesApi.get(workspaceId);
+}
+
+function getEffectiveWorkspaceRepoSourceBranch(
+  workspace: Workspace,
+  repo: { create_branch?: boolean; checkout_branch?: string | null }
+): string {
+  return repo.create_branch === false
+    ? (repo.checkout_branch ?? workspace.branch)
+    : workspace.branch;
 }
 
 // Helper to invalidate workspace-related queries
@@ -1062,12 +1072,22 @@ export const Actions = {
     requiresTarget: ActionTargetType.GIT,
     isVisible: (ctx) => ctx.hasWorkspace && ctx.hasGitRepos,
     execute: async (ctx, workspaceId, repoId) => {
-      const branches = await repoApi.getBranches(repoId);
+      const [branches, workspace, workspaceRepos] = await Promise.all([
+        repoApi.getBranches(repoId),
+        getWorkspace(ctx.queryClient, workspaceId),
+        workspacesApi.getRepos(workspaceId),
+      ]);
+      const workspaceRepo = workspaceRepos.find((repo) => repo.id === repoId);
+      const sourceBranch = workspaceRepo
+        ? getEffectiveWorkspaceRepoSourceBranch(workspace, workspaceRepo)
+        : workspace.branch;
       await ChangeTargetDialog.show({
-        branches: branches.map((branch) => ({
-          name: branch.name,
-          isCurrent: branch.is_current,
-        })),
+        branches: filterSelfTargetBranches(branches, sourceBranch).map(
+          (branch) => ({
+            name: branch.name,
+            isCurrent: branch.is_current,
+          })
+        ),
         onChangeTargetBranch: async (newTargetBranch) => {
           await workspacesApi.change_target_branch(workspaceId, {
             new_target_branch: newTargetBranch,

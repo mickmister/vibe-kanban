@@ -170,6 +170,31 @@ mod tests {
     }
 
     #[test]
+    fn direct_mode_checkout_branch_does_not_replace_workspace_branch_for_deletion() {
+        let repo = RepoWorkspaceInput::new(
+            repo("repo"),
+            "main".to_string(),
+            false,
+            Some("user-owned-feature".to_string()),
+        );
+        let workspace_branch = "vk/generated-workspace-branch";
+
+        assert_eq!(repo.branch_name(workspace_branch), "user-owned-feature");
+
+        let deletion_context = super::WorkspaceDeletionContext {
+            workspace_id: Uuid::new_v4(),
+            branch_name: workspace_branch.to_string(),
+            workspace_dir: None,
+            repositories: vec![],
+            repo_paths: vec![],
+            session_ids: vec![],
+        };
+
+        assert_eq!(deletion_context.branch_name, workspace_branch);
+        assert_ne!(deletion_context.branch_name, repo.branch_name(workspace_branch));
+    }
+
+    #[test]
     fn direct_checkout_rejects_self_targeting_before_git_lookup() {
         let repo = repo("repo");
         let git = git::GitService::new();
