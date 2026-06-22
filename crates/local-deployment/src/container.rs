@@ -200,10 +200,8 @@ impl LocalContainerService {
 
         let repositories =
             WorkspaceRepo::find_repos_for_workspace(&self.db.pool, workspace_id).await?;
-        let workspace_repos_by_id: HashMap<_, _> = workspace_repos
-            .iter()
-            .map(|wr| (wr.repo_id, wr))
-            .collect();
+        let workspace_repos_by_id: HashMap<_, _> =
+            workspace_repos.iter().map(|wr| (wr.repo_id, wr)).collect();
 
         let workspace_inputs: Vec<RepoWorkspaceInput> = repositories
             .iter()
@@ -219,6 +217,7 @@ impl LocalContainerService {
                     repo.clone(),
                     workspace_repo.target_branch.clone(),
                     workspace_repo.create_branch,
+                    workspace_repo.checkout_branch.clone(),
                 ))
             })
             .collect::<Result<_, ContainerError>>()?;
@@ -1547,10 +1546,8 @@ impl ContainerService for LocalContainerService {
     {
         let workspace_repos =
             WorkspaceRepo::find_by_workspace_id(&self.db.pool, workspace.id).await?;
-        let workspace_repos_by_id: HashMap<_, _> = workspace_repos
-            .iter()
-            .map(|wr| (wr.repo_id, wr))
-            .collect();
+        let workspace_repos_by_id: HashMap<_, _> =
+            workspace_repos.iter().map(|wr| (wr.repo_id, wr)).collect();
 
         let repositories =
             WorkspaceRepo::find_repos_for_workspace(&self.db.pool, workspace.id).await?;

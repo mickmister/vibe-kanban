@@ -1,4 +1,7 @@
-use std::path::{Path, PathBuf};
+use std::{
+    collections::HashSet,
+    path::{Path, PathBuf},
+};
 
 use db::{
     DBService,
@@ -22,19 +25,30 @@ pub struct RepoWorkspaceInput {
     pub repo: Repo,
     pub target_branch: String,
     pub create_branch: bool,
+    pub checkout_branch: Option<String>,
 }
 
 impl RepoWorkspaceInput {
-    pub fn new(repo: Repo, target_branch: String, create_branch: bool) -> Self {
+    pub fn new(
+        repo: Repo,
+        target_branch: String,
+        create_branch: bool,
+        checkout_branch: Option<String>,
+    ) -> Self {
         Self {
             repo,
             target_branch,
             create_branch,
+            checkout_branch,
         }
     }
 
     fn branch_name<'a>(&'a self, workspace_branch: &'a str) -> &'a str {
-        workspace_branch
+        if self.create_branch {
+            workspace_branch
+        } else {
+            self.checkout_branch.as_deref().unwrap_or(workspace_branch)
+        }
     }
 }
 
@@ -60,13 +74,17 @@ pub enum WorkspaceError {
     DirectCheckoutBranchRequired { repo_name: String },
     #[error("Direct checkout branch '{branch}' in repository '{repo_name}' must be a local branch")]
     DirectCheckoutBranchNotLocal { repo_name: String, branch: String },
-    #[error("Direct checkout branch '{branch}' in repository '{repo_name}' is already checked out at {path}")]
+    #[error(
+        "Direct checkout branch '{branch}' in repository '{repo_name}' is already checked out at {path}"
+    )]
     DirectCheckoutBranchAlreadyCheckedOut {
         repo_name: String,
         branch: String,
         path: PathBuf,
     },
-    #[error("Direct checkout branch and target/base branch must be different for repository '{repo_name}'")]
+    #[error(
+        "Direct checkout branch and target/base branch must be different for repository '{repo_name}'"
+    )]
     DirectCheckoutBranchMatchesTarget { repo_name: String },
     #[error("No repositories provided")]
     NoRepositories,
@@ -88,6 +106,65 @@ pub struct RepoWorktree {
 pub struct WorktreeContainer {
     pub workspace_dir: PathBuf,
     pub worktrees: Vec<RepoWorktree>,
+}
+
+#[cfg(test)]
+mod tests {
+    use chrono::Utc;
+    use db::models::repo::Repo;
+    use uuid::Uuid;
+
+    use super::RepoWorkspaceInput;
+
+    fn repo(name: &str) -> Repo {
+        Repo {
+            id: Uuid::new_v4(),
+            path: format!("/tmp/{name}").into(),
+            name: name.to_string(),
+            display_name: name.to_string(),
+            setup_script: None,
+            cleanup_script: None,
+            archive_script: None,
+            copy_files: None,
+            parallel_setup_script: false,
+            dev_server_script: None,
+            default_target_branch: None,
+            default_working_dir: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        }
+    }
+
+    #[test]
+    fn direct_mode_inputs_allow_different_checkout_branch_names() {
+        let repo_a = RepoWorkspaceInput::new(
+            repo("repo-a"),
+            "main".to_string(),
+            false,
+            Some("feature-a".to_string()),
+        );
+        let repo_b = RepoWorkspaceInput::new(
+            repo("repo-b"),
+            "main".to_string(),
+            false,
+            Some("feature-b".to_string()),
+        );
+
+        assert_eq!(repo_a.branch_name("vk/workspace"), "feature-a");
+        assert_eq!(repo_b.branch_name("vk/workspace"), "feature-b");
+    }
+
+    #[test]
+    fn create_branch_inputs_continue_to_use_workspace_branch() {
+        let repo = RepoWorkspaceInput::new(
+            repo("repo"),
+            "main".to_string(),
+            true,
+            Some("ignored-direct-branch".to_string()),
+        );
+
+        assert_eq!(repo.branch_name("vk/workspace"), "vk/workspace");
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -121,6 +198,7 @@ impl ManagedWorkspace {
             repo_id: repo.repo_id,
             target_branch: repo.target_branch.clone(),
             create_branch: repo.create_branch,
+            checkout_branch: repo.checkout_branch.clone(),
         };
 
         WorkspaceRepo::create_many(
@@ -149,31 +227,7 @@ impl ManagedWorkspace {
         repo_ref: &WorkspaceRepoInput,
         git: &GitService,
     ) -> Result<(), WorkspaceError> {
-        let repo = Repo::find_by_id(&self.db.pool, repo_ref.repo_id)
-            .await?
-            .ok_or(RepoError::NotFound)?;
-
-        if !git.check_branch_exists(&repo.path, &repo_ref.target_branch)? {
-            return Err(WorkspaceError::BranchNotFound {
-                repo_name: repo.name,
-                branch: repo_ref.target_branch.clone(),
-            });
-        }
-
-        if !repo_ref.create_branch {
-            let checkout_branch = repo_ref.checkout_branch.as_deref().ok_or_else(|| {
-                WorkspaceError::DirectCheckoutBranchRequired {
-                    repo_name: repo.name.clone(),
-                }
-            })?;
-
-            Self::validate_direct_checkout_branch(
-                &repo,
-                checkout_branch,
-                &repo_ref.target_branch,
-                git,
-            )?;
-        }
+        WorkspaceManager::validate_repository_input(&self.db.pool, repo_ref, git).await?;
 
         if WorkspaceRepo::find_by_workspace_and_repo_id(
             &self.db.pool,
@@ -188,37 +242,6 @@ impl ManagedWorkspace {
 
         self.attach_repository(repo_ref).await?;
         self.refresh().await?;
-        Ok(())
-    }
-
-
-    fn validate_direct_checkout_branch(
-        repo: &Repo,
-        checkout_branch: &str,
-        target_branch: &str,
-        git: &GitService,
-    ) -> Result<(), WorkspaceError> {
-        if checkout_branch == target_branch {
-            return Err(WorkspaceError::DirectCheckoutBranchMatchesTarget {
-                repo_name: repo.name.clone(),
-            });
-        }
-
-        if !git.is_local_branch(&repo.path, checkout_branch)? {
-            return Err(WorkspaceError::DirectCheckoutBranchNotLocal {
-                repo_name: repo.name.clone(),
-                branch: checkout_branch.to_string(),
-            });
-        }
-
-        if let Some(path) = git.find_checkout_path_for_branch(&repo.path, checkout_branch)? {
-            return Err(WorkspaceError::DirectCheckoutBranchAlreadyCheckedOut {
-                repo_name: repo.name.clone(),
-                branch: checkout_branch.to_string(),
-                path,
-            });
-        }
-
         Ok(())
     }
 
@@ -267,6 +290,85 @@ pub struct WorkspaceManager {
 impl WorkspaceManager {
     pub fn new(db: DBService) -> Self {
         Self { db }
+    }
+
+    pub async fn validate_repository_inputs(
+        &self,
+        repos: &[WorkspaceRepoInput],
+        git: &GitService,
+    ) -> Result<(), WorkspaceError> {
+        let mut seen_repo_ids = HashSet::new();
+        for repo_ref in repos {
+            if !seen_repo_ids.insert(repo_ref.repo_id) {
+                return Err(WorkspaceError::RepoAlreadyAttached);
+            }
+            Self::validate_repository_input(&self.db.pool, repo_ref, git).await?;
+        }
+        Ok(())
+    }
+
+    async fn validate_repository_input(
+        pool: &sqlx::SqlitePool,
+        repo_ref: &WorkspaceRepoInput,
+        git: &GitService,
+    ) -> Result<Repo, WorkspaceError> {
+        let repo = Repo::find_by_id(pool, repo_ref.repo_id)
+            .await?
+            .ok_or(RepoError::NotFound)?;
+
+        if !git.check_branch_exists(&repo.path, &repo_ref.target_branch)? {
+            return Err(WorkspaceError::BranchNotFound {
+                repo_name: repo.name.clone(),
+                branch: repo_ref.target_branch.clone(),
+            });
+        }
+
+        if !repo_ref.create_branch {
+            let checkout_branch = repo_ref.checkout_branch.as_deref().ok_or_else(|| {
+                WorkspaceError::DirectCheckoutBranchRequired {
+                    repo_name: repo.name.clone(),
+                }
+            })?;
+
+            Self::validate_direct_checkout_branch(
+                &repo,
+                checkout_branch,
+                &repo_ref.target_branch,
+                git,
+            )?;
+        }
+
+        Ok(repo)
+    }
+
+    fn validate_direct_checkout_branch(
+        repo: &Repo,
+        checkout_branch: &str,
+        target_branch: &str,
+        git: &GitService,
+    ) -> Result<(), WorkspaceError> {
+        if checkout_branch == target_branch {
+            return Err(WorkspaceError::DirectCheckoutBranchMatchesTarget {
+                repo_name: repo.name.clone(),
+            });
+        }
+
+        if !git.is_local_branch(&repo.path, checkout_branch)? {
+            return Err(WorkspaceError::DirectCheckoutBranchNotLocal {
+                repo_name: repo.name.clone(),
+                branch: checkout_branch.to_string(),
+            });
+        }
+
+        if let Some(path) = git.find_checkout_path_for_branch(&repo.path, checkout_branch)? {
+            return Err(WorkspaceError::DirectCheckoutBranchAlreadyCheckedOut {
+                repo_name: repo.name.clone(),
+                branch: checkout_branch.to_string(),
+                path,
+            });
+        }
+
+        Ok(())
     }
 
     pub async fn load_managed_workspace(

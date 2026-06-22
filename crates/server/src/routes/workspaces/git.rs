@@ -329,14 +329,11 @@ pub async fn push_workspace_branch(
     let workspace_path = Path::new(&container_ref);
     let worktree_path = workspace_path.join(&repo.name);
 
-    match deployment
-        .git()
-        .push_to_remote(
-            &worktree_path,
-            workspace_repo.branch_name(&workspace.branch),
-            false,
-        )
-    {
+    match deployment.git().push_to_remote(
+        &worktree_path,
+        workspace_repo.branch_name(&workspace.branch),
+        false,
+    ) {
         Ok(_) => {
             invalidate_git_status_cache(workspace.id).await;
             if let Ok(client) = deployment.remote_client() {
@@ -388,13 +385,11 @@ pub async fn force_push_workspace_branch(
     let workspace_path = Path::new(&container_ref);
     let worktree_path = workspace_path.join(&repo.name);
 
-    deployment
-        .git()
-        .push_to_remote(
-            &worktree_path,
-            workspace_repo.branch_name(&workspace.branch),
-            true,
-        )?;
+    deployment.git().push_to_remote(
+        &worktree_path,
+        workspace_repo.branch_name(&workspace.branch),
+        true,
+    )?;
 
     invalidate_git_status_cache(workspace.id).await;
 
@@ -477,10 +472,8 @@ async fn compute_workspace_branch_status(
 
     let repositories = WorkspaceRepo::find_repos_for_workspace(pool, workspace.id).await?;
     let workspace_repos = WorkspaceRepo::find_by_workspace_id(pool, workspace.id).await?;
-    let workspace_repos_by_id: HashMap<_, _> = workspace_repos
-        .iter()
-        .map(|wr| (wr.repo_id, wr))
-        .collect();
+    let workspace_repos_by_id: HashMap<_, _> =
+        workspace_repos.iter().map(|wr| (wr.repo_id, wr)).collect();
 
     let container_ref = deployment
         .container()
@@ -559,11 +552,10 @@ async fn compute_workspace_branch_status(
             )?;
             (Some(ahead), Some(behind))
         } else {
-            let (a, b) = deployment.git().get_branch_status(
-                &repo.path,
-                branch_name,
-                &target_branch,
-            )?;
+            let (a, b) =
+                deployment
+                    .git()
+                    .get_branch_status(&repo.path, branch_name, &target_branch)?;
             (Some(a), Some(b))
         };
 

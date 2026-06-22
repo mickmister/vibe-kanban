@@ -23,22 +23,16 @@ use crate::{
 pub(crate) async fn create_workspace_record(
     deployment: &DeploymentImpl,
     name: Option<String>,
-    branch_override: Option<String>,
 ) -> Result<Workspace, ApiError> {
     let workspace_id = Uuid::new_v4();
     let branch_label = name
         .as_deref()
         .filter(|branch_label| !branch_label.is_empty())
         .unwrap_or("workspace");
-    let git_branch_name = match branch_override {
-        Some(branch) => branch,
-        None => {
-            deployment
-                .container()
-                .git_branch_from_workspace(&workspace_id, branch_label)
-                .await
-        }
-    };
+    let git_branch_name = deployment
+        .container()
+        .git_branch_from_workspace(&workspace_id, branch_label)
+        .await;
 
     let workspace = Workspace::create(
         &deployment.db().pool,
@@ -57,7 +51,7 @@ pub async fn create_workspace(
     State(deployment): State<DeploymentImpl>,
     Json(payload): Json<CreateWorkspaceApiRequest>,
 ) -> Result<ResponseJson<ApiResponse<Workspace>>, ApiError> {
-    let workspace = create_workspace_record(&deployment, payload.name, None).await?;
+    let workspace = create_workspace_record(&deployment, payload.name).await?;
 
     deployment
         .track_if_analytics_allowed(
@@ -69,39 +63,6 @@ pub async fn create_workspace(
         .await;
 
     Ok(ResponseJson(ApiResponse::success(workspace)))
-}
-
-fn direct_checkout_branch(
-    repos: &[db::models::requests::WorkspaceRepoInput],
-) -> Result<Option<String>, ApiError> {
-    let mut selected: Option<&str> = None;
-
-    for repo in repos.iter().filter(|repo| !repo.create_branch) {
-        let checkout_branch = repo.checkout_branch.as_deref().ok_or_else(|| {
-            ApiError::BadRequest(
-                "Direct checkout mode requires an existing local branch to check out".to_string(),
-            )
-        })?;
-
-        if checkout_branch == repo.target_branch {
-            return Err(ApiError::BadRequest(
-                "Direct checkout branch and target/base branch must be different".to_string(),
-            ));
-        }
-
-        match selected {
-            Some(existing) if existing != checkout_branch => {
-                return Err(ApiError::BadRequest(
-                    "Direct checkout mode requires the same checkout branch name for all direct-mode repositories"
-                        .to_string(),
-                ));
-            }
-            None => selected = Some(checkout_branch),
-            _ => {}
-        }
-    }
-
-    Ok(selected.map(str::to_string))
 }
 
 fn normalize_prompt(prompt: &str) -> Option<String> {
@@ -273,11 +234,15 @@ pub async fn create_and_start_workspace(
         ));
     }
 
+    deployment
+        .workspace_manager()
+        .validate_repository_inputs(&repos, deployment.git())
+        .await
+        .map_err(ApiError::from)?;
+
     let mut managed_workspace = deployment
         .workspace_manager()
-        .load_managed_workspace(
-            create_workspace_record(&deployment, name, direct_checkout_branch(&repos)?).await?,
-        )
+        .load_managed_workspace(create_workspace_record(&deployment, name).await?)
         .await?;
 
     for repo in &repos {
@@ -363,12 +328,10 @@ pub async fn create_and_start_workspace(
 #[cfg(test)]
 mod tests {
     use chrono::Utc;
-    use db::models::{file::File, requests::WorkspaceRepoInput};
+    use db::models::file::File;
     use uuid::Uuid;
 
-    use super::{
-        ImportedIssueAttachment, direct_checkout_branch, rewrite_imported_issue_attachments_markdown,
-    };
+    use super::{ImportedIssueAttachment, rewrite_imported_issue_attachments_markdown};
 
     fn imported_file(
         attachment_id: Uuid,
@@ -389,66 +352,6 @@ mod tests {
                 updated_at: Utc::now(),
             },
         }
-    }
-
-    fn repo_input(
-        target_branch: &str,
-        create_branch: bool,
-        checkout_branch: Option<&str>,
-    ) -> WorkspaceRepoInput {
-        WorkspaceRepoInput {
-            repo_id: Uuid::new_v4(),
-            target_branch: target_branch.to_string(),
-            create_branch,
-            checkout_branch: checkout_branch.map(str::to_string),
-        }
-    }
-
-    #[test]
-    fn direct_checkout_branch_returns_selected_branch_for_direct_mode() {
-        let repos = vec![repo_input("main", false, Some("feature"))];
-
-        assert_eq!(
-            direct_checkout_branch(&repos).unwrap(),
-            Some("feature".to_string())
-        );
-    }
-
-    #[test]
-    fn direct_checkout_branch_allows_create_branch_without_checkout_branch() {
-        let repos = vec![repo_input("main", true, None)];
-
-        assert_eq!(direct_checkout_branch(&repos).unwrap(), None);
-    }
-
-    #[test]
-    fn direct_checkout_branch_rejects_missing_direct_checkout_branch() {
-        let repos = vec![repo_input("main", false, None)];
-
-        let err = direct_checkout_branch(&repos).unwrap_err();
-
-        assert!(err.to_string().contains("requires an existing local branch"));
-    }
-
-    #[test]
-    fn direct_checkout_branch_rejects_same_checkout_and_target_branch() {
-        let repos = vec![repo_input("feature", false, Some("feature"))];
-
-        let err = direct_checkout_branch(&repos).unwrap_err();
-
-        assert!(err.to_string().contains("must be different"));
-    }
-
-    #[test]
-    fn direct_checkout_branch_rejects_multiple_checkout_branch_names() {
-        let repos = vec![
-            repo_input("main", false, Some("feature-a")),
-            repo_input("main", false, Some("feature-b")),
-        ];
-
-        let err = direct_checkout_branch(&repos).unwrap_err();
-
-        assert!(err.to_string().contains("same checkout branch name"));
     }
 
     #[test]

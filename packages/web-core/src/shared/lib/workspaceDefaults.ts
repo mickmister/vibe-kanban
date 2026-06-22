@@ -7,6 +7,7 @@ export interface WorkspaceDefaults {
     repo_id: string;
     target_branch: string | null;
     create_branch?: boolean;
+    checkout_branch?: string | null;
   }>;
 }
 
@@ -37,6 +38,7 @@ export async function getWorkspaceDefaults(
             repo_id: r.repo_id,
             target_branch: r.target_branch,
             create_branch: r.create_branch ?? true,
+            checkout_branch: r.checkout_branch ?? null,
           })),
         };
       }
@@ -68,6 +70,7 @@ export async function getWorkspaceDefaults(
             repo_id: r.id,
             target_branch: r.target_branch,
             create_branch: r.create_branch ?? true,
+            checkout_branch: r.checkout_branch ?? null,
           })),
         };
       } catch (err) {
@@ -102,6 +105,8 @@ export async function getWorkspaceDefaults(
       preferredRepos: repos.map((r) => ({
         repo_id: r.id,
         target_branch: r.target_branch,
+        create_branch: r.create_branch ?? true,
+        checkout_branch: r.checkout_branch ?? null,
       })),
     };
   } catch (err) {

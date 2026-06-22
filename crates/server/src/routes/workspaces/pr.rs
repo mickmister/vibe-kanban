@@ -736,6 +736,7 @@ pub async fn create_workspace_from_pr(
             repo_id: payload.repo_id,
             target_branch: target_branch_ref.clone(),
             create_branch: true,
+            checkout_branch: None,
         }],
     )
     .await?;

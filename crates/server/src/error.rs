@@ -141,12 +141,16 @@ impl From<WorkspaceManagerError> for ApiError {
                     branch, repo_name
                 ))
             }
-            WorkspaceManagerError::DirectCheckoutBranchAlreadyCheckedOut { repo_name, branch, path } => {
-                ApiError::BadRequest(format!(
-                    "Direct checkout branch '{}' in repository '{}' is already checked out at {}",
-                    branch, repo_name, path.display()
-                ))
-            }
+            WorkspaceManagerError::DirectCheckoutBranchAlreadyCheckedOut {
+                repo_name,
+                branch,
+                path,
+            } => ApiError::BadRequest(format!(
+                "Direct checkout branch '{}' in repository '{}' is already checked out at {}",
+                branch,
+                repo_name,
+                path.display()
+            )),
             WorkspaceManagerError::DirectCheckoutBranchMatchesTarget { repo_name } => {
                 ApiError::BadRequest(format!(
                     "Direct checkout branch and target/base branch must be different for repository '{}'",

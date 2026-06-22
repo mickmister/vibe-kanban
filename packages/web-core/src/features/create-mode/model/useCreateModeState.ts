@@ -479,7 +479,7 @@ export function useCreateModeState({
         repo,
         targetBranch: repo.target_branch || null,
         createBranch: repo.create_branch ?? true,
-        checkoutBranch: null,
+        checkoutBranch: repo.checkout_branch ?? null,
       })),
     });
   }, [
@@ -531,7 +531,7 @@ export function useCreateModeState({
               repo,
               targetBranch: d.target_branch || null,
               createBranch: d.create_branch ?? true,
-              checkoutBranch: null,
+              checkoutBranch: d.checkout_branch ?? null,
             },
           ];
         });

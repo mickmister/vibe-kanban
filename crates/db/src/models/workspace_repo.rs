@@ -15,6 +15,8 @@ pub struct WorkspaceRepo {
     pub repo_id: Uuid,
     pub target_branch: String,
     pub create_branch: bool,
+    #[ts(optional)]
+    pub checkout_branch: Option<String>,
     #[ts(type = "Date")]
     pub created_at: DateTime<Utc>,
     #[ts(type = "Date")]
@@ -26,6 +28,8 @@ pub struct CreateWorkspaceRepo {
     pub repo_id: Uuid,
     pub target_branch: String,
     pub create_branch: bool,
+    #[ts(optional)]
+    pub checkout_branch: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -34,11 +38,17 @@ pub struct RepoWithTargetBranch {
     pub repo: Repo,
     pub target_branch: String,
     pub create_branch: bool,
+    #[ts(optional)]
+    pub checkout_branch: Option<String>,
 }
 
 impl RepoWithTargetBranch {
     pub fn branch_name<'a>(&'a self, workspace_branch: &'a str) -> &'a str {
-        workspace_branch
+        if self.create_branch {
+            workspace_branch
+        } else {
+            self.checkout_branch.as_deref().unwrap_or(workspace_branch)
+        }
     }
 }
 
@@ -53,7 +63,11 @@ pub struct RepoWithCopyFiles {
 
 impl WorkspaceRepo {
     pub fn branch_name<'a>(&'a self, workspace_branch: &'a str) -> &'a str {
-        workspace_branch
+        if self.create_branch {
+            workspace_branch
+        } else {
+            self.checkout_branch.as_deref().unwrap_or(workspace_branch)
+        }
     }
 
     pub async fn create_many(
@@ -75,20 +89,22 @@ impl WorkspaceRepo {
             let id = Uuid::new_v4();
             let workspace_repo = sqlx::query_as!(
                 WorkspaceRepo,
-                r#"INSERT INTO workspace_repos (id, workspace_id, repo_id, target_branch, create_branch)
-                   VALUES ($1, $2, $3, $4, $5)
+                r#"INSERT INTO workspace_repos (id, workspace_id, repo_id, target_branch, create_branch, checkout_branch)
+                   VALUES ($1, $2, $3, $4, $5, $6)
                    RETURNING id as "id!: Uuid",
                              workspace_id as "workspace_id!: Uuid",
                              repo_id as "repo_id!: Uuid",
                              target_branch,
                              create_branch as "create_branch!: bool",
+                             checkout_branch,
                              created_at as "created_at!: DateTime<Utc>",
                              updated_at as "updated_at!: DateTime<Utc>""#,
                 id,
                 workspace_id,
                 repo.repo_id,
                 repo.target_branch,
-                repo.create_branch
+                repo.create_branch,
+                repo.checkout_branch
             )
             .fetch_one(&mut *tx)
             .await?;
@@ -110,6 +126,7 @@ impl WorkspaceRepo {
                       repo_id as "repo_id!: Uuid",
                       target_branch,
                       create_branch as "create_branch!: bool",
+                      checkout_branch,
                       created_at as "created_at!: DateTime<Utc>",
                       updated_at as "updated_at!: DateTime<Utc>"
                FROM workspace_repos
@@ -170,7 +187,8 @@ impl WorkspaceRepo {
                       r.created_at as "created_at!: DateTime<Utc>",
                       r.updated_at as "updated_at!: DateTime<Utc>",
                       wr.target_branch,
-                      wr.create_branch as "create_branch!: bool"
+                      wr.create_branch as "create_branch!: bool",
+                      wr.checkout_branch
                FROM repos r
                JOIN workspace_repos wr ON r.id = wr.repo_id
                WHERE wr.workspace_id = $1
@@ -201,6 +219,7 @@ impl WorkspaceRepo {
                 },
                 target_branch: row.target_branch,
                 create_branch: row.create_branch,
+                checkout_branch: row.checkout_branch,
             })
             .collect())
     }
@@ -217,6 +236,7 @@ impl WorkspaceRepo {
                       repo_id as "repo_id!: Uuid",
                       target_branch,
                       create_branch as "create_branch!: bool",
+                      checkout_branch,
                       created_at as "created_at!: DateTime<Utc>",
                       updated_at as "updated_at!: DateTime<Utc>"
                FROM workspace_repos
@@ -293,5 +313,42 @@ impl WorkspaceRepo {
                 copy_files: row.copy_files,
             })
             .collect())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use chrono::Utc;
+    use uuid::Uuid;
+
+    use super::WorkspaceRepo;
+
+    fn workspace_repo(create_branch: bool, checkout_branch: Option<&str>) -> WorkspaceRepo {
+        WorkspaceRepo {
+            id: Uuid::new_v4(),
+            workspace_id: Uuid::new_v4(),
+            repo_id: Uuid::new_v4(),
+            target_branch: "main".to_string(),
+            create_branch,
+            checkout_branch: checkout_branch.map(str::to_string),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        }
+    }
+
+    #[test]
+    fn create_branch_repos_use_workspace_branch() {
+        let repo = workspace_repo(true, Some("ignored-direct-branch"));
+
+        assert_eq!(repo.branch_name("vk/workspace"), "vk/workspace");
+    }
+
+    #[test]
+    fn direct_mode_repos_use_per_repo_checkout_branch() {
+        let repo_a = workspace_repo(false, Some("feature-a"));
+        let repo_b = workspace_repo(false, Some("feature-b"));
+
+        assert_eq!(repo_a.branch_name("vk/workspace"), "feature-a");
+        assert_eq!(repo_b.branch_name("vk/workspace"), "feature-b");
     }
 }
