@@ -38,7 +38,7 @@ export type DraftWorkspaceAttachment = { id: string, file_path: string, original
 
 export type DraftWorkspaceLinkedIssue = { issue_id: string, simple_id: string, title: string, remote_project_id: string, };
 
-export type DraftWorkspaceRepo = { repo_id: string, target_branch: string, create_branch: boolean, };
+export type DraftWorkspaceRepo = { repo_id: string, target_branch: string, create_branch: boolean, checkout_branch?: string | null, };
 
 export type DraftIssueData = { title: string, description: string | null, status_id: string, 
 /**
@@ -360,7 +360,7 @@ export type AttachmentResponse = { id: string, file_path: string, original_name:
 
 export type AttachmentMetadata = { exists: boolean, file_name: string | null, path: string | null, size_bytes: bigint | null, format: string | null, proxy_url: string | null, };
 
-export type WorkspaceRepoInput = { repo_id: string, target_branch: string, create_branch: boolean, };
+export type WorkspaceRepoInput = { repo_id: string, target_branch: string, create_branch: boolean, checkout_branch?: string | null, };
 
 export type RunAgentSetupRequest = { executor_profile_id: ExecutorProfileId, };
 

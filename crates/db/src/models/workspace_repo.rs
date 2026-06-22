@@ -38,11 +38,7 @@ pub struct RepoWithTargetBranch {
 
 impl RepoWithTargetBranch {
     pub fn branch_name<'a>(&'a self, workspace_branch: &'a str) -> &'a str {
-        if self.create_branch {
-            workspace_branch
-        } else {
-            &self.target_branch
-        }
+        workspace_branch
     }
 }
 
@@ -57,11 +53,7 @@ pub struct RepoWithCopyFiles {
 
 impl WorkspaceRepo {
     pub fn branch_name<'a>(&'a self, workspace_branch: &'a str) -> &'a str {
-        if self.create_branch {
-            workspace_branch
-        } else {
-            &self.target_branch
-        }
+        workspace_branch
     }
 
     pub async fn create_many(

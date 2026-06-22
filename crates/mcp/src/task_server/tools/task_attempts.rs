@@ -146,6 +146,7 @@ impl McpServer {
                 repo_id: r.repo_id,
                 target_branch: r.branch,
                 create_branch: true,
+                checkout_branch: None,
             })
             .collect();
 

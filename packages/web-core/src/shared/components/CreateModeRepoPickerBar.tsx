@@ -49,6 +49,35 @@ function toBranchItem(branch: {
   };
 }
 
+function chooseDefaultTargetBranch(
+  branches: Array<{ name: string }>,
+  repo: Repo
+) {
+  if (
+    repo.default_target_branch &&
+    branches.some((b) => b.name === repo.default_target_branch)
+  ) {
+    return repo.default_target_branch;
+  }
+  if (branches.some((b) => b.name === 'origin/main')) {
+    return 'origin/main';
+  }
+  if (branches.some((b) => b.name === 'main')) {
+    return 'main';
+  }
+  return branches[0]?.name ?? null;
+}
+
+function safeLocalCheckoutBranches(
+  branches: Array<{ name: string; is_current: boolean; is_remote?: boolean }>,
+  targetBranch: string | null
+) {
+  return branches.filter(
+    (branch) =>
+      !branch.is_remote && !branch.is_current && branch.name !== targetBranch
+  );
+}
+
 function getRepoDisplayName(repo: Repo): string {
   return repo.display_name || repo.name;
 }
@@ -79,10 +108,12 @@ export function CreateModeRepoPickerBar({
   const {
     repos,
     targetBranches,
+    checkoutBranches,
     createBranchByRepo,
     addRepo,
     removeRepo,
     setTargetBranch,
+    setCheckoutBranch,
     setCreateBranch,
   } = useCreateMode();
   const [pendingAction, setPendingAction] = useState<PendingAction>(null);
@@ -101,20 +132,42 @@ export function CreateModeRepoPickerBar({
     () => new Set(repos.map((repo) => repo.id)),
     [repos]
   );
+  const allReposHaveRequiredBranches = useMemo(
+    () =>
+      repos.every((repo) => {
+        const targetBranch = targetBranches[repo.id] ?? null;
+        const checkoutBranch = checkoutBranches[repo.id] ?? null;
+        const createBranch = createBranchByRepo[repo.id] ?? true;
 
-  const pickBranchForRepo = useCallback(async (repo: Repo) => {
-    const branches = await repoApi.getBranches(repo.id);
-    const branchItems = branches.map(toBranchItem);
-    const branchResult = (await SelectionDialog.show({
-      initialPageId: 'selectBranch',
-      pages: buildBranchSelectionPages(
-        branchItems,
-        getRepoDisplayName(repo)
-      ) as Record<string, SelectionPage>,
-    })) as BranchSelectionResult | undefined;
+        if (!targetBranch) return false;
+        if (createBranch) return true;
+        return !!checkoutBranch && checkoutBranch !== targetBranch;
+      }),
+    [checkoutBranches, createBranchByRepo, repos, targetBranches]
+  );
 
-    return branchResult?.branch ?? null;
-  }, []);
+  const pickBranchForRepo = useCallback(
+    async (
+      repo: Repo,
+      options?: { checkoutOnly?: boolean; targetBranch?: string | null }
+    ) => {
+      const branches = await repoApi.getBranches(repo.id);
+      const selectableBranches = options?.checkoutOnly
+        ? safeLocalCheckoutBranches(branches, options.targetBranch ?? null)
+        : branches;
+      const branchItems = selectableBranches.map(toBranchItem);
+      const branchResult = (await SelectionDialog.show({
+        initialPageId: 'selectBranch',
+        pages: buildBranchSelectionPages(
+          branchItems,
+          getRepoDisplayName(repo)
+        ) as Record<string, SelectionPage>,
+      })) as BranchSelectionResult | undefined;
+
+      return branchResult?.branch ?? null;
+    },
+    []
+  );
 
   const runPickerAction = useCallback(
     async (
@@ -146,14 +199,15 @@ export function CreateModeRepoPickerBar({
         return false;
       }
 
-      const selectedBranch = await pickBranchForRepo(repo);
+      const branches = await repoApi.getBranches(repo.id);
+      const selectedBranch = chooseDefaultTargetBranch(branches, repo);
       if (!selectedBranch) return false;
 
       addRepo(repo);
       setTargetBranch(repo.id, selectedBranch);
       return true;
     },
-    [addRepo, pickBranchForRepo, selectedRepoIds, setTargetBranch]
+    [addRepo, selectedRepoIds, setTargetBranch]
   );
 
   const handleChooseRepo = useCallback(async () => {
@@ -244,11 +298,93 @@ export function CreateModeRepoPickerBar({
           const selectedBranch = await pickBranchForRepo(repo);
           if (!selectedBranch) return;
           setTargetBranch(repo.id, selectedBranch);
+          if (checkoutBranches[repo.id] === selectedBranch) {
+            setCheckoutBranch(repo.id, null);
+          }
         },
         'Failed to load branches'
       );
     },
-    [pickBranchForRepo, runPickerAction, setTargetBranch]
+    [
+      checkoutBranches,
+      pickBranchForRepo,
+      runPickerAction,
+      setCheckoutBranch,
+      setTargetBranch,
+    ]
+  );
+
+  const handleChangeCheckoutBranch = useCallback(
+    async (repo: Repo) => {
+      setBranchRepoId(repo.id);
+      await runPickerAction(
+        'branch',
+        async () => {
+          const selectedBranch = await pickBranchForRepo(repo, {
+            checkoutOnly: true,
+            targetBranch: targetBranches[repo.id] ?? null,
+          });
+          if (!selectedBranch) return;
+          setCheckoutBranch(repo.id, selectedBranch);
+
+          for (const otherRepo of repos) {
+            if (otherRepo.id === repo.id) continue;
+            if ((createBranchByRepo[otherRepo.id] ?? true) !== false) continue;
+            const branches = await repoApi.getBranches(otherRepo.id);
+            const safeMatch = safeLocalCheckoutBranches(
+              branches,
+              targetBranches[otherRepo.id] ?? null
+            ).some((branch) => branch.name === selectedBranch);
+            setCheckoutBranch(otherRepo.id, safeMatch ? selectedBranch : null);
+          }
+        },
+        'Failed to load branches'
+      );
+    },
+    [
+      createBranchByRepo,
+      pickBranchForRepo,
+      repos,
+      runPickerAction,
+      setCheckoutBranch,
+      targetBranches,
+    ]
+  );
+
+  const handleToggleCreateBranch = useCallback(
+    async (repo: Repo, checked: boolean | string) => {
+      const createBranch = checked === true;
+      setCreateBranch(repo.id, createBranch);
+      if (createBranch) {
+        setCheckoutBranch(repo.id, null);
+        return;
+      }
+
+      const existingDirectBranch = repos
+        .filter(
+          (r) =>
+            r.id !== repo.id && (createBranchByRepo[r.id] ?? true) === false
+        )
+        .map((r) => checkoutBranches[r.id])
+        .find((branch): branch is string => !!branch);
+
+      if (!existingDirectBranch) return;
+
+      const branches = await repoApi.getBranches(repo.id);
+      const safeMatch = safeLocalCheckoutBranches(
+        branches,
+        targetBranches[repo.id] ?? null
+      ).some((branch) => branch.name === existingDirectBranch);
+      setCheckoutBranch(repo.id, safeMatch ? existingDirectBranch : null);
+    },
+    [
+      checkoutBranches,
+      createBranchByRepo,
+      repos,
+      setCheckoutBranch,
+      setCreateBranch,
+      targetBranches,
+    ]
   );
 
   return (
@@ -258,9 +394,13 @@ export function CreateModeRepoPickerBar({
           <div>
             <div className="rounded-sm border border-border/60">
               {repos.map((repo, index) => {
-                const branch = targetBranches[repo.id] ?? 'Select branch';
                 const repoDisplayName = getRepoDisplayName(repo);
                 const createBranch = createBranchByRepo[repo.id] ?? true;
+                const targetBranch = targetBranches[repo.id] ?? null;
+                const checkoutBranch = checkoutBranches[repo.id] ?? null;
+                const branch = createBranch
+                  ? (targetBranch ?? 'Select target')
+                  : (checkoutBranch ?? 'Select branch');
                 const isChangingBranch =
                   pendingAction === 'branch' && branchRepoId === repo.id;
 
@@ -278,10 +418,18 @@ export function CreateModeRepoPickerBar({
                     <span className="h-3 w-px shrink-0 bg-border/70" />
                     <button
                       type="button"
-                      onClick={() => handleChangeBranch(repo)}
+                      onClick={() =>
+                        createBranch
+                          ? handleChangeBranch(repo)
+                          : handleChangeCheckoutBranch(repo)
+                      }
                       disabled={isBusy}
                       className={repoRowButtonClassName}
-                      title="Change branch"
+                      title={
+                        createBranch
+                          ? 'Change target/base branch'
+                          : 'Change checkout branch'
+                      }
                     >
                       {isChangingBranch ? (
                         <SpinnerIcon className="size-icon-xs animate-spin" />
@@ -305,13 +453,33 @@ export function CreateModeRepoPickerBar({
                       <Checkbox
                         checked={createBranch}
                         disabled={isBusy}
-                        onCheckedChange={(checked) =>
-                          setCreateBranch(repo.id, checked)
-                        }
+                        onCheckedChange={(checked) => {
+                          void handleToggleCreateBranch(repo, checked);
+                        }}
                         className="size-icon-xs"
                       />
                       <span>Create new branch</span>
                     </label>
+                    {!createBranch && (
+                      <>
+                        <span className="h-3 w-px shrink-0 bg-border/70" />
+                        <button
+                          type="button"
+                          onClick={() => handleChangeBranch(repo)}
+                          disabled={isBusy}
+                          className={repoRowButtonClassName}
+                          title="Change target/base branch"
+                        >
+                          <GitBranchIcon
+                            className="size-icon-xs"
+                            weight="bold"
+                          />
+                          <span className="max-w-[200px] truncate">
+                            Base: {targetBranch ?? 'Select target'}
+                          </span>
+                        </button>
+                      </>
+                    )}
                     <span className="h-3 w-px shrink-0 bg-border/70" />
                     <button
                       type="button"
@@ -384,7 +552,9 @@ export function CreateModeRepoPickerBar({
               variant="default"
               value="Continue"
               onClick={onContinueToPrompt}
-              disabled={isBusy || repos.length === 0}
+              disabled={
+                isBusy || repos.length === 0 || !allReposHaveRequiredBranches
+              }
             />
           </div>
         </div>

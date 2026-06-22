@@ -54,6 +54,7 @@ pub async fn add_workspace_repo(
         repo_id: payload.repo_id,
         target_branch: payload.target_branch,
         create_branch: true,
+        checkout_branch: None,
     };
 
     managed_workspace

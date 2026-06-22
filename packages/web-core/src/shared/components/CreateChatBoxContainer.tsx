@@ -55,6 +55,7 @@ export function CreateChatBoxContainer({
   const {
     repos,
     targetBranches,
+    checkoutBranches,
     createBranchByRepo,
     message,
     setMessage,
@@ -156,7 +157,10 @@ export function CreateChatBoxContainer({
     if (repos.length === 1) {
       const repo = repos[0];
       if (!repo) return '0 repositories selected';
-      const selectedBranch = targetBranches[repo.id];
+      const selectedBranch =
+        createBranchByRepo[repo.id] === false
+          ? checkoutBranches[repo.id]
+          : targetBranches[repo.id];
       const branch = selectedBranch
         ? truncateBranchLabel(selectedBranch)
         : 'Select branch';
@@ -166,23 +170,32 @@ export function CreateChatBoxContainer({
     }
 
     return `${repos.length} repositories selected`;
-  }, [repos, targetBranches, createBranchByRepo]);
+  }, [repos, targetBranches, checkoutBranches, createBranchByRepo]);
 
   const repoSummaryTitle = useMemo(
     () =>
       repos
         .map((repo) => {
-          const branch = targetBranches[repo.id] ?? 'Select branch';
+          const branch =
+            createBranchByRepo[repo.id] === false
+              ? (checkoutBranches[repo.id] ?? 'Select branch')
+              : (targetBranches[repo.id] ?? 'Select target');
+          const targetBranch = targetBranches[repo.id] ?? 'Select target';
           const mode =
             createBranchByRepo[repo.id] === false ? 'use branch' : 'new branch';
-          return `${getRepoDisplayName(repo)} (${branch}, ${mode})`;
+          return createBranchByRepo[repo.id] === false
+            ? `${getRepoDisplayName(repo)} (${branch}, base ${targetBranch}, ${mode})`
+            : `${getRepoDisplayName(repo)} (${branch}, ${mode})`;
         })
         .join('\n'),
-    [repos, targetBranches, createBranchByRepo]
+    [repos, targetBranches, checkoutBranches, createBranchByRepo]
   );
 
   const hasSelectedBranchesForAllRepos = repos.every(
-    (repo) => !!targetBranches[repo.id]
+    (repo) =>
+      !!targetBranches[repo.id] &&
+      ((createBranchByRepo[repo.id] ?? true) || !!checkoutBranches[repo.id]) &&
+      targetBranches[repo.id] !== checkoutBranches[repo.id]
   );
 
   // Determine if we can submit
@@ -254,6 +267,8 @@ export function CreateChatBoxContainer({
         repo_id: r.id,
         target_branch: targetBranches[r.id]!,
         create_branch: createBranchByRepo[r.id] ?? true,
+        checkout_branch:
+          createBranchByRepo[r.id] === false ? checkoutBranches[r.id] : null,
       })),
       linked_issue: linkedIssue
         ? {
@@ -293,6 +308,7 @@ export function CreateChatBoxContainer({
     message,
     repos,
     targetBranches,
+    checkoutBranches,
     createBranchByRepo,
     createWorkspace,
     onWorkspaceCreated,

@@ -197,6 +197,9 @@ pub struct DraftWorkspaceRepo {
     pub target_branch: String,
     #[serde(default = "default_true")]
     pub create_branch: bool,
+    #[serde(default)]
+    #[ts(optional)]
+    pub checkout_branch: Option<String>,
 }
 
 /// Data for project repo defaults scratch (default repos/branches per project)

@@ -21,6 +21,10 @@ pub struct WorkspaceRepoInput {
     pub target_branch: String,
     #[serde(default = "default_true")]
     pub create_branch: bool,
+    /// Existing local branch to check out when `create_branch` is false.
+    /// `target_branch` remains the separate base branch for diffs, merges, and PRs.
+    #[ts(optional)]
+    pub checkout_branch: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, TS)]

@@ -14,6 +14,7 @@ export interface BootstrapSelectedRepo {
   repo: Repo;
   targetBranch: string | null;
   createBranch: boolean;
+  checkoutBranch: string | null;
 }
 
 export interface CreateModeBootstrapData {
@@ -40,6 +41,7 @@ interface PreferredRepoInput {
   repo_id: string;
   target_branch: string | null;
   create_branch?: boolean;
+  checkout_branch?: string | null;
 }
 
 export async function resolveBootstrapRepos(
@@ -78,6 +80,7 @@ export async function resolveBootstrapRepos(
         repo,
         targetBranch: preferredRepo.target_branch ?? null,
         createBranch: preferredRepo.create_branch ?? true,
+        checkoutBranch: preferredRepo.checkout_branch ?? null,
       },
     ];
   });
@@ -169,6 +172,9 @@ export async function resolveCreateModeBootstrap({
           repo_id: repo.repo_id,
           target_branch: repo.target_branch ?? null,
           create_branch: repo.create_branch ?? true,
+          checkout_branch:
+            (repo as { checkout_branch?: string | null }).checkout_branch ??
+            null,
         }))
       );
 

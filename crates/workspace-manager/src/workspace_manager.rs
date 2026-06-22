@@ -34,11 +34,7 @@ impl RepoWorkspaceInput {
     }
 
     fn branch_name<'a>(&'a self, workspace_branch: &'a str) -> &'a str {
-        if self.create_branch {
-            workspace_branch
-        } else {
-            &self.target_branch
-        }
+        workspace_branch
     }
 }
 
@@ -60,6 +56,18 @@ pub enum WorkspaceError {
     RepoAlreadyAttached,
     #[error("Branch '{branch}' does not exist in repository '{repo_name}'")]
     BranchNotFound { repo_name: String, branch: String },
+    #[error("Direct checkout mode requires an existing local branch in repository '{repo_name}'")]
+    DirectCheckoutBranchRequired { repo_name: String },
+    #[error("Direct checkout branch '{branch}' in repository '{repo_name}' must be a local branch")]
+    DirectCheckoutBranchNotLocal { repo_name: String, branch: String },
+    #[error("Direct checkout branch '{branch}' in repository '{repo_name}' is already checked out at {path}")]
+    DirectCheckoutBranchAlreadyCheckedOut {
+        repo_name: String,
+        branch: String,
+        path: PathBuf,
+    },
+    #[error("Direct checkout branch and target/base branch must be different for repository '{repo_name}'")]
+    DirectCheckoutBranchMatchesTarget { repo_name: String },
     #[error("No repositories provided")]
     NoRepositories,
     #[error("Partial workspace creation failed: {0}")]
@@ -152,6 +160,21 @@ impl ManagedWorkspace {
             });
         }
 
+        if !repo_ref.create_branch {
+            let checkout_branch = repo_ref.checkout_branch.as_deref().ok_or_else(|| {
+                WorkspaceError::DirectCheckoutBranchRequired {
+                    repo_name: repo.name.clone(),
+                }
+            })?;
+
+            Self::validate_direct_checkout_branch(
+                &repo,
+                checkout_branch,
+                &repo_ref.target_branch,
+                git,
+            )?;
+        }
+
         if WorkspaceRepo::find_by_workspace_and_repo_id(
             &self.db.pool,
             self.workspace.id,
@@ -165,6 +188,37 @@ impl ManagedWorkspace {
 
         self.attach_repository(repo_ref).await?;
         self.refresh().await?;
+        Ok(())
+    }
+
+
+    fn validate_direct_checkout_branch(
+        repo: &Repo,
+        checkout_branch: &str,
+        target_branch: &str,
+        git: &GitService,
+    ) -> Result<(), WorkspaceError> {
+        if checkout_branch == target_branch {
+            return Err(WorkspaceError::DirectCheckoutBranchMatchesTarget {
+                repo_name: repo.name.clone(),
+            });
+        }
+
+        if !git.is_local_branch(&repo.path, checkout_branch)? {
+            return Err(WorkspaceError::DirectCheckoutBranchNotLocal {
+                repo_name: repo.name.clone(),
+                branch: checkout_branch.to_string(),
+            });
+        }
+
+        if let Some(path) = git.find_checkout_path_for_branch(&repo.path, checkout_branch)? {
+            return Err(WorkspaceError::DirectCheckoutBranchAlreadyCheckedOut {
+                repo_name: repo.name.clone(),
+                branch: checkout_branch.to_string(),
+                path,
+            });
+        }
+
         Ok(())
     }
 

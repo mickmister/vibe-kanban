@@ -153,6 +153,35 @@ impl LocalContainerService {
                 branch,
                 repo_name
             )),
+            WorkspaceError::DirectCheckoutBranchRequired { repo_name } => {
+                ContainerError::Other(anyhow!(
+                    "Direct checkout mode requires an existing local branch in repository '{}'",
+                    repo_name
+                ))
+            }
+            WorkspaceError::DirectCheckoutBranchNotLocal { repo_name, branch } => {
+                ContainerError::Other(anyhow!(
+                    "Direct checkout branch '{}' in repository '{}' must be a local branch",
+                    branch,
+                    repo_name
+                ))
+            }
+            WorkspaceError::DirectCheckoutBranchAlreadyCheckedOut {
+                repo_name,
+                branch,
+                path,
+            } => ContainerError::Other(anyhow!(
+                "Direct checkout branch '{}' in repository '{}' is already checked out at {}",
+                branch,
+                repo_name,
+                path.display()
+            )),
+            WorkspaceError::DirectCheckoutBranchMatchesTarget { repo_name } => {
+                ContainerError::Other(anyhow!(
+                    "Direct checkout branch and target/base branch must be different for repository '{}'",
+                    repo_name
+                ))
+            }
             WorkspaceError::PartialCreation(msg) => ContainerError::Other(anyhow!(msg)),
         }
     }
