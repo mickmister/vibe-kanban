@@ -700,6 +700,7 @@ pub trait ContainerService {
 
         self.try_stop(&workspace, false).await;
         ExecutionProcess::drop_at_and_after(pool, session_id, target_process_id).await?;
+        Session::recompute_context_reset_boundary(pool, session_id).await?;
 
         Ok(())
     }
