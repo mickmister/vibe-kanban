@@ -8,11 +8,16 @@ use uuid::Uuid;
 
 use super::repo::Repo;
 
-pub fn branch_names_conflict_as_self_target(source_branch: &str, target_branch: &str) -> bool {
+pub fn branch_names_conflict_as_self_target(
+    source_branch: &str,
+    target_branch: &str,
+    target_is_remote: bool,
+) -> bool {
     source_branch == target_branch
-        || target_branch
-            .split_once('/')
-            .is_some_and(|(_, short_target)| short_target == source_branch)
+        || (target_is_remote
+            && target_branch
+                .split_once('/')
+                .is_some_and(|(_, short_target)| short_target == source_branch))
 }
 
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize, TS)]
@@ -372,11 +377,18 @@ mod tests {
     fn self_target_detection_handles_remote_tracking_branch_names() {
         assert!(super::branch_names_conflict_as_self_target(
             "main",
-            "origin/main"
+            "origin/main",
+            true
         ));
         assert!(!super::branch_names_conflict_as_self_target(
             "feature",
-            "origin/main"
+            "origin/main",
+            true
+        ));
+        assert!(!super::branch_names_conflict_as_self_target(
+            "bar/baz",
+            "foo/bar/baz",
+            false
         ));
     }
 }

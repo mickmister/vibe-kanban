@@ -115,10 +115,20 @@ mod tests {
 
     #[test]
     fn pr_creation_rejects_remote_tracking_form_of_same_branch() {
-        assert!(branch_names_conflict_as_self_target("main", "origin/main"));
+        assert!(branch_names_conflict_as_self_target(
+            "main",
+            "origin/main",
+            true
+        ));
         assert!(!branch_names_conflict_as_self_target(
             "feature",
-            "origin/main"
+            "origin/main",
+            true
+        ));
+        assert!(!branch_names_conflict_as_self_target(
+            "bar/baz",
+            "foo/bar/baz",
+            false
         ));
     }
 }
@@ -247,7 +257,9 @@ pub async fn create_pr(
 
     let git = deployment.git();
     let branch_name = workspace_repo.branch_name(&workspace.branch);
-    if branch_names_conflict_as_self_target(branch_name, &target_branch) {
+    let target_is_remote = branch_name != target_branch
+        && git.is_remote_branch(&repo_path, &target_branch).unwrap_or(false);
+    if branch_names_conflict_as_self_target(branch_name, &target_branch, target_is_remote) {
         return Err(ApiError::BadRequest(format!(
             "Cannot create a pull request from branch '{branch_name}' to itself. Select a different target/base branch."
         )));

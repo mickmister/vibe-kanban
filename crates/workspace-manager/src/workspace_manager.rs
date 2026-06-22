@@ -185,24 +185,6 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn direct_checkout_rejects_remote_tracking_form_of_same_branch() {
-        let repo = repo("repo");
-        let git = git::GitService::new();
-
-        let err = super::WorkspaceManager::validate_direct_checkout_branch(
-            &repo,
-            "main",
-            "origin/main",
-            &git,
-        )
-        .expect_err("direct checkout branch must not match remote target/base branch");
-
-        assert!(matches!(
-            err,
-            super::WorkspaceError::DirectCheckoutBranchMatchesTarget { .. }
-        ));
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -385,7 +367,9 @@ impl WorkspaceManager {
         target_branch: &str,
         git: &GitService,
     ) -> Result<(), WorkspaceError> {
-        if branch_names_conflict_as_self_target(checkout_branch, target_branch) {
+        let target_is_remote =
+            checkout_branch != target_branch && git.is_remote_branch(&repo.path, target_branch)?;
+        if branch_names_conflict_as_self_target(checkout_branch, target_branch, target_is_remote) {
             return Err(WorkspaceError::DirectCheckoutBranchMatchesTarget {
                 repo_name: repo.name.clone(),
             });

@@ -40,10 +40,7 @@ function truncateBranchLabel(branch: string) {
 }
 
 function isSelfTargetingBranch(sourceBranch: string, targetBranch: string) {
-  return (
-    sourceBranch === targetBranch ||
-    targetBranch.split('/').slice(1).join('/') === sourceBranch
-  );
+  return sourceBranch === targetBranch;
 }
 
 interface CreateChatBoxContainerProps {

@@ -72,20 +72,35 @@ function safeLocalCheckoutBranches(
   branches: Array<{ name: string; is_current: boolean; is_remote?: boolean }>,
   targetBranch: string | null
 ) {
+  const targetIsRemote = branches.some(
+    (branch) => branch.name === targetBranch && branch.is_remote
+  );
+
   return branches.filter(
     (branch) =>
       !branch.is_remote &&
       !branch.is_current &&
-      (!targetBranch || !isSelfTargetingBranch(branch.name, targetBranch))
+      (!targetBranch ||
+        !isSelfTargetingBranch(branch.name, targetBranch, targetIsRemote))
   );
 }
 
-function isSelfTargetingBranch(sourceBranch: string, targetBranch: string) {
+function isSelfTargetingBranch(
+  sourceBranch: string,
+  targetBranch: string,
+  targetIsRemote: boolean
+) {
   return (
     sourceBranch === targetBranch ||
-    targetBranch.split('/').slice(1).join('/') === sourceBranch
+    (targetIsRemote &&
+      targetBranch.split('/').slice(1).join('/') === sourceBranch)
   );
 }
+
+type PickedBranch = {
+  name: string;
+  isRemote: boolean;
+};
 
 function getRepoDisplayName(repo: Repo): string {
   return repo.display_name || repo.name;
@@ -173,7 +188,17 @@ export function CreateModeRepoPickerBar({
         ) as Record<string, SelectionPage>,
       })) as BranchSelectionResult | undefined;
 
-      return branchResult?.branch ?? null;
+      const branchName = branchResult?.branch;
+      if (!branchName) return null;
+
+      const selectedBranch = selectableBranches.find(
+        (branch) => branch.name === branchName
+      );
+
+      return {
+        name: branchName,
+        isRemote: selectedBranch?.is_remote ?? false,
+      } satisfies PickedBranch;
     },
     []
   );
@@ -306,11 +331,15 @@ export function CreateModeRepoPickerBar({
         async () => {
           const selectedBranch = await pickBranchForRepo(repo);
           if (!selectedBranch) return;
-          setTargetBranch(repo.id, selectedBranch);
+          setTargetBranch(repo.id, selectedBranch.name);
           const checkoutBranch = checkoutBranches[repo.id];
           if (
             checkoutBranch &&
-            isSelfTargetingBranch(checkoutBranch, selectedBranch)
+            isSelfTargetingBranch(
+              checkoutBranch,
+              selectedBranch.name,
+              selectedBranch.isRemote
+            )
           ) {
             setCheckoutBranch(repo.id, null);
           }
@@ -338,7 +367,7 @@ export function CreateModeRepoPickerBar({
             targetBranch: targetBranches[repo.id] ?? null,
           });
           if (!selectedBranch) return;
-          setCheckoutBranch(repo.id, selectedBranch);
+          setCheckoutBranch(repo.id, selectedBranch.name);
 
           for (const otherRepo of repos) {
             if (otherRepo.id === repo.id) continue;
@@ -347,8 +376,11 @@ export function CreateModeRepoPickerBar({
             const safeMatch = safeLocalCheckoutBranches(
               branches,
               targetBranches[otherRepo.id] ?? null
-            ).some((branch) => branch.name === selectedBranch);
-            setCheckoutBranch(otherRepo.id, safeMatch ? selectedBranch : null);
+            ).some((branch) => branch.name === selectedBranch.name);
+            setCheckoutBranch(
+              otherRepo.id,
+              safeMatch ? selectedBranch.name : null
+            );
           }
         },
         'Failed to load branches'
