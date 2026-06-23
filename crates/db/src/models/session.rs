@@ -287,7 +287,7 @@ impl Session {
 
 #[cfg(test)]
 mod tests {
-    use sqlx::{sqlite::SqlitePoolOptions, Executor, SqlitePool};
+    use sqlx::{Executor, SqlitePool, sqlite::SqlitePoolOptions};
     use uuid::Uuid;
 
     use super::Session;
@@ -409,7 +409,14 @@ mod tests {
         .await
         .unwrap();
 
-        insert_process(&pool, session_id, first_clear_id, clear_action_json(), false).await;
+        insert_process(
+            &pool,
+            session_id,
+            first_clear_id,
+            clear_action_json(),
+            false,
+        )
+        .await;
         insert_process(
             &pool,
             session_id,
@@ -418,7 +425,14 @@ mod tests {
             false,
         )
         .await;
-        insert_process(&pool, session_id, dropped_clear_id, clear_action_json(), true).await;
+        insert_process(
+            &pool,
+            session_id,
+            dropped_clear_id,
+            clear_action_json(),
+            true,
+        )
+        .await;
 
         let recomputed = Session::recompute_context_reset_boundary(&pool, session_id)
             .await
@@ -452,8 +466,22 @@ mod tests {
         .await
         .unwrap();
 
-        insert_process(&pool, session_id, dropped_clear_id, clear_action_json(), true).await;
-        insert_process(&pool, session_id, follow_up_id, follow_up_action_json(), false).await;
+        insert_process(
+            &pool,
+            session_id,
+            dropped_clear_id,
+            clear_action_json(),
+            true,
+        )
+        .await;
+        insert_process(
+            &pool,
+            session_id,
+            follow_up_id,
+            follow_up_action_json(),
+            false,
+        )
+        .await;
 
         let recomputed = Session::recompute_context_reset_boundary(&pool, session_id)
             .await
