@@ -194,6 +194,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     },
     [queryClient, hostId, workspaceId]
   );
+
   const appNavigation = useAppNavigation();
 
   const { executeAction } = useActions();

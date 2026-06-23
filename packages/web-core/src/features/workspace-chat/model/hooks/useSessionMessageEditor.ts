@@ -76,6 +76,7 @@ export function useSessionMessageEditor({
       const payload: DraftFollowUpData = {
         message,
         executor_config: executorConfig,
+        session_command: null,
       };
       try {
         await updateScratchForId(targetScratchId, {
