@@ -802,6 +802,14 @@ pub async fn rename_branch(
 
     let pool = &deployment.db().pool;
 
+    let workspace_repos = WorkspaceRepo::find_by_workspace_id(pool, workspace.id).await?;
+    if workspace_repos.iter().any(|repo| !repo.create_branch) {
+        return Err(ApiError::BadRequest(
+            "Branch rename is unavailable for direct-branch workspaces because the checked-out branch is user-owned. Rename it outside VK if needed."
+                .to_string(),
+        ));
+    }
+
     let merges = Merge::find_by_workspace_id(pool, workspace.id).await?;
     let has_open_pr = merges.into_iter().any(|merge| {
         matches!(merge, Merge::Pr(pr_merge) if matches!(pr_merge.pr_info.status, MergeStatus::Open))

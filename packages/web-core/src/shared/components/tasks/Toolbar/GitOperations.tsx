@@ -385,7 +385,7 @@ function GitOperations({
           <TooltipTrigger asChild>
             <span className="hidden sm:inline-flex items-center gap-1.5 max-w-[280px] px-2 py-0.5 rounded-full bg-muted text-xs font-medium min-w-0">
               <GitBranchIcon className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-              <span className="truncate">{selectedAttempt.branch}</span>
+              <span className="truncate">{selectedSourceBranch}</span>
             </span>
           </TooltipTrigger>
           <TooltipContent side="bottom">
