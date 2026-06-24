@@ -378,7 +378,6 @@ impl IntoResponse for ApiError {
                     ),
                 )
             }
-
             ApiError::ScratchError(ScratchError::Database(_)) => {
                 ErrorInfo::internal("ScratchError")
             }

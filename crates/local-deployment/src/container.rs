@@ -30,6 +30,7 @@ use executors::{
         Executable, ExecutorAction, ExecutorActionType,
         coding_agent_follow_up::CodingAgentFollowUpRequest,
         coding_agent_initial::CodingAgentInitialRequest,
+        session_command::CodingAgentSessionCommandRequest,
     },
     approvals::{ExecutorApprovalService, NoopExecutorApprovalService},
     env::{ExecutionEnv, RepoContext},
@@ -1136,7 +1137,7 @@ impl LocalContainerService {
             .await?;
         }
 
-        // Get latest agent turn for session continuity (from coding agent turns)
+        // Get latest agent turn for session continuity (from coding agent turns).
         let latest_session_info =
             CodingAgentTurn::find_latest_session_info(&self.db.pool, ctx.session.id).await?;
 
@@ -1151,7 +1152,23 @@ impl LocalContainerService {
             .filter(|dir| !dir.is_empty())
             .cloned();
 
-        let action_type = if let Some(info) = latest_session_info {
+        let action_type = if let Some(command) = queued_data.session_command.clone() {
+            let latest_session_info =
+                if command.requires_provider_context(queued_data.executor_config.executor) {
+                    latest_session_info
+                } else {
+                    None
+                };
+            ExecutorActionType::CodingAgentSessionCommandRequest(CodingAgentSessionCommandRequest {
+                command,
+                prompt: queued_data.message.clone(),
+                session_id: latest_session_info
+                    .as_ref()
+                    .map(|info| info.session_id.clone()),
+                executor_config: queued_data.executor_config.clone(),
+                working_dir: working_dir.clone(),
+            })
+        } else if let Some(info) = latest_session_info {
             ExecutorActionType::CodingAgentFollowUpRequest(CodingAgentFollowUpRequest {
                 prompt: queued_data.message.clone(),
                 session_id: info.session_id,
@@ -1167,6 +1184,14 @@ impl LocalContainerService {
             })
         };
 
+        let cleanup_action = if matches!(
+            &action_type,
+            ExecutorActionType::CodingAgentSessionCommandRequest(_)
+        ) {
+            None
+        } else {
+            cleanup_action
+        };
         let action = ExecutorAction::new(action_type, cleanup_action.map(Box::new));
 
         self.start_execution(

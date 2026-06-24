@@ -46,13 +46,18 @@ struct SessionExecutionProcessQuery {
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 enum NormalizedLogReplayMode {
-    Live,
     Historic,
 }
 
 type SharedNormalizedLogHistoryFuture = Shared<BoxFuture<'static, Option<Arc<Vec<String>>>>>;
 type NormalizedLogHistoryInflight =
     Arc<Mutex<HashMap<(Uuid, NormalizedLogReplayMode), SharedNormalizedLogHistoryFuture>>>;
+
+#[derive(Clone, Debug, Default)]
+struct LiveNormalizedLogMessages {
+    payloads: Vec<String>,
+    finished: bool,
+}
 
 fn normalized_log_history_inflight() -> &'static NormalizedLogHistoryInflight {
     static INFLIGHT: OnceLock<NormalizedLogHistoryInflight> = OnceLock::new();
@@ -202,13 +207,22 @@ async fn build_live_normalized_logs_stream(
     store: Arc<MsgStore>,
 ) -> BoxStream<'static, anyhow::Result<Message>> {
     let receiver = store.get_receiver();
-    let payloads = get_live_normalized_log_messages_single_flight(exec_id, store).await;
+    let messages = collect_live_normalized_log_messages(&store);
     let history_stream = stream::iter(
-        (*payloads)
+        messages
+            .payloads
             .clone()
             .into_iter()
             .map(|payload| Ok::<_, anyhow::Error>(Message::Text(payload.into()))),
     );
+
+    if messages.finished {
+        return history_stream
+            .chain(stream::once(async {
+                Ok::<_, anyhow::Error>(LogMsg::Finished.to_ws_message_unchecked())
+            }))
+            .boxed();
+    }
 
     let live_stream = stream::unfold(receiver, move |mut receiver| async move {
         loop {
@@ -239,19 +253,6 @@ async fn build_live_normalized_logs_stream(
             Ok::<_, anyhow::Error>(LogMsg::Finished.to_ws_message_unchecked())
         }))
         .boxed()
-}
-
-async fn get_live_normalized_log_messages_single_flight(
-    exec_id: Uuid,
-    store: Arc<MsgStore>,
-) -> Arc<Vec<String>> {
-    get_normalized_log_messages_single_flight(
-        NormalizedLogReplayMode::Live,
-        exec_id,
-        async move { Some(collect_live_normalized_log_messages(&store)) }.boxed(),
-    )
-    .await
-    .unwrap_or_else(|| Arc::new(Vec::new()))
 }
 
 async fn get_historic_normalized_log_messages_single_flight(
@@ -293,9 +294,10 @@ async fn get_normalized_log_messages_single_flight(
     result
 }
 
-fn collect_live_normalized_log_messages(store: &MsgStore) -> Arc<Vec<String>> {
-    let messages = store
-        .get_history()
+fn collect_live_normalized_log_messages(store: &MsgStore) -> LiveNormalizedLogMessages {
+    let history = store.get_history();
+    let finished = history.iter().any(|msg| matches!(msg, LogMsg::Finished));
+    let payloads = history
         .into_iter()
         .take_while(|msg| !matches!(msg, LogMsg::Finished))
         .filter_map(|msg| match msg {
@@ -307,7 +309,7 @@ fn collect_live_normalized_log_messages(store: &MsgStore) -> Arc<Vec<String>> {
         })
         .collect();
 
-    Arc::new(messages)
+    LiveNormalizedLogMessages { payloads, finished }
 }
 
 async fn collect_historic_normalized_log_messages(
@@ -483,16 +485,69 @@ pub(super) fn router(deployment: &DeploymentImpl) -> Router<DeploymentImpl> {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
+    use std::{
+        sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        },
+        time::Duration,
     };
 
-    use futures_util::FutureExt;
-    use tokio::sync::{Mutex, oneshot};
+    use futures_util::{FutureExt, StreamExt};
+    use serde_json::json;
+    use tokio::{
+        sync::{Mutex, oneshot},
+        time::timeout,
+    };
+    use utils::{log_msg::LogMsg, msg_store::MsgStore};
     use uuid::Uuid;
 
-    use super::{NormalizedLogReplayMode, get_normalized_log_messages_single_flight};
+    use super::{
+        NormalizedLogReplayMode, build_live_normalized_logs_stream,
+        get_normalized_log_messages_single_flight,
+    };
+
+    #[tokio::test]
+    async fn live_normalized_stream_finishes_when_history_already_finished() {
+        let store = Arc::new(MsgStore::new());
+        let patch = serde_json::from_value(json!([
+            {
+                "op": "add",
+                "path": "/entries/0",
+                "value": "already normalized"
+            }
+        ]))
+        .expect("valid json patch");
+        store.push(LogMsg::JsonPatch(patch));
+        store.push(LogMsg::Finished);
+
+        let mut stream = build_live_normalized_logs_stream(Uuid::new_v4(), store).await;
+
+        let first = timeout(Duration::from_secs(1), stream.next())
+            .await
+            .expect("history patch should not hang")
+            .expect("history patch should be present")
+            .expect("history patch should be ok");
+        assert!(
+            first.into_text().expect("text message").contains("entries"),
+            "expected replayed normalized patch"
+        );
+
+        let second = timeout(Duration::from_secs(1), stream.next())
+            .await
+            .expect("finished message should not hang")
+            .expect("finished message should be present")
+            .expect("finished message should be ok");
+        assert_eq!(
+            second.into_text().expect("text message"),
+            "{\"finished\":true}"
+        );
+
+        let end = timeout(Duration::from_secs(1), stream.next())
+            .await
+            .expect("stream end should not hang");
+        assert!(end.is_none());
+    }
 
     #[tokio::test]
     async fn single_flight_shares_same_mode_requests() {
@@ -553,52 +608,5 @@ mod tests {
         assert_eq!(call_count.load(Ordering::SeqCst), 1);
         assert_eq!(&*result1, &vec!["historic".to_string()]);
         assert_eq!(&*result2, &vec!["historic".to_string()]);
-    }
-
-    #[tokio::test]
-    async fn single_flight_does_not_share_across_modes() {
-        let exec_id = Uuid::new_v4();
-        let live_count = Arc::new(AtomicUsize::new(0));
-        let historic_count = Arc::new(AtomicUsize::new(0));
-
-        let live = {
-            let live_count = live_count.clone();
-            tokio::spawn(async move {
-                get_normalized_log_messages_single_flight(
-                    NormalizedLogReplayMode::Live,
-                    exec_id,
-                    async move {
-                        live_count.fetch_add(1, Ordering::SeqCst);
-                        Some(Arc::new(vec!["live".to_string()]))
-                    }
-                    .boxed(),
-                )
-                .await
-            })
-        };
-
-        let historic = {
-            let historic_count = historic_count.clone();
-            tokio::spawn(async move {
-                get_normalized_log_messages_single_flight(
-                    NormalizedLogReplayMode::Historic,
-                    exec_id,
-                    async move {
-                        historic_count.fetch_add(1, Ordering::SeqCst);
-                        Some(Arc::new(vec!["historic".to_string()]))
-                    }
-                    .boxed(),
-                )
-                .await
-            })
-        };
-
-        let live_result = live.await.unwrap().unwrap();
-        let historic_result = historic.await.unwrap().unwrap();
-
-        assert_eq!(live_count.load(Ordering::SeqCst), 1);
-        assert_eq!(historic_count.load(Ordering::SeqCst), 1);
-        assert_eq!(&*live_result, &vec!["live".to_string()]);
-        assert_eq!(&*historic_result, &vec!["historic".to_string()]);
     }
 }
