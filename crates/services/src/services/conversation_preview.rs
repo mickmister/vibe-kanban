@@ -136,11 +136,7 @@ pub fn normalize_limit(limit: Option<usize>) -> usize {
 }
 
 impl ConversationPreviewCache {
-    fn get_cached(
-        &self,
-        session_id: Uuid,
-        limit: usize,
-    ) -> Option<CachedConversationPreview> {
+    fn get_cached(&self, session_id: Uuid, limit: usize) -> Option<CachedConversationPreview> {
         let cached = self.by_session.get(&session_id)?;
         if cached.max_messages < limit {
             return None;
@@ -459,11 +455,7 @@ async fn push_validated_workspace_session_id(
 async fn resolve_warm_session_ids(
     pool: &SqlitePool,
     request: &WarmConversationPreviewRequest,
-) -> (
-    Vec<Uuid>,
-    Vec<Uuid>,
-    Vec<WarmConversationPreviewError>,
-) {
+) -> (Vec<Uuid>, Vec<Uuid>, Vec<WarmConversationPreviewError>) {
     let mut session_ids = request.session_ids.clone();
     let mut empty_workspace_ids = Vec::new();
     let mut errors = Vec::new();
@@ -566,10 +558,11 @@ pub async fn refresh_session_preview(
 ) -> Result<(), ConversationPreviewError> {
     let computed =
         compute_preview_for_session(pool, session_id, DEFAULT_PREVIEW_MESSAGE_LIMIT).await?;
-    conversation_preview_cache()
-        .lock()
-        .await
-        .insert(session_id, computed, DEFAULT_PREVIEW_MESSAGE_LIMIT);
+    conversation_preview_cache().lock().await.insert(
+        session_id,
+        computed,
+        DEFAULT_PREVIEW_MESSAGE_LIMIT,
+    );
 
     Ok(())
 }
@@ -588,12 +581,13 @@ pub async fn refresh_execution_process_preview(
 
 #[cfg(test)]
 mod tests {
+    use chrono::Utc;
+    use uuid::Uuid;
+
     use super::{
         ConversationPreviewMessage, ConversationPreviewMessageRole, normalize_limit,
         take_latest_messages,
     };
-    use chrono::Utc;
-    use uuid::Uuid;
 
     #[test]
     fn take_latest_messages_preserves_chronological_order() {

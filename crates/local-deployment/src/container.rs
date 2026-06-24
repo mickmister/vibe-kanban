@@ -43,8 +43,8 @@ use services::services::{
     analytics::AnalyticsContext,
     approvals::{Approvals, executor_approvals::ExecutorApprovalBridge},
     config::{Config, DEFAULT_COMMIT_REMINDER_PROMPT},
-    conversation_preview,
     container::{ContainerError, ContainerRef, ContainerService},
+    conversation_preview,
     diff_stream::{self, DiffStreamHandle},
     file::FileService,
     notification::NotificationService,
@@ -969,11 +969,9 @@ impl LocalContainerService {
                 }
             }
 
-            if let Err(error) = conversation_preview::refresh_execution_process_preview(
-                &self.db.pool,
-                *exec_id,
-            )
-            .await
+            if let Err(error) =
+                conversation_preview::refresh_execution_process_preview(&self.db.pool, *exec_id)
+                    .await
             {
                 tracing::warn!(
                     "Failed to refresh conversation preview for execution {}: {}",

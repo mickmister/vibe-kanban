@@ -63,7 +63,10 @@ pub async fn get_workspace_conversation_preview(
 
 pub fn router() -> Router<DeploymentImpl> {
     Router::new()
-        .route("/conversation-preview/warm", post(warm_conversation_previews))
+        .route(
+            "/conversation-preview/warm",
+            post(warm_conversation_previews),
+        )
         .route(
             "/sessions/{session_id}/conversation-preview",
             get(get_session_conversation_preview),
