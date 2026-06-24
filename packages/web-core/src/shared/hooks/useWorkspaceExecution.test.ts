@@ -4,7 +4,10 @@ import {
   type ExecutionProcess,
   type ExecutionProcessRunReason,
 } from 'shared/types';
-import { getStoppableExecutionProcesses } from './useWorkspaceExecution';
+import {
+  getStopExecutionMutationKey,
+  getStoppableExecutionProcesses,
+} from './useWorkspaceExecution';
 
 const process = (
   id: string,
@@ -62,6 +65,21 @@ describe('getStoppableExecutionProcesses', () => {
       'running-setup',
       'running-cleanup',
       'running-archive',
+    ]);
+  });
+});
+
+describe('getStopExecutionMutationKey', () => {
+  it('scopes stop pending state by session', () => {
+    expect(getStopExecutionMutationKey('workspace-1', 'session-1')).toEqual([
+      'stopSessionExecution',
+      'workspace-1',
+      'session-1',
+    ]);
+    expect(getStopExecutionMutationKey('workspace-1', 'session-2')).toEqual([
+      'stopSessionExecution',
+      'workspace-1',
+      'session-2',
     ]);
   });
 });

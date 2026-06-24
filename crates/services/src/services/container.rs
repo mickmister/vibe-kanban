@@ -1411,3 +1411,291 @@ pub trait ContainerService {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::str::FromStr;
+
+    use sqlx::{
+        SqlitePool,
+        sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions},
+    };
+    use tokio::sync::Mutex;
+
+    use super::*;
+    use crate::services::config::Config;
+
+    struct TestContainerService {
+        db: DBService,
+        git: GitService,
+        notifications: NotificationService,
+        msg_stores: Arc<RwLock<HashMap<Uuid, Arc<MsgStore>>>>,
+        stopped_processes: Arc<Mutex<Vec<Uuid>>>,
+        container_ref: String,
+    }
+
+    impl TestContainerService {
+        fn new(db: DBService, container_ref: String) -> Self {
+            Self {
+                db,
+                git: GitService::new(),
+                notifications: NotificationService::new(Arc::new(RwLock::new(Config::default()))),
+                msg_stores: Arc::new(RwLock::new(HashMap::new())),
+                stopped_processes: Arc::new(Mutex::new(Vec::new())),
+                container_ref,
+            }
+        }
+
+        async fn stopped_processes(&self) -> Vec<Uuid> {
+            self.stopped_processes.lock().await.clone()
+        }
+    }
+
+    #[async_trait]
+    impl ContainerService for TestContainerService {
+        fn msg_stores(&self) -> &Arc<RwLock<HashMap<Uuid, Arc<MsgStore>>>> {
+            &self.msg_stores
+        }
+
+        fn db(&self) -> &DBService {
+            &self.db
+        }
+
+        fn git(&self) -> &GitService {
+            &self.git
+        }
+
+        fn notification_service(&self) -> &NotificationService {
+            &self.notifications
+        }
+
+        async fn touch(&self, _workspace: &Workspace) -> Result<(), ContainerError> {
+            Ok(())
+        }
+
+        fn workspace_to_current_dir(&self, _workspace: &Workspace) -> PathBuf {
+            PathBuf::from(&self.container_ref)
+        }
+
+        async fn store_db_stream_handle(&self, _id: Uuid, _handle: JoinHandle<()>) {}
+
+        async fn take_db_stream_handle(&self, _id: &Uuid) -> Option<JoinHandle<()>> {
+            None
+        }
+
+        async fn create(&self, _workspace: &Workspace) -> Result<ContainerRef, ContainerError> {
+            Ok(self.container_ref.clone())
+        }
+
+        async fn kill_all_running_processes(&self) -> Result<(), ContainerError> {
+            Ok(())
+        }
+
+        async fn delete(&self, _workspace: &Workspace) -> Result<(), ContainerError> {
+            Ok(())
+        }
+
+        async fn ensure_container_exists(
+            &self,
+            _workspace: &Workspace,
+        ) -> Result<ContainerRef, ContainerError> {
+            Ok(self.container_ref.clone())
+        }
+
+        async fn is_container_clean(&self, _workspace: &Workspace) -> Result<bool, ContainerError> {
+            Ok(true)
+        }
+
+        async fn start_execution_inner(
+            &self,
+            _workspace: &Workspace,
+            _execution_process: &ExecutionProcess,
+            _executor_action: &ExecutorAction,
+        ) -> Result<(), ContainerError> {
+            Ok(())
+        }
+
+        async fn stop_execution(
+            &self,
+            execution_process: &ExecutionProcess,
+            status: ExecutionProcessStatus,
+        ) -> Result<(), ContainerError> {
+            self.stopped_processes
+                .lock()
+                .await
+                .push(execution_process.id);
+            ExecutionProcess::update_completion(
+                &self.db.pool,
+                execution_process.id,
+                status,
+                None,
+            )
+            .await?;
+            Ok(())
+        }
+
+        async fn try_commit_changes(&self, _ctx: &ExecutionContext) -> Result<bool, ContainerError> {
+            Ok(false)
+        }
+
+        async fn copy_project_files(
+            &self,
+            _source_dir: &Path,
+            _target_dir: &Path,
+            _copy_files: &str,
+        ) -> Result<(), ContainerError> {
+            Ok(())
+        }
+
+        async fn stream_diff(
+            &self,
+            _workspace: &Workspace,
+            _stats_only: bool,
+        ) -> Result<BoxStream<'static, Result<LogMsg, std::io::Error>>, ContainerError> {
+            Ok(futures::stream::empty().boxed())
+        }
+
+        async fn git_branch_prefix(&self) -> String {
+            String::new()
+        }
+    }
+
+    async fn test_pool() -> Result<(tempfile::TempDir, SqlitePool), Box<dyn std::error::Error>> {
+        let temp_dir = tempfile::tempdir()?;
+        let db_path = temp_dir.path().join("test.sqlite");
+        let database_url = format!("sqlite://{}", db_path.to_string_lossy());
+        let options = SqliteConnectOptions::from_str(&database_url)?
+            .create_if_missing(true)
+            .journal_mode(SqliteJournalMode::Delete)
+            .disable_statement_logging();
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(options)
+            .await?;
+        sqlx::migrate!("../db/migrations").run(&pool).await?;
+        Ok((temp_dir, pool))
+    }
+
+    async fn insert_workspace(
+        pool: &SqlitePool,
+        container_ref: &str,
+    ) -> Result<Uuid, sqlx::Error> {
+        let workspace_id = Uuid::new_v4();
+        sqlx::query("INSERT INTO workspaces (id, branch, container_ref) VALUES (?1, ?2, ?3)")
+            .bind(workspace_id)
+            .bind("test-branch")
+            .bind(container_ref)
+            .execute(pool)
+            .await?;
+        Ok(workspace_id)
+    }
+
+    async fn insert_process(
+        pool: &SqlitePool,
+        session_id: Uuid,
+        run_reason: ExecutionProcessRunReason,
+        status: ExecutionProcessStatus,
+        created_at: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Uuid, sqlx::Error> {
+        let process_id = Uuid::new_v4();
+        sqlx::query(
+            r#"INSERT INTO execution_processes
+               (id, session_id, run_reason, executor_action, status, dropped,
+                started_at, created_at, updated_at)
+               VALUES (?1, ?2, ?3, ?4, ?5, FALSE, ?6, ?7, ?8)"#,
+        )
+        .bind(process_id)
+        .bind(session_id)
+        .bind(run_reason)
+        .bind("{}")
+        .bind(status)
+        .bind(created_at)
+        .bind(created_at)
+        .bind(created_at)
+        .execute(pool)
+        .await?;
+        Ok(process_id)
+    }
+
+    #[tokio::test]
+    async fn reset_session_to_process_stops_only_processes_in_target_session(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let (temp_dir, pool) = test_pool().await?;
+        let workspace_id =
+            insert_workspace(&pool, temp_dir.path().to_string_lossy().as_ref()).await?;
+        let session_a = Session::create(
+            &pool,
+            &CreateSession {
+                executor: Some("codex".to_string()),
+                name: Some("session a".to_string()),
+            },
+            Uuid::new_v4(),
+            workspace_id,
+        )
+        .await?;
+        let session_b = Session::create(
+            &pool,
+            &CreateSession {
+                executor: Some("codex".to_string()),
+                name: Some("session b".to_string()),
+            },
+            Uuid::new_v4(),
+            workspace_id,
+        )
+        .await?;
+
+        let now = chrono::Utc::now();
+        let target_process = insert_process(
+            &pool,
+            session_a.id,
+            ExecutionProcessRunReason::CodingAgent,
+            ExecutionProcessStatus::Completed,
+            now,
+        )
+        .await?;
+        let session_a_running_process = insert_process(
+            &pool,
+            session_a.id,
+            ExecutionProcessRunReason::CodingAgent,
+            ExecutionProcessStatus::Running,
+            now + chrono::Duration::milliseconds(1),
+        )
+        .await?;
+        let session_b_running_process = insert_process(
+            &pool,
+            session_b.id,
+            ExecutionProcessRunReason::CodingAgent,
+            ExecutionProcessStatus::Running,
+            now + chrono::Duration::milliseconds(2),
+        )
+        .await?;
+
+        let service = TestContainerService::new(
+            DBService { pool: pool.clone() },
+            temp_dir.path().to_string_lossy().to_string(),
+        );
+
+        service
+            .reset_session_to_process(session_a.id, target_process, false, false)
+            .await?;
+
+        assert_eq!(
+            service.stopped_processes().await,
+            vec![session_a_running_process]
+        );
+
+        let session_a_process = ExecutionProcess::find_by_id(&pool, session_a_running_process)
+            .await?
+            .expect("session A running process should still exist");
+        assert_eq!(session_a_process.status, ExecutionProcessStatus::Killed);
+        assert!(session_a_process.dropped);
+
+        let session_b_process = ExecutionProcess::find_by_id(&pool, session_b_running_process)
+            .await?
+            .expect("session B running process should still exist");
+        assert_eq!(session_b_process.status, ExecutionProcessStatus::Running);
+        assert!(!session_b_process.dropped);
+
+        Ok(())
+    }
+}

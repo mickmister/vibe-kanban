@@ -22,10 +22,24 @@ export function getStoppableExecutionProcesses(
   );
 }
 
+export function getStopExecutionMutationKey(
+  workspaceId: string | undefined,
+  sessionId: string | undefined
+) {
+  return ['stopSessionExecution', workspaceId, sessionId] as const;
+}
+
 export function useWorkspaceExecution(workspaceId?: string) {
+  const {
+    executionProcessesVisible: executionProcesses,
+    isAttemptRunningVisible: isAttemptRunning,
+    isLoading: streamLoading,
+  } = useExecutionProcessesContext();
+  const sessionId = executionProcesses[0]?.session_id;
+
   const stopMutationKey = useMemo(
-    () => ['stopWorkspaceExecution', workspaceId] as const,
-    [workspaceId]
+    () => getStopExecutionMutationKey(workspaceId, sessionId),
+    [workspaceId, sessionId]
   );
 
   const stopMutation = useMutation({
@@ -47,12 +61,6 @@ export function useWorkspaceExecution(workspaceId?: string) {
         status: 'pending',
       },
     }).length > 0;
-
-  const {
-    executionProcessesVisible: executionProcesses,
-    isAttemptRunningVisible: isAttemptRunning,
-    isLoading: streamLoading,
-  } = useExecutionProcessesContext();
 
   // Get setup script processes that need detailed info
   const setupProcesses = useMemo(() => {
@@ -100,7 +108,7 @@ export function useWorkspaceExecution(workspaceId?: string) {
       console.error('Failed to stop executions:', error);
       throw error;
     }
-  }, [workspaceId, isStopping, stopMutation]);
+  }, [workspaceId, isStopping, stopMutation, executionProcesses]);
 
   const isLoading =
     streamLoading || processDetailQueries.some((q) => q.isLoading);

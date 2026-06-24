@@ -446,16 +446,6 @@ export const workspacesApi = {
     return createWorkspaceWithSession(workspace, sessions[0]);
   },
 
-  stop: async (workspaceId: string): Promise<void> => {
-    const response = await makeRequest(
-      `/api/workspaces/${workspaceId}/execution/stop`,
-      {
-        method: 'POST',
-      }
-    );
-    return handleApiResponse<void>(response);
-  },
-
   delete: async (
     workspaceId: string,
     deleteBranches?: boolean
