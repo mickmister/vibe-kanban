@@ -71,9 +71,10 @@ impl ServerHandle {
         let proxy_router: axum::Router = {
             let router = routes::preview::subdomain_router(self.deployment.clone());
             let router = if perf_tracing_enabled {
-                router.layer(TraceLayer::new_for_http().make_span_with(
-                    |request: &axum::extract::Request| make_http_span(request),
-                ))
+                router.layer(
+                    TraceLayer::new_for_http()
+                        .make_span_with(|request: &axum::extract::Request| make_http_span(request)),
+                )
             } else {
                 router
             };

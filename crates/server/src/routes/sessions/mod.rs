@@ -53,14 +53,12 @@ pub async fn get_sessions(
     Query(query): Query<SessionQuery>,
 ) -> Result<ResponseJson<ApiResponse<Vec<Session>>>, ApiError> {
     let pool = &deployment.db().pool;
-    let sessions = async {
-        Session::find_by_workspace_id(pool, query.workspace_id).await
-    }
-    .instrument(tracing::debug_span!(
-        "sessions.find_by_workspace_id",
-        workspace_id = %query.workspace_id,
-    ))
-    .await?;
+    let sessions = async { Session::find_by_workspace_id(pool, query.workspace_id).await }
+        .instrument(tracing::debug_span!(
+            "sessions.find_by_workspace_id",
+            workspace_id = %query.workspace_id,
+        ))
+        .await?;
 
     tracing::debug!(
         workspace_id = %query.workspace_id,

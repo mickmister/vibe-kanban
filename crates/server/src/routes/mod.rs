@@ -3,8 +3,7 @@ use axum::{
     routing::{IntoMakeService, get},
 };
 use tower_http::{
-    compression::CompressionLayer, trace::TraceLayer,
-    validate_request::ValidateRequestHeaderLayer,
+    compression::CompressionLayer, trace::TraceLayer, validate_request::ValidateRequestHeaderLayer,
 };
 
 use crate::{DeploymentImpl, middleware};
@@ -86,15 +85,14 @@ pub fn router(deployment: DeploymentImpl, perf_tracing_enabled: bool) -> IntoMak
         .route("/{*path}", get(frontend::serve_frontend))
         .nest("/api", api_routes);
 
-    let router = if perf_tracing_enabled {
-        router.layer(TraceLayer::new_for_http().make_span_with(
-            |request: &axum::extract::Request| middleware::make_http_span(request),
-        ))
-    } else {
-        router
-    };
+    let router =
+        if perf_tracing_enabled {
+            router.layer(TraceLayer::new_for_http().make_span_with(
+                |request: &axum::extract::Request| middleware::make_http_span(request),
+            ))
+        } else {
+            router
+        };
 
-    router
-        .layer(CompressionLayer::new())
-        .into_make_service()
+    router.layer(CompressionLayer::new()).into_make_service()
 }

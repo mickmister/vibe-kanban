@@ -17,6 +17,7 @@ use utils::{
     perf_trace,
     port_file::write_port_file_with_proxy,
     sentry::{self as sentry_utils, SentrySource, sentry_layer},
+    signoz,
 };
 
 const DEFAULT_TRACING_TARGETS: &[&str] = &[
@@ -66,13 +67,22 @@ async fn main() -> Result<(), VibeKanbanError> {
         DEFAULT_TRACING_TARGETS,
         DEFAULT_TRACING_DIRECTIVES,
     );
-    let env_filter = EnvFilter::try_new(filter_string).expect("Failed to create tracing filter");
+    let env_filter =
+        EnvFilter::try_new(filter_string.as_str()).expect("Failed to create tracing filter");
+    let signoz_tracing = signoz::init_layer("vibe-kanban-backend", &filter_string);
+    let signoz_enabled = signoz_tracing.is_some();
+    let signoz_provider = signoz_tracing
+        .as_ref()
+        .map(|tracing| tracing.provider.clone());
+    let signoz_layer = signoz_tracing.map(|tracing| tracing.layer);
     tracing_subscriber::registry()
         .with(tracing_subscriber::fmt::layer().with_filter(env_filter))
+        .with(signoz_layer)
         .with(sentry_layer(SentrySource::Backend))
         .init();
     if perf_tracing_enabled {
         tracing::info!(
+            signoz_enabled,
             "Performance tracing enabled. HTTP spans, SQLx query logs, \
              and WebSocket send paths are traceable."
         );
@@ -152,9 +162,10 @@ async fn main() -> Result<(), VibeKanbanError> {
     let proxy_router: Router = {
         let router = routes::preview::subdomain_router(deployment.clone());
         let router = if perf_tracing_enabled {
-            router.layer(TraceLayer::new_for_http().make_span_with(
-                |request: &axum::extract::Request| make_http_span(request),
-            ))
+            router.layer(
+                TraceLayer::new_for_http()
+                    .make_span_with(|request: &axum::extract::Request| make_http_span(request)),
+            )
         } else {
             router
         };
@@ -195,6 +206,12 @@ async fn main() -> Result<(), VibeKanbanError> {
     shutdown_token.cancel();
 
     perform_cleanup_actions(&deployment).await;
+
+    if let Some(provider) = signoz_provider
+        && let Err(error) = provider.shutdown()
+    {
+        tracing::warn!(%error, "Failed to flush SigNoz OpenTelemetry spans");
+    }
 
     Ok(())
 }

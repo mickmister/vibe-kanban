@@ -4,7 +4,7 @@ use axum::extract::MatchedPath;
 ///
 /// Route templates preserve endpoint-level performance visibility while
 /// avoiding high-cardinality and potentially sensitive path/query data in logs
-/// or Sentry Performance traces.
+/// or exported OpenTelemetry traces.
 pub fn make_http_span<B>(request: &http::Request<B>) -> tracing::Span {
     let matched_path = request
         .extensions()

@@ -26,46 +26,55 @@ RUST_LOG='server=trace,services=debug,db=debug,sqlx::query=debug,tower_http=debu
 pnpm run backend:dev:watch
 ```
 
-## Sending traces to Sentry
+## Sending traces to SigNoz
 
-The backend already initializes Sentry when `SENTRY_DSN` is configured. To send
-performance spans to Sentry, explicitly set a Sentry trace sample rate for the
-profiling run.
+Performance spans are exported to SigNoz through OpenTelemetry OTLP. Export is
+opt-in and only starts when both `VK_PERF_TRACING=1` and an OTLP endpoint are
+configured. Sentry remains available for errors/breadcrumbs, but performance
+traces should go to SigNoz.
 
-Use a lower sample rate for longer or higher-volume runs:
+For SigNoz Cloud, use the regional ingest endpoint and ingestion key:
 
 ```bash
-SENTRY_DSN='https://public-key@o0.ingest.sentry.io/project-id' \
 VK_PERF_TRACING=1 \
-VK_SENTRY_TRACES_SAMPLE_RATE=0.2 \
+OTEL_EXPORTER_OTLP_ENDPOINT='https://ingest.<region>.signoz.cloud:443' \
+OTEL_EXPORTER_OTLP_HEADERS='signoz-ingestion-key=<your-ingestion-key>' \
+OTEL_SERVICE_NAME='vibe-kanban-backend' \
+OTEL_RESOURCE_ATTRIBUTES="service.version=$(git rev-parse --short HEAD)" \
 RUST_LOG=info \
 pnpm run backend:dev:watch
 ```
 
-`VK_SENTRY_TRACES_SAMPLE_RATE` takes precedence over `SENTRY_TRACES_SAMPLE_RATE`.
-Both must be valid Sentry-supported values from `0.0` to `1.0`; invalid values
-disable Sentry Performance export instead of falling back to a higher sample
-rate. Prefer short, sampled profiling windows for noisy WebSocket sessions to
-avoid excessive span volume.
+For a local/self-hosted SigNoz OpenTelemetry Collector using OTLP/HTTP:
 
-The standalone backend uses backend Sentry performance settings directly. The
-desktop app runs the local backend in the same process, so `VK_PERF_TRACING=1`
-also switches the desktop process into an embedded-backend performance mode for
-filter directives and Sentry span capture.
+```bash
+VK_PERF_TRACING=1 \
+OTEL_EXPORTER_OTLP_ENDPOINT='http://localhost:4318' \
+OTEL_SERVICE_NAME='vibe-kanban-backend' \
+RUST_LOG=info \
+pnpm run backend:dev:watch
+```
 
-### Sentry smoke-test checklist
+The exporter uses the standard OpenTelemetry Rust environment variables, so you
+can also set `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` if traces need a different
+endpoint from other OTLP signals. The desktop app runs the local backend in the
+same process; when `VK_PERF_TRACING=1`, the desktop process installs the same
+performance filter directives and SigNoz OTLP tracing layer.
 
-For a profiling run that sends data to Sentry:
+### SigNoz smoke-test checklist
 
-1. Start the backend with `SENTRY_DSN`, `VK_PERF_TRACING=1`, and an explicit
-   `VK_SENTRY_TRACES_SAMPLE_RATE`.
+For a profiling run that sends data to SigNoz:
+
+1. Start the backend with `VK_PERF_TRACING=1`, `OTEL_EXPORTER_OTLP_ENDPOINT`,
+   and `OTEL_SERVICE_NAME`.
 2. Load a session in the browser and wait for the spinner to resolve.
 3. Trigger or observe an agent message stream.
-4. In Sentry Performance, confirm a backend transaction includes nested spans
+4. In SigNoz, refresh the Services page and open the configured service.
+5. In Traces, confirm spans are present for session load or message streaming,
    such as `http.request`, `sessions.find_by_workspace_id`,
    `events.stream_execution_processes.initial_snapshot`,
    `normalized_logs.*`, and `ws.send`.
-5. Confirm HTTP span data uses route templates rather than raw query strings or
+6. Confirm HTTP span data uses route templates rather than raw query strings or
    full request URIs.
 
 ## WebSocket notes

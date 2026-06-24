@@ -35,15 +35,27 @@ pub fn tracing_filter_string(
         rust_log.to_string()
     } else {
         let mut directives = Vec::with_capacity(default_targets.len() + extra_directives.len());
-        directives.extend(extra_directives.iter().map(|directive| (*directive).to_string()));
-        directives.extend(default_targets.iter().map(|target| format!("{target}={rust_log}")));
+        directives.extend(
+            extra_directives
+                .iter()
+                .map(|directive| (*directive).to_string()),
+        );
+        directives.extend(
+            default_targets
+                .iter()
+                .map(|target| format!("{target}={rust_log}")),
+        );
         directives.join(",")
     };
 
     if perf_tracing_enabled {
         let mut directives = Vec::with_capacity(1 + PERF_TRACE_DIRECTIVES.len());
         directives.push(base_filter);
-        directives.extend(PERF_TRACE_DIRECTIVES.iter().map(|directive| (*directive).to_string()));
+        directives.extend(
+            PERF_TRACE_DIRECTIVES
+                .iter()
+                .map(|directive| (*directive).to_string()),
+        );
         directives.join(",")
     } else {
         base_filter

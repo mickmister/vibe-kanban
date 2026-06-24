@@ -20,9 +20,8 @@ use tracing_subscriber::{EnvFilter, prelude::*};
 use utils::{
     assets::config_path,
     perf_trace,
-    sentry::{
-        SentryPerfMode, SentrySource, init_once_with_perf_mode, sentry_layer_with_perf_mode,
-    },
+    sentry::{self as sentry_utils, SentrySource, sentry_layer},
+    signoz,
 };
 use uuid::Uuid;
 
@@ -139,21 +138,20 @@ fn main() {
         DEFAULT_TRACING_TARGETS,
         DEFAULT_TRACING_DIRECTIVES,
     );
-    let env_filter = EnvFilter::try_new(filter_string).expect("Failed to create tracing filter");
+    let env_filter =
+        EnvFilter::try_new(filter_string.as_str()).expect("Failed to create tracing filter");
 
-    let sentry_perf_mode = if perf_tracing_enabled {
-        SentryPerfMode::Backend
-    } else {
-        SentryPerfMode::SourceDefault
-    };
-    init_once_with_perf_mode(SentrySource::Desktop, sentry_perf_mode);
+    sentry_utils::init_once(SentrySource::Desktop);
+    let signoz_tracing = signoz::init_layer("vibe-kanban-desktop", &filter_string);
+    let signoz_provider = signoz_tracing
+        .as_ref()
+        .map(|tracing| tracing.provider.clone());
+    let signoz_layer = signoz_tracing.map(|tracing| tracing.layer);
 
     tracing_subscriber::registry()
         .with(tracing_subscriber::fmt::layer().with_filter(env_filter))
-        .with(sentry_layer_with_perf_mode(
-            SentrySource::Desktop,
-            sentry_perf_mode,
-        ))
+        .with(signoz_layer)
+        .with(sentry_layer(SentrySource::Desktop))
         .init();
 
     // Shared token so we can tell the server to shut down when the app quits.
@@ -336,6 +334,12 @@ fn main() {
                 tauri::async_runtime::block_on(install_pending_update(_app, &pending_for_exit));
             }
         });
+
+    if let Some(provider) = signoz_provider
+        && let Err(error) = provider.shutdown()
+    {
+        tracing::warn!(%error, "Failed to flush SigNoz OpenTelemetry spans");
+    }
 }
 
 /// Disable trackpad/touchpad pinch-to-zoom on macOS while keeping Cmd+/- zoom.

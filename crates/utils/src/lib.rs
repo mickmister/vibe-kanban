@@ -20,6 +20,7 @@ pub mod process_diag;
 pub mod response;
 pub mod sentry;
 pub mod shell;
+pub mod signoz;
 pub mod stream_lines;
 pub mod text;
 pub mod tokio;
