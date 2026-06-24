@@ -116,8 +116,9 @@ export interface ConversationVirtualizerResult {
   checkIsAtBottom: () => boolean;
 
   /**
-   * Release the bottom-lock. Call when navigating away from the
-   * bottom (e.g., scrollToPreviousUserMessage).
+   * Compatibility no-op. Callers can keep invoking this before imperative
+   * navigation without needing to know whether the current virtualizer
+   * implementation uses an explicit bottom-lock.
    */
   releaseBottomLock: () => void;
 
@@ -152,14 +153,6 @@ export function useConversationVirtualizer({
   onAtBottomChange,
   shouldSuppressSizeAdjustment,
 }: ConversationVirtualizerOptions): ConversationVirtualizerResult {
-  const bottomLockedRef = useRef(false);
-  const smoothScrollDeadlineRef = useRef(0);
-
-  const isBottomScrollCorrectionActive = useCallback(
-    () => bottomLockedRef.current,
-    []
-  );
-
   // -------------------------------------------------------------------------
   // Virtualizer instance
   // -------------------------------------------------------------------------
@@ -177,6 +170,9 @@ export function useConversationVirtualizer({
       const row = rows[index];
       return row ? row.semanticKey : index;
     },
+    anchorTo: 'end',
+    followOnAppend: 'auto',
+    scrollEndThreshold: NEAR_BOTTOM_THRESHOLD_PX,
     overscan: OVERSCAN,
     measureElement: defaultMeasureElement,
     useAnimationFrameWithResizeObserver: false,
@@ -207,10 +203,16 @@ export function useConversationVirtualizer({
       const remainingDistance =
         totalScrollableSize - (scrollOffset + viewportHeight);
       const isItemFullyAboveViewport = item.end <= scrollOffset;
-      const isBottomLocked = bottomLockedRef.current;
+      const isAtEnd = scrollElement
+        ? isNearBottom(
+            scrollElement.scrollTop,
+            scrollElement.clientHeight,
+            scrollElement.scrollHeight
+          )
+        : instance.isAtEnd(NEAR_BOTTOM_THRESHOLD_PX);
 
       const shouldAdjust =
-        !isBottomLocked &&
+        !isAtEnd &&
         !shouldSuppressSizeAdjustment?.() &&
         isItemFullyAboveViewport &&
         remainingDistance > NEAR_BOTTOM_THRESHOLD_PX;
@@ -234,11 +236,9 @@ export function useConversationVirtualizer({
 
   const syncIsAtBottom = useCallback(() => {
     const el = scrollContainerRef.current;
-    const nextValue = isBottomScrollCorrectionActive()
-      ? true
-      : el
-        ? isNearBottom(el.scrollTop, el.clientHeight, el.scrollHeight)
-        : true;
+    const nextValue = el
+      ? isNearBottom(el.scrollTop, el.clientHeight, el.scrollHeight)
+      : true;
 
     if (nextValue !== lastAtBottomRef.current) {
       lastAtBottomRef.current = nextValue;
@@ -250,34 +250,13 @@ export function useConversationVirtualizer({
     setIsAtBottomState((current) =>
       current === nextValue ? current : nextValue
     );
-  }, [isBottomScrollCorrectionActive, scrollContainerRef]);
-
-  const prevScrollTopRef = useRef(0);
+  }, [scrollContainerRef, virtualizer]);
 
   useEffect(() => {
     const el = scrollContainerRef.current;
     if (!el) return;
 
-    prevScrollTopRef.current = el.scrollTop;
-
     const handleScroll = () => {
-      const currentScrollTop = el.scrollTop;
-
-      // Release bottom lock on any user-initiated upward scroll.
-      // Guards prevent false positives from programmatic scroll sources:
-      // - smoothScrollDeadlineRef: set during scrollToBottom('smooth')
-      // - shouldSuppressSizeAdjustment: set during interaction anchor corrections
-      // - 5px threshold: filters input-resize micro-adjustments
-      if (
-        bottomLockedRef.current &&
-        prevScrollTopRef.current - currentScrollTop > 5 &&
-        performance.now() > smoothScrollDeadlineRef.current &&
-        !shouldSuppressSizeAdjustment?.()
-      ) {
-        bottomLockedRef.current = false;
-      }
-
-      prevScrollTopRef.current = currentScrollTop;
       syncIsAtBottom();
     };
 
@@ -295,27 +274,9 @@ export function useConversationVirtualizer({
 
   const virtualItems = virtualizer.getVirtualItems();
   const totalSize = virtualizer.getTotalSize();
-
   useLayoutEffect(() => {
     syncIsAtBottom();
-
-    if (!bottomLockedRef.current) return;
-    if (performance.now() < smoothScrollDeadlineRef.current) return;
-
-    const el = scrollContainerRef.current;
-    if (!el) return;
-
-    const maxScroll = el.scrollHeight - el.clientHeight;
-    if (maxScroll > 0 && Math.abs(maxScroll - el.scrollTop) > 1) {
-      el.scrollTop = maxScroll;
-    }
-  }, [
-    rows.length,
-    totalRowCount,
-    totalSize,
-    syncIsAtBottom,
-    scrollContainerRef,
-  ]);
+  }, [rows.length, totalRowCount, totalSize, syncIsAtBottom]);
 
   // -------------------------------------------------------------------------
   // Imperative helpers
@@ -326,16 +287,14 @@ export function useConversationVirtualizer({
       const el = scrollContainerRef.current;
       if (!el) return;
 
-      bottomLockedRef.current = true;
-
       if (behavior === 'smooth') {
-        smoothScrollDeadlineRef.current = performance.now() + 500;
         el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
-      } else {
-        el.scrollTop = el.scrollHeight - el.clientHeight;
+        return;
       }
+
+      el.scrollTop = el.scrollHeight - el.clientHeight;
     },
-    [scrollContainerRef, virtualizer]
+    [scrollContainerRef]
   );
 
   const scrollToIndex = useCallback(
@@ -346,10 +305,6 @@ export function useConversationVirtualizer({
         behavior?: ScrollToOptionsBehavior;
       }
     ) => {
-      if (bottomLockedRef.current) {
-        bottomLockedRef.current = false;
-      }
-
       virtualizer.scrollToIndex(index, {
         align: options?.align ?? 'start',
         behavior: options?.behavior ?? 'smooth',
@@ -383,10 +338,7 @@ export function useConversationVirtualizer({
     return isNearBottom(el.scrollTop, el.clientHeight, el.scrollHeight);
   }, [scrollContainerRef]);
 
-  const releaseBottomLock = useCallback(() => {
-    if (!bottomLockedRef.current) return;
-    bottomLockedRef.current = false;
-  }, []);
+  const releaseBottomLock = useCallback(() => {}, []);
 
   // -------------------------------------------------------------------------
   // Row ↔ VirtualItem mapping
