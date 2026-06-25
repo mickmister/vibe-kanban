@@ -769,11 +769,16 @@ export const ConversationList = forwardRef<
             <SpinnerIcon className="size-6 animate-spin text-low" />
           </div>
         )}
-        {!showLoader && (isLoadingHistory || historyError) && (
-          <div className="pointer-events-none absolute inset-x-0 top-0 z-10 flex justify-center px-double pt-3">
-            <div className="pointer-events-auto flex w-full max-w-md flex-col gap-3">
-              {isLoadingHistory && (
-                <div className="rounded border bg-panel/95 px-double py-3 shadow-sm backdrop-blur-sm">
+        <div
+          ref={tanstackScrollRef}
+          className="h-full overflow-y-auto scrollbar-none"
+          style={{ overflowAnchor: 'none', contain: 'strict' }}
+          onClickCapture={handleConversationClickCapture}
+        >
+          <div className="pt-2">
+            {!showLoader && isLoadingHistory && (
+              <div className="mb-base px-double">
+                <div className="rounded border bg-panel px-double py-3">
                   <div className="flex flex-col items-center gap-2">
                     <div className="flex w-full flex-col gap-1.5">
                       <div className="flex items-center gap-2">
@@ -796,9 +801,11 @@ export const ConversationList = forwardRef<
                     </span>
                   </div>
                 </div>
-              )}
+              </div>
+            )}
 
-              {historyError && (
+            {!showLoader && historyError && (
+              <div className="mb-base px-double">
                 <Alert variant="destructive">
                   <AlertCircle className="h-4 w-4" />
                   <AlertDescription className="space-y-3">
@@ -819,17 +826,9 @@ export const ConversationList = forwardRef<
                     )}
                   </AlertDescription>
                 </Alert>
-              )}
-            </div>
-          </div>
-        )}
-        <div
-          ref={tanstackScrollRef}
-          className="h-full overflow-y-auto scrollbar-none"
-          style={{ overflowAnchor: 'none', contain: 'strict' }}
-          onClickCapture={handleConversationClickCapture}
-        >
-          <div className="pt-2">
+              </div>
+            )}
+
             {showSetupPlaceholder && (
               <div className="my-base px-double">
                 <ChatScriptPlaceholder
