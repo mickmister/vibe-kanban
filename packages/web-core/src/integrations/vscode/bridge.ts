@@ -306,6 +306,30 @@ export function openFileInVSCode(
   }
 }
 
+/** Notify a parent shell that the user clicked an agent-rendered bead reference. */
+export function postBeadReferenceClicked(args: {
+  beadId: string;
+  workspaceId?: string;
+  sessionId?: string;
+}): boolean {
+  if (!inIframe()) return false;
+  try {
+    window.parent.postMessage(
+      {
+        type: 'vk:bead-reference-clicked',
+        beadId: args.beadId,
+        workspaceId: args.workspaceId,
+        sessionId: args.sessionId,
+        source: 'agent-message',
+      },
+      '*'
+    );
+    return true;
+  } catch (_err) {
+    return false;
+  }
+}
+
 /** Message union used for iframe <-> extension communications. */
 type IframeMessage = {
   type: string;

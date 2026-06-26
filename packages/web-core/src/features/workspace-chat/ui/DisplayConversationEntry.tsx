@@ -1,4 +1,11 @@
-import { useMemo, useCallback, useLayoutEffect, useRef, useState } from 'react';
+import {
+  useMemo,
+  useCallback,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type MouseEvent,
+} from 'react';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
 import {
@@ -27,6 +34,11 @@ import { useChangesViewActions } from '@/shared/hooks/useChangesView';
 import { useLogsPanelActions } from '@/shared/hooks/useLogsPanel';
 import { cn } from '@/shared/lib/utils';
 import {
+  getConfiguredBeadReferenceTargets,
+  linkifyBeadReferencesMarkdown,
+  parseBeadReferenceHref,
+} from '@/shared/lib/beadLinks';
+import {
   ScriptFixerDialog,
   type ScriptType,
 } from '@/shared/dialogs/scripts/ScriptFixerDialog';
@@ -52,7 +64,11 @@ import {
   DiffViewBody,
   useDiffData,
 } from '@vibe/ui/components/PierreConversationDiff';
-import { inIframe, openFileInVSCode } from '@/integrations/vscode/bridge';
+import {
+  inIframe,
+  openFileInVSCode,
+  postBeadReferenceClicked,
+} from '@/integrations/vscode/bridge';
 import { useDiffViewMode } from '@/shared/stores/useDiffViewStore';
 import type {
   AggregatedPatchGroup,
@@ -484,23 +500,56 @@ function AppChatMarkdown({
   maxWidth: string | undefined;
 }) {
   const { viewFileInChanges, findMatchingDiffPath } = useChangesViewActions();
+  const contentWithBeadLinks = useMemo(
+    () =>
+      linkifyBeadReferencesMarkdown(
+        content,
+        getConfiguredBeadReferenceTargets()
+      ),
+    [content]
+  );
+  const handleBeadReferenceClick = useCallback(
+    (event: MouseEvent<HTMLDivElement>) => {
+      const target = event.target;
+      if (!(target instanceof Element)) return;
+
+      const anchor = target.closest('a[href]');
+      if (!(anchor instanceof HTMLAnchorElement)) return;
+
+      const beadId = parseBeadReferenceHref(anchor.getAttribute('href') ?? '');
+      if (!beadId) return;
+
+      const posted = postBeadReferenceClicked({
+        beadId,
+        workspaceId,
+        sessionId,
+      });
+      if (!posted) return;
+
+      event.preventDefault();
+      event.stopPropagation();
+    },
+    [sessionId, workspaceId]
+  );
 
   return (
     <ChatMarkdown
-      content={content}
+      content={contentWithBeadLinks}
       workspaceId={workspaceId}
       className={className}
       maxWidth={maxWidth}
       renderContent={({ content, className, workspaceId }) => (
-        <WYSIWYGEditor
-          value={content}
-          disabled
-          className={className}
-          workspaceId={workspaceId}
-          sessionId={sessionId}
-          findMatchingDiffPath={findMatchingDiffPath}
-          onCodeClick={viewFileInChanges}
-        />
+        <div onClickCapture={handleBeadReferenceClick}>
+          <WYSIWYGEditor
+            value={content}
+            disabled
+            className={className}
+            workspaceId={workspaceId}
+            sessionId={sessionId}
+            findMatchingDiffPath={findMatchingDiffPath}
+            onCodeClick={viewFileInChanges}
+          />
+        </div>
       )}
     />
   );
