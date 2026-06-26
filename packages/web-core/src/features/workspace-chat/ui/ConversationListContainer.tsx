@@ -6,7 +6,6 @@ import {
   useMemo,
   useRef,
   useState,
-  type MouseEvent,
 } from 'react';
 import { SpinnerIcon } from '@phosphor-icons/react';
 import { AlertCircle } from 'lucide-react';
@@ -63,9 +62,6 @@ export interface ConversationListHandle {
   scrollToEntryByPatchKey: (patchKey: string) => void;
   getVisibleUserMessagePatchKey: () => string | null;
 }
-
-const ALWAYS_UNVIRTUALIZED_TAIL_ROWS = 8;
-const STREAMING_UNVIRTUALIZED_BUFFER_ROWS = 24;
 
 function renderRowContent(
   entry: DisplayEntry,
@@ -164,7 +160,6 @@ export const ConversationList = forwardRef<
   const [hasSetupScriptRun, setHasSetupScriptRun] = useState(false);
   const [hasCleanupScriptRun, setHasCleanupScriptRun] = useState(false);
   const [hasRunningProcess, setHasRunningProcess] = useState(false);
-  const lastSettledTailStartIndexRef = useRef<number | null>(null);
   const { setEntries, reset } = useEntriesActions();
   const setTokenUsageInfo = useSetTokenUsageInfo();
   const scriptOutputCacheRef = useRef<
@@ -189,13 +184,6 @@ export const ConversationList = forwardRef<
   // rAF naturally limits updates to the display refresh rate (~60fps) while
   // ensuring every frame reflects the latest data.
   const rafIdRef = useRef<number | null>(null);
-  const planRevealSpacerRef = useRef<HTMLDivElement | null>(null);
-  const pendingInteractionAnchorRef = useRef<{
-    element: HTMLElement;
-    top: number;
-  } | null>(null);
-  const pendingInteractionAnchorFrameRef = useRef<number | null>(null);
-  const pendingInteractionAnchorDeadlineRef = useRef(0);
   const conversationRows = useMemo(
     () => prevRowsRef.current,
     [filteredEntries]
@@ -244,16 +232,12 @@ export const ConversationList = forwardRef<
     }
     pendingUpdateRef.current = null;
     scriptOutputCacheRef.current.clear();
-    if (planRevealSpacerRef.current) {
-      planRevealSpacerRef.current.style.height = '0px';
-    }
     setLoading(true);
     setHasSetupScriptRun(false);
     setHasCleanupScriptRun(false);
     setHasRunningProcess(false);
     setFilteredEntries([]);
     setDataVersion(0);
-    lastSettledTailStartIndexRef.current = null;
     reset();
   }, [conversationScopeKey, reset]);
 
@@ -267,78 +251,6 @@ export const ConversationList = forwardRef<
 
   // ---- TanStack Virtual plumbing ----
   const tanstackScrollRef = useRef<HTMLDivElement | null>(null);
-
-  const clearPendingInteractionAnchor = useCallback(() => {
-    if (pendingInteractionAnchorFrameRef.current !== null) {
-      cancelAnimationFrame(pendingInteractionAnchorFrameRef.current);
-      pendingInteractionAnchorFrameRef.current = null;
-    }
-    pendingInteractionAnchorDeadlineRef.current = 0;
-    pendingInteractionAnchorRef.current = null;
-  }, []);
-
-  const programmaticScrollDeadlineRef = useRef(0);
-
-  const shouldSuppressInteractionDrivenSizeAdjustment = useCallback(
-    () =>
-      performance.now() < programmaticScrollDeadlineRef.current ||
-      (pendingInteractionAnchorRef.current !== null &&
-        performance.now() < pendingInteractionAnchorDeadlineRef.current),
-    []
-  );
-
-  const runInteractionAnchorCorrection = useCallback(() => {
-    pendingInteractionAnchorFrameRef.current = null;
-
-    const anchor = pendingInteractionAnchorRef.current;
-    const activeScrollContainer = tanstackScrollRef.current;
-    if (!anchor || !activeScrollContainer || !anchor.element.isConnected) {
-      clearPendingInteractionAnchor();
-      return;
-    }
-
-    const currentTop = anchor.element.getBoundingClientRect().top;
-    const delta = currentTop - anchor.top;
-    if (Math.abs(delta) >= 0.5) {
-      activeScrollContainer.scrollTop += delta;
-    }
-
-    if (performance.now() < pendingInteractionAnchorDeadlineRef.current) {
-      pendingInteractionAnchorFrameRef.current = requestAnimationFrame(
-        runInteractionAnchorCorrection
-      );
-      return;
-    }
-
-    clearPendingInteractionAnchor();
-  }, [clearPendingInteractionAnchor]);
-
-  const handleConversationClickCapture = useCallback(
-    (event: MouseEvent<HTMLDivElement>) => {
-      const target = event.target;
-      if (!(target instanceof Element)) return;
-
-      const trigger = target.closest<HTMLElement>(
-        'button, summary, [role="button"], [data-scroll-anchor-target]'
-      );
-      if (!trigger || trigger.closest('[data-scroll-anchor-ignore]')) return;
-
-      const scrollContainer = tanstackScrollRef.current;
-      if (!scrollContainer || !scrollContainer.contains(trigger)) return;
-
-      clearPendingInteractionAnchor();
-      pendingInteractionAnchorRef.current = {
-        element: trigger,
-        top: trigger.getBoundingClientRect().top,
-      };
-
-      pendingInteractionAnchorDeadlineRef.current = performance.now() + 250;
-      pendingInteractionAnchorFrameRef.current = requestAnimationFrame(
-        runInteractionAnchorCorrection
-      );
-    },
-    [clearPendingInteractionAnchor, runInteractionAnchorCorrection]
-  );
 
   const flushPendingUpdate = () => {
     rafIdRef.current = null;
@@ -405,156 +317,18 @@ export const ConversationList = forwardRef<
     scopeKey: conversationScopeKey,
   });
 
-  const hasActiveStreamingTurn = useMemo(
-    () =>
-      hasRunningProcess ||
-      conversationRows.some((row) => row.rowFamily === 'loading'),
-    [conversationRows, hasRunningProcess]
-  );
-
-  const candidateFirstUnvirtualizedRowIndex = useMemo(() => {
-    const firstTailRowIndex = Math.max(
-      conversationRows.length - ALWAYS_UNVIRTUALIZED_TAIL_ROWS,
-      0
-    );
-
-    if (!hasActiveStreamingTurn) {
-      return firstTailRowIndex;
-    }
-
-    for (let index = conversationRows.length - 1; index >= 0; index -= 1) {
-      if (conversationRows[index]?.isUserMessage) {
-        return Math.min(index, firstTailRowIndex);
-      }
-    }
-
-    return firstTailRowIndex;
-  }, [conversationRows, hasActiveStreamingTurn]);
-
-  const streamingFirstUnvirtualizedRowIndex = useMemo(() => {
-    const lastSettledTailStartIndex = lastSettledTailStartIndexRef.current;
-    if (lastSettledTailStartIndex == null) {
-      return candidateFirstUnvirtualizedRowIndex;
-    }
-
-    return Math.min(
-      lastSettledTailStartIndex,
-      candidateFirstUnvirtualizedRowIndex
-    );
-  }, [candidateFirstUnvirtualizedRowIndex]);
-
-  useEffect(() => {
-    if (!hasActiveStreamingTurn) {
-      lastSettledTailStartIndexRef.current =
-        candidateFirstUnvirtualizedRowIndex;
-    }
-  }, [candidateFirstUnvirtualizedRowIndex, hasActiveStreamingTurn]);
-
-  const firstUnvirtualizedRowIndex = hasActiveStreamingTurn
-    ? Math.max(
-        0,
-        streamingFirstUnvirtualizedRowIndex -
-          STREAMING_UNVIRTUALIZED_BUFFER_ROWS
-      )
-    : candidateFirstUnvirtualizedRowIndex;
-
-  const virtualizedRows = useMemo(
-    () => conversationRows.slice(0, firstUnvirtualizedRowIndex),
-    [conversationRows, firstUnvirtualizedRowIndex]
-  );
-
-  const unvirtualizedTailRows = useMemo(
-    () => conversationRows.slice(firstUnvirtualizedRowIndex),
-    [conversationRows, firstUnvirtualizedRowIndex]
-  );
-
   const conversationVirtualizer = useConversationVirtualizer({
-    rows: virtualizedRows,
-    totalRowCount: conversationRows.length,
+    rows: conversationRows,
     scrollContainerRef: tanstackScrollRef,
     onAtBottomChange,
-    shouldSuppressSizeAdjustment: shouldSuppressInteractionDrivenSizeAdjustment,
   });
-
-  // NOTE: Do NOT call conversationVirtualizer.virtualizer.measure() when
-  // firstUnvirtualizedRowIndex changes. measure() wipes ALL cached item sizes,
-  // triggering a massive re-measurement storm and multi-second jitter.
-  // TanStack Virtual handles count changes automatically via getItemKey.
-
-  const scrollToAbsoluteIndex = useCallback(
-    (
-      index: number,
-      align: 'start' | 'center' | 'end' = 'start',
-      behavior: 'auto' | 'smooth' = 'smooth'
-    ): boolean => {
-      if (index < 0 || index >= conversationRows.length) return false;
-
-      const scrollEl = tanstackScrollRef.current;
-      if (!scrollEl) return false;
-
-      const targetNode = scrollEl.querySelector<HTMLElement>(
-        `[data-row-index="${index}"]`
-      );
-
-      if (targetNode) {
-        let top = targetNode.offsetTop;
-
-        if (align === 'center') {
-          top =
-            targetNode.offsetTop -
-            scrollEl.clientHeight / 2 +
-            targetNode.offsetHeight / 2;
-        } else if (align === 'end') {
-          top =
-            targetNode.offsetTop -
-            scrollEl.clientHeight +
-            targetNode.offsetHeight;
-        }
-
-        const requestedTop = Math.max(0, top);
-        let maxScrollable = scrollEl.scrollHeight - scrollEl.clientHeight;
-        const deficit = requestedTop - maxScrollable;
-
-        if (deficit > 1 && align === 'start' && planRevealSpacerRef.current) {
-          conversationVirtualizer.releaseBottomLock();
-          planRevealSpacerRef.current.style.height = `${Math.ceil(deficit)}px`;
-          maxScrollable = scrollEl.scrollHeight - scrollEl.clientHeight;
-        }
-
-        scrollEl.scrollTo({
-          top: Math.min(requestedTop, maxScrollable),
-          behavior,
-        });
-        return true;
-      }
-
-      if (index < virtualizedRows.length) {
-        conversationVirtualizer.scrollToIndex(index, { align, behavior });
-        return true;
-      }
-
-      return false;
-    },
-    [conversationRows.length, conversationVirtualizer, virtualizedRows.length]
-  );
-
-  const scrollToBottomAndClearSpacer = useCallback(
-    (behavior?: 'auto' | 'smooth') => {
-      if (planRevealSpacerRef.current) {
-        planRevealSpacerRef.current.style.height = '0px';
-      }
-      conversationVirtualizer.scrollToBottom(behavior);
-    },
-    [conversationVirtualizer]
-  );
 
   const scrollExecutor = useScrollCommandExecutor({
     virtualizer: conversationVirtualizer.virtualizer,
     itemCount: conversationRows.length,
     dataVersion,
     checkIsAtBottom: conversationVirtualizer.checkIsAtBottom,
-    scrollToBottom: scrollToBottomAndClearSpacer,
-    scrollToAbsoluteIndex,
+    scrollToBottom: conversationVirtualizer.scrollToBottom,
   });
   scrollOnEntriesChangedRef.current = scrollExecutor.onEntriesChanged;
 
@@ -573,8 +347,6 @@ export const ConversationList = forwardRef<
 
   // Expose scroll functionality via ref — delegates to TanStack Virtual
   const scrollToPreviousUserMessage = useCallback(() => {
-    conversationVirtualizer.releaseBottomLock();
-
     const scrollEl = tanstackScrollRef.current;
     if (!scrollEl || conversationRows.length === 0) return;
 
@@ -603,48 +375,11 @@ export const ConversationList = forwardRef<
 
     if (targetIndex < 0) return;
 
-    programmaticScrollDeadlineRef.current = performance.now() + 1000;
-
-    let attempts = 0;
-    const maxAttempts = 6;
-
-    const correctScroll = () => {
-      if (attempts >= maxAttempts) return;
-      attempts++;
-
-      programmaticScrollDeadlineRef.current = performance.now() + 500;
-
-      const node = scrollEl.querySelector<HTMLElement>(
-        `[data-row-index="${targetIndex}"]`
-      );
-      if (!node) {
-        if (attempts === 1) {
-          conversationVirtualizer.scrollToIndex(targetIndex, {
-            align: 'start',
-            behavior: 'auto',
-          });
-        }
-        requestAnimationFrame(correctScroll);
-        return;
-      }
-
-      const nodeRect = node.getBoundingClientRect();
-      const contRect = scrollEl.getBoundingClientRect();
-      const delta = nodeRect.top - contRect.top;
-
-      if (Math.abs(delta) < 2) return;
-
-      scrollEl.scrollTop += delta;
-      requestAnimationFrame(correctScroll);
-    };
-
-    correctScroll();
-  }, [
-    conversationRows,
-    firstUnvirtualizedRowIndex,
-    conversationVirtualizer,
-    scrollToAbsoluteIndex,
-  ]);
+    conversationVirtualizer.scrollToIndex(targetIndex, {
+      align: 'start',
+      behavior: 'auto',
+    });
+  }, [conversationRows, conversationVirtualizer]);
 
   useImperativeHandle(
     ref,
@@ -653,7 +388,7 @@ export const ConversationList = forwardRef<
         scrollToPreviousUserMessage();
       },
       scrollToBottom: (behavior = 'smooth') => {
-        scrollToBottomAndClearSpacer(behavior);
+        conversationVirtualizer.scrollToBottom(behavior);
       },
       adjustScrollBy: (delta) => {
         if (Math.abs(delta) < 0.5) return;
@@ -667,48 +402,10 @@ export const ConversationList = forwardRef<
           (row) => row.entry.patchKey === patchKey
         );
         if (targetIndex < 0) return;
-
-        const scrollEl = tanstackScrollRef.current;
-        if (!scrollEl) return;
-
-        conversationVirtualizer.releaseBottomLock();
-        programmaticScrollDeadlineRef.current = performance.now() + 1000;
-
-        // Initial scroll via scrollToAbsoluteIndex which handles both
-        // virtualized and unvirtualized (tail) rows correctly.
-        scrollToAbsoluteIndex(targetIndex, 'start', 'auto');
-
-        // Correction loop: after the virtualizer lays out the target
-        // row, its actual size may differ from the estimate, so we
-        // iteratively adjust until the row is at the container top.
-        let attempts = 0;
-        const maxAttempts = 5;
-
-        const correctScroll = () => {
-          if (attempts >= maxAttempts) return;
-          attempts++;
-
-          programmaticScrollDeadlineRef.current = performance.now() + 500;
-
-          const node = scrollEl.querySelector<HTMLElement>(
-            `[data-row-index="${targetIndex}"]`
-          );
-          if (!node) {
-            requestAnimationFrame(correctScroll);
-            return;
-          }
-
-          const nodeRect = node.getBoundingClientRect();
-          const contRect = scrollEl.getBoundingClientRect();
-          const delta = nodeRect.top - contRect.top;
-
-          if (Math.abs(delta) < 2) return;
-
-          scrollEl.scrollTop += delta;
-          requestAnimationFrame(correctScroll);
-        };
-
-        requestAnimationFrame(correctScroll);
+        conversationVirtualizer.scrollToIndex(targetIndex, {
+          align: 'start',
+          behavior: 'auto',
+        });
       },
       getVisibleUserMessagePatchKey: () => {
         const scrollEl = tanstackScrollRef.current;
@@ -741,25 +438,13 @@ export const ConversationList = forwardRef<
         return null;
       },
     }),
-    [
-      conversationRows,
-      conversationVirtualizer,
-      scrollToAbsoluteIndex,
-      scrollToBottomAndClearSpacer,
-      scrollToPreviousUserMessage,
-    ]
+    [conversationRows, conversationVirtualizer, scrollToPreviousUserMessage]
   );
 
   const showLoader = loading && conversationRows.length === 0;
   const showEmptyState = !loading && conversationRows.length === 0;
 
   const { virtualItems, totalSize, measureElement } = conversationVirtualizer;
-
-  useEffect(() => {
-    return () => {
-      clearPendingInteractionAnchor();
-    };
-  }, [clearPendingInteractionAnchor]);
 
   return (
     <ApprovalFormProvider>
@@ -773,7 +458,6 @@ export const ConversationList = forwardRef<
           ref={tanstackScrollRef}
           className="h-full overflow-y-auto scrollbar-none"
           style={{ overflowAnchor: 'none', contain: 'strict' }}
-          onClickCapture={handleConversationClickCapture}
         >
           <div className="pt-2">
             {!showLoader && isLoadingHistory && (
@@ -853,7 +537,7 @@ export const ConversationList = forwardRef<
             </div>
           )}
 
-          {virtualizedRows.length > 0 && (
+          {conversationRows.length > 0 && (
             <div
               style={{
                 height: `${totalSize}px`,
@@ -862,7 +546,7 @@ export const ConversationList = forwardRef<
               }}
             >
               {virtualItems.map((virtualItem) => {
-                const row = virtualizedRows[virtualItem.index];
+                const row = conversationRows[virtualItem.index];
                 if (!row) return null;
                 return (
                   <div
@@ -885,24 +569,6 @@ export const ConversationList = forwardRef<
               })}
             </div>
           )}
-
-          {unvirtualizedTailRows.map((row, tailIndex) => {
-            const rowIndex = firstUnvirtualizedRowIndex + tailIndex;
-            return (
-              <div
-                key={row.semanticKey}
-                data-row-index={rowIndex}
-                data-semantic-key={row.semanticKey}
-              >
-                {renderRowContent(row.entry, attempt, resetAction, repos)}
-              </div>
-            );
-          })}
-
-          {/* Plan-reveal spacer: provides extra scroll room so plan-reveal
-              can align the plan entry to the top of the viewport. Height is set
-              imperatively in scrollToAbsoluteIndex and cleared on scrollToBottom. */}
-          <div ref={planRevealSpacerRef} style={{ height: 0 }} />
 
           {/* Footer placeholder */}
           <div className="pb-2">

@@ -25,10 +25,7 @@ import {
   estimateSizeForRow,
   findPreviousUserMessageIndex,
 } from './conversation-row-model';
-import {
-  NEAR_BOTTOM_THRESHOLD_PX,
-  isNearBottom,
-} from './conversation-scroll-commands';
+import { NEAR_BOTTOM_THRESHOLD_PX } from './conversation-scroll-commands';
 
 // TanStack Virtual's ScrollBehavior ('auto' | 'smooth' | 'instant') shadows
 // the DOM ScrollBehavior. Use a narrow type to avoid TS2322 mismatches.
@@ -46,17 +43,8 @@ const OVERSCAN = 8;
 // ---------------------------------------------------------------------------
 
 export interface ConversationVirtualizerOptions {
-  /** The semantic row model driving the list (virtualized head only). */
+  /** The semantic row model driving the list. */
   rows: ConversationRow[];
-
-  /**
-   * Total number of conversation rows (virtualized + unvirtualized tail).
-   * The bottom-lock correction must fire when ANY row is added — including
-   * unvirtualized tail rows that don't change `rows.length` or `totalSize`.
-   * Without this, streaming entries appended to the tail silently grow the
-   * scroll container while the correction never fires.
-   */
-  totalRowCount: number;
 
   /** Ref to the scrollable container element. */
   scrollContainerRef: RefObject<HTMLDivElement | null>;
@@ -66,8 +54,6 @@ export interface ConversationVirtualizerOptions {
    * the scroll-to-bottom affordance.
    */
   onAtBottomChange?: (atBottom: boolean) => void;
-
-  shouldSuppressSizeAdjustment?: () => boolean;
 }
 
 export interface ConversationVirtualizerResult {
@@ -116,9 +102,7 @@ export interface ConversationVirtualizerResult {
   checkIsAtBottom: () => boolean;
 
   /**
-   * Compatibility no-op. Callers can keep invoking this before imperative
-   * navigation without needing to know whether the current virtualizer
-   * implementation uses an explicit bottom-lock.
+   * Compatibility no-op retained while call sites are simplified.
    */
   releaseBottomLock: () => void;
 
@@ -148,10 +132,8 @@ export interface ConversationVirtualizerResult {
  */
 export function useConversationVirtualizer({
   rows,
-  totalRowCount,
   scrollContainerRef,
   onAtBottomChange,
-  shouldSuppressSizeAdjustment,
 }: ConversationVirtualizerOptions): ConversationVirtualizerResult {
   // -------------------------------------------------------------------------
   // Virtualizer instance
@@ -179,53 +161,6 @@ export function useConversationVirtualizer({
   });
 
   // -------------------------------------------------------------------------
-  // shouldAdjustScrollPositionOnItemSizeChange
-  //
-  // Preserve the reader's position only when a row fully above the viewport
-  // changes size. Mid-list flicker happens when we compensate for rows that
-  // are still visible or below the viewport, because those corrections can
-  // move the render window and trigger another measurement pass.
-  // -------------------------------------------------------------------------
-
-  useEffect(() => {
-    virtualizer.shouldAdjustScrollPositionOnItemSizeChange = (
-      item,
-      _delta,
-      instance
-    ) => {
-      const scrollElement = scrollContainerRef.current;
-      const viewportHeight =
-        scrollElement?.clientHeight ?? instance.scrollRect?.height ?? 0;
-      const scrollOffset =
-        scrollElement?.scrollTop ?? instance.scrollOffset ?? 0;
-      const totalScrollableSize =
-        scrollElement?.scrollHeight ?? instance.getTotalSize();
-      const remainingDistance =
-        totalScrollableSize - (scrollOffset + viewportHeight);
-      const isItemFullyAboveViewport = item.end <= scrollOffset;
-      const isAtEnd = scrollElement
-        ? isNearBottom(
-            scrollElement.scrollTop,
-            scrollElement.clientHeight,
-            scrollElement.scrollHeight
-          )
-        : instance.isAtEnd(NEAR_BOTTOM_THRESHOLD_PX);
-
-      const shouldAdjust =
-        !isAtEnd &&
-        !shouldSuppressSizeAdjustment?.() &&
-        isItemFullyAboveViewport &&
-        remainingDistance > NEAR_BOTTOM_THRESHOLD_PX;
-
-      return shouldAdjust;
-    };
-
-    return () => {
-      virtualizer.shouldAdjustScrollPositionOnItemSizeChange = undefined;
-    };
-  }, [shouldSuppressSizeAdjustment, virtualizer]);
-
-  // -------------------------------------------------------------------------
   // Reactive isAtBottom state
   // -------------------------------------------------------------------------
 
@@ -235,10 +170,7 @@ export function useConversationVirtualizer({
   const lastAtBottomRef = useRef(true);
 
   const syncIsAtBottom = useCallback(() => {
-    const el = scrollContainerRef.current;
-    const nextValue = el
-      ? isNearBottom(el.scrollTop, el.clientHeight, el.scrollHeight)
-      : true;
+    const nextValue = virtualizer.isAtEnd(NEAR_BOTTOM_THRESHOLD_PX);
 
     if (nextValue !== lastAtBottomRef.current) {
       lastAtBottomRef.current = nextValue;
@@ -266,7 +198,7 @@ export function useConversationVirtualizer({
     return () => {
       el.removeEventListener('scroll', handleScroll);
     };
-  }, [scrollContainerRef, shouldSuppressSizeAdjustment, syncIsAtBottom]);
+  }, [scrollContainerRef, syncIsAtBottom]);
 
   // -------------------------------------------------------------------------
   // Derived state
@@ -276,7 +208,7 @@ export function useConversationVirtualizer({
   const totalSize = virtualizer.getTotalSize();
   useLayoutEffect(() => {
     syncIsAtBottom();
-  }, [rows.length, totalRowCount, totalSize, syncIsAtBottom]);
+  }, [rows.length, totalSize, syncIsAtBottom]);
 
   // -------------------------------------------------------------------------
   // Imperative helpers
@@ -284,17 +216,9 @@ export function useConversationVirtualizer({
 
   const scrollToBottom = useCallback(
     (behavior: ScrollToOptionsBehavior = 'smooth') => {
-      const el = scrollContainerRef.current;
-      if (!el) return;
-
-      if (behavior === 'smooth') {
-        el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
-        return;
-      }
-
-      el.scrollTop = el.scrollHeight - el.clientHeight;
+      virtualizer.scrollToEnd({ behavior });
     },
-    [scrollContainerRef]
+    [virtualizer]
   );
 
   const scrollToIndex = useCallback(
@@ -333,10 +257,8 @@ export function useConversationVirtualizer({
   }, [scrollContainerRef, virtualizer, rows]);
 
   const checkIsAtBottom = useCallback((): boolean => {
-    const el = scrollContainerRef.current;
-    if (!el) return true;
-    return isNearBottom(el.scrollTop, el.clientHeight, el.scrollHeight);
-  }, [scrollContainerRef]);
+    return virtualizer.isAtEnd(NEAR_BOTTOM_THRESHOLD_PX);
+  }, [virtualizer]);
 
   const releaseBottomLock = useCallback(() => {}, []);
 
