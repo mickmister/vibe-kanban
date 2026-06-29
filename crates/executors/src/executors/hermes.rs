@@ -99,6 +99,19 @@ fn hermes_home() -> Option<PathBuf> {
     hermes_home_from_var(std::env::var("HERMES_HOME").ok().as_deref())
 }
 
+fn hermes_home_for_cmd(cmd: &CmdOverrides) -> Option<PathBuf> {
+    let configured_hermes_home = cmd
+        .env
+        .as_ref()
+        .and_then(|env| env.get("HERMES_HOME"))
+        .map(String::as_str);
+    if configured_hermes_home.is_some_and(|home| !home.trim().is_empty()) {
+        hermes_home_from_var(configured_hermes_home)
+    } else {
+        hermes_home()
+    }
+}
+
 fn hermes_home_from_var(hermes_home: Option<&str>) -> Option<PathBuf> {
     if let Some(home) = hermes_home
         && !home.trim().is_empty()
@@ -109,12 +122,7 @@ fn hermes_home_from_var(hermes_home: Option<&str>) -> Option<PathBuf> {
 }
 
 fn hermes_config_path_for_cmd(cmd: &CmdOverrides) -> Option<PathBuf> {
-    let hermes_home = cmd
-        .env
-        .as_ref()
-        .and_then(|env| env.get("HERMES_HOME"))
-        .map(String::as_str);
-    hermes_home_from_var(hermes_home).map(|home| home.join("config.yaml"))
+    hermes_home_for_cmd(cmd).map(|home| home.join("config.yaml"))
 }
 
 fn configured_provider_ids(cmd: &CmdOverrides) -> BTreeSet<String> {
@@ -127,6 +135,8 @@ fn configured_provider_ids(cmd: &CmdOverrides) -> BTreeSet<String> {
     let mut providers = BTreeSet::new();
     if let Some(provider) = config.provider.as_deref() {
         providers.insert(normalize_provider(Some(provider)));
+    } else if config.model.is_some() {
+        providers.insert(normalize_provider(None));
     }
     providers.extend(
         config
@@ -516,14 +526,17 @@ async fn run_hermes_acp_check(hermes: &Hermes) -> Option<String> {
             let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
             let details = if !stderr.is_empty() { stderr } else { stdout };
             Some(if details.is_empty() {
-                format!("`hermes acp --check` failed with status {}", output.status)
+                format!(
+                    "Hermes ACP check command failed with status {}",
+                    output.status
+                )
             } else {
-                format!("`hermes acp --check` failed: {details}")
+                format!("Hermes ACP check command failed: {details}")
             })
         }
-        Ok(Err(error)) => Some(format!("Failed to run `hermes acp --check`: {error}")),
+        Ok(Err(error)) => Some(format!("Failed to run Hermes ACP check command: {error}")),
         Err(_) => Some(format!(
-            "`hermes acp --check` timed out after {} seconds",
+            "Hermes ACP check command timed out after {} seconds",
             HERMES_ACP_CHECK_TIMEOUT.as_secs()
         )),
     }
@@ -604,8 +617,13 @@ impl StandardCodingAgentExecutor for Hermes {
     }
 
     fn get_availability_info(&self) -> AvailabilityInfo {
-        let home = hermes_home();
-        let installation_found = executable_in_path("hermes");
+        let home = hermes_home_for_cmd(&self.cmd);
+        let has_command_override = self
+            .cmd
+            .base_command_override
+            .as_deref()
+            .is_some_and(|command| !command.trim().is_empty());
+        let installation_found = executable_in_path("hermes") || has_command_override;
         let config_paths = home
             .as_ref()
             .map(|home| vec![home.join("auth.json"), home.join(".env")])
@@ -684,6 +702,32 @@ impl StandardCodingAgentExecutor for Hermes {
 mod tests {
     use super::*;
     use crate::model_selector::PermissionPolicy;
+    use std::{
+        collections::HashMap,
+        fs,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    fn hermes_for_test(cmd: CmdOverrides) -> Hermes {
+        Hermes {
+            append_prompt: AppendPrompt::default(),
+            model: None,
+            auto_approve: None,
+            cmd,
+            approvals: None,
+        }
+    }
+
+    fn unique_temp_dir(name: &str) -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock is before Unix epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "vktest-hermes-{name}-{}-{unique}",
+            std::process::id()
+        ))
+    }
 
     #[test]
     fn builds_default_hermes_acp_command() {
@@ -857,5 +901,53 @@ custom_providers:
             to_hermes_model_choice("anthropic/claude-sonnet-4.6", &BTreeSet::new()),
             "anthropic/claude-sonnet-4.6"
         );
+    }
+
+    #[test]
+    fn configured_provider_ids_include_default_provider_for_scalar_model() {
+        let hermes_home = unique_temp_dir("scalar-model");
+        fs::create_dir_all(&hermes_home).expect("create temp Hermes home");
+        fs::write(hermes_home.join("config.yaml"), "model: gpt-5\n")
+            .expect("write temp Hermes config");
+
+        let cmd = CmdOverrides {
+            env: Some(HashMap::from([(
+                "HERMES_HOME".to_string(),
+                hermes_home.to_string_lossy().into_owned(),
+            )])),
+            ..Default::default()
+        };
+
+        let providers = configured_provider_ids(&cmd);
+        assert!(providers.contains("openrouter"));
+        assert_eq!(
+            to_hermes_model_choice("openrouter/gpt-5", &providers),
+            "openrouter:gpt-5"
+        );
+
+        let _ = fs::remove_dir_all(hermes_home);
+    }
+
+    #[test]
+    fn availability_uses_command_override_and_profile_hermes_home() {
+        let hermes_home = unique_temp_dir("availability");
+        fs::create_dir_all(&hermes_home).expect("create temp Hermes home");
+        fs::write(hermes_home.join("auth.json"), "{}").expect("write temp auth");
+
+        let hermes = hermes_for_test(CmdOverrides {
+            base_command_override: Some("uvx hermes-acp".to_string()),
+            env: Some(HashMap::from([(
+                "HERMES_HOME".to_string(),
+                hermes_home.to_string_lossy().into_owned(),
+            )])),
+            ..Default::default()
+        });
+
+        assert!(matches!(
+            hermes.get_availability_info(),
+            AvailabilityInfo::LoginDetected { .. }
+        ));
+
+        let _ = fs::remove_dir_all(hermes_home);
     }
 }

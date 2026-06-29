@@ -289,6 +289,32 @@ mod tests {
             Some("allow_once")
         );
     }
+
+    #[test]
+    fn auto_approval_uses_hermes_one_time_allow_option_when_available() {
+        let reject_once = acp::PermissionOption::new(
+            acp::PermissionOptionId::new("reject_once"),
+            "Reject once",
+            acp::PermissionOptionKind::RejectOnce,
+        );
+        let allow_always = acp::PermissionOption::new(
+            acp::PermissionOptionId::new("allow_always"),
+            "Allow always",
+            acp::PermissionOptionKind::AllowAlways,
+        );
+        let allow_once = acp::PermissionOption::new(
+            acp::PermissionOptionId::new("allow_once"),
+            "Allow once",
+            acp::PermissionOptionKind::AllowOnce,
+        );
+
+        let options = vec![reject_once, allow_always, allow_once];
+
+        assert_eq!(
+            preferred_auto_approval_option(&options).map(|option| option.option_id.0.as_ref()),
+            Some("allow_once")
+        );
+    }
 }
 
 impl AcpClient {

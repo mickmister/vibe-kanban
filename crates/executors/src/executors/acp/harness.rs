@@ -394,7 +394,11 @@ impl AcpAgentHarness {
                                 .await
                             {
                                 Ok(_) => {}
-                                Err(e) => error!("Failed to set session mode: {}", e),
+                                Err(e) => {
+                                    let msg = format!("Failed to set session model: {e}");
+                                    error!("{msg}");
+                                    let _ = log_tx.send(AcpEvent::Error(msg).to_string());
+                                }
                             }
                         }
 
