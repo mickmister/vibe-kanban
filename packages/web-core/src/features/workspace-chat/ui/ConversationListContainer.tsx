@@ -47,6 +47,9 @@ import { ChatScriptPlaceholder } from '@vibe/ui/components/ChatScriptPlaceholder
 import { PrimaryButton } from '@vibe/ui/components/PrimaryButton';
 import { ScriptFixerDialog } from '@/shared/dialogs/scripts/ScriptFixerDialog';
 
+const HISTORY_BOUNDARY_THRESHOLD_PX = 96;
+const SCROLL_TO_INDEX_SETTLE_FRAMES = 4;
+
 interface ConversationListProps {
   attempt: WorkspaceWithSession;
   repos?: RepoWithTargetBranch[];
@@ -160,6 +163,7 @@ export const ConversationList = forwardRef<
   const [hasSetupScriptRun, setHasSetupScriptRun] = useState(false);
   const [hasCleanupScriptRun, setHasCleanupScriptRun] = useState(false);
   const [hasRunningProcess, setHasRunningProcess] = useState(false);
+  const [isNearHistoryBoundary, setIsNearHistoryBoundary] = useState(true);
   const { setEntries, reset } = useEntriesActions();
   const setTokenUsageInfo = useSetTokenUsageInfo();
   const scriptOutputCacheRef = useRef<
@@ -236,6 +240,7 @@ export const ConversationList = forwardRef<
     setHasSetupScriptRun(false);
     setHasCleanupScriptRun(false);
     setHasRunningProcess(false);
+    setIsNearHistoryBoundary(true);
     setFilteredEntries([]);
     setDataVersion(0);
     reset();
@@ -251,6 +256,31 @@ export const ConversationList = forwardRef<
 
   // ---- TanStack Virtual plumbing ----
   const tanstackScrollRef = useRef<HTMLDivElement | null>(null);
+  const pendingScrollRetryFrameRef = useRef<number | null>(null);
+
+  const updateIsNearHistoryBoundary = useCallback(() => {
+    const scrollEl = tanstackScrollRef.current;
+    const nextValue = scrollEl
+      ? scrollEl.scrollTop <= HISTORY_BOUNDARY_THRESHOLD_PX
+      : true;
+    setIsNearHistoryBoundary((current) =>
+      current === nextValue ? current : nextValue
+    );
+  }, []);
+
+  useEffect(() => {
+    const scrollEl = tanstackScrollRef.current;
+    if (!scrollEl) return;
+
+    scrollEl.addEventListener('scroll', updateIsNearHistoryBoundary, {
+      passive: true,
+    });
+    updateIsNearHistoryBoundary();
+
+    return () => {
+      scrollEl.removeEventListener('scroll', updateIsNearHistoryBoundary);
+    };
+  }, [updateIsNearHistoryBoundary]);
 
   const flushPendingUpdate = () => {
     rafIdRef.current = null;
@@ -332,6 +362,53 @@ export const ConversationList = forwardRef<
   });
   scrollOnEntriesChangedRef.current = scrollExecutor.onEntriesChanged;
 
+  const scrollToIndexWithMeasurementRetry = useCallback(
+    (
+      index: number,
+      options?: {
+        align?: 'start' | 'center' | 'end';
+        behavior?: 'auto' | 'smooth';
+      }
+    ) => {
+      if (pendingScrollRetryFrameRef.current !== null) {
+        cancelAnimationFrame(pendingScrollRetryFrameRef.current);
+        pendingScrollRetryFrameRef.current = null;
+      }
+
+      const align = options?.align ?? 'start';
+      const behavior = options?.behavior ?? 'auto';
+      let remainingFrames = SCROLL_TO_INDEX_SETTLE_FRAMES;
+
+      const scroll = (nextBehavior: 'auto' | 'smooth') => {
+        conversationVirtualizer.scrollToIndex(index, {
+          align,
+          behavior: nextBehavior,
+        });
+      };
+
+      const retry = () => {
+        pendingScrollRetryFrameRef.current = null;
+        if (remainingFrames <= 0) return;
+
+        remainingFrames -= 1;
+        scroll('auto');
+        pendingScrollRetryFrameRef.current = requestAnimationFrame(retry);
+      };
+
+      scroll(behavior);
+      pendingScrollRetryFrameRef.current = requestAnimationFrame(retry);
+    },
+    [conversationVirtualizer]
+  );
+
+  useEffect(() => {
+    return () => {
+      if (pendingScrollRetryFrameRef.current !== null) {
+        cancelAnimationFrame(pendingScrollRetryFrameRef.current);
+      }
+    };
+  }, []);
+
   // Determine if there are entries to show placeholders
   const hasEntries = conversationRows.length > 0;
 
@@ -375,11 +452,11 @@ export const ConversationList = forwardRef<
 
     if (targetIndex < 0) return;
 
-    conversationVirtualizer.scrollToIndex(targetIndex, {
+    scrollToIndexWithMeasurementRetry(targetIndex, {
       align: 'start',
       behavior: 'auto',
     });
-  }, [conversationRows, conversationVirtualizer]);
+  }, [conversationRows, scrollToIndexWithMeasurementRetry]);
 
   useImperativeHandle(
     ref,
@@ -402,7 +479,7 @@ export const ConversationList = forwardRef<
           (row) => row.entry.patchKey === patchKey
         );
         if (targetIndex < 0) return;
-        conversationVirtualizer.scrollToIndex(targetIndex, {
+        scrollToIndexWithMeasurementRetry(targetIndex, {
           align: 'start',
           behavior: 'auto',
         });
@@ -438,11 +515,20 @@ export const ConversationList = forwardRef<
         return null;
       },
     }),
-    [conversationRows, conversationVirtualizer, scrollToPreviousUserMessage]
+    [
+      conversationRows,
+      conversationVirtualizer,
+      scrollToIndexWithMeasurementRetry,
+      scrollToPreviousUserMessage,
+    ]
   );
 
   const showLoader = loading && conversationRows.length === 0;
   const showEmptyState = !loading && conversationRows.length === 0;
+  const showHistoryStatus =
+    !showLoader &&
+    isNearHistoryBoundary &&
+    (isLoadingHistory || historyError !== null);
 
   const { virtualItems, totalSize, measureElement } = conversationVirtualizer;
 
@@ -456,12 +542,12 @@ export const ConversationList = forwardRef<
         )}
         <div
           ref={tanstackScrollRef}
-          className="h-full overflow-y-auto scrollbar-none"
+          className="relative h-full overflow-y-auto scrollbar-none"
           style={{ overflowAnchor: 'none', contain: 'strict' }}
         >
-          <div className="pt-2">
-            {!showLoader && isLoadingHistory && (
-              <div className="mb-base px-double">
+          {showHistoryStatus && (
+            <div className="pointer-events-none absolute left-0 right-0 top-2 z-10 px-double">
+              {isLoadingHistory ? (
                 <div className="rounded border bg-panel px-double py-3">
                   <div className="flex flex-col items-center gap-2">
                     <div className="flex w-full flex-col gap-1.5">
@@ -485,11 +571,7 @@ export const ConversationList = forwardRef<
                     </span>
                   </div>
                 </div>
-              </div>
-            )}
-
-            {!showLoader && historyError && (
-              <div className="mb-base px-double">
+              ) : historyError ? (
                 <Alert variant="destructive">
                   <AlertCircle className="h-4 w-4" />
                   <AlertDescription className="space-y-3">
@@ -498,7 +580,7 @@ export const ConversationList = forwardRef<
                         'Failed to load some earlier conversation messages. You can keep working, but older history may be incomplete until the retry succeeds.',
                     })}
                     {canRetryHistory && (
-                      <div>
+                      <div className="pointer-events-auto">
                         <PrimaryButton
                           variant="tertiary"
                           onClick={retryHistory}
@@ -510,9 +592,11 @@ export const ConversationList = forwardRef<
                     )}
                   </AlertDescription>
                 </Alert>
-              </div>
-            )}
+              ) : null}
+            </div>
+          )}
 
+          <div className="pt-2">
             {showSetupPlaceholder && (
               <div className="my-base px-double">
                 <ChatScriptPlaceholder

@@ -38,6 +38,31 @@ type ScrollToOptionsBehavior = 'auto' | 'smooth';
 /** Number of items to render beyond the visible area in each direction. */
 const OVERSCAN = 8;
 
+export interface ConversationSizeAdjustmentInput {
+  /** End offset of the measured virtual item. */
+  itemEnd: number;
+  /** Current scroll offset of the virtualizer. */
+  scrollOffset: number;
+  /** Whether the reader is currently at the end of the chat. */
+  isAtEnd: boolean;
+}
+
+/**
+ * Preserve the reader's viewport when content that is already fully above the
+ * viewport changes size. This is intentionally narrow: TanStack owns normal
+ * chat anchoring/follow behavior, and we only opt into compensation for the
+ * eager historic-replay case where measured rows above the reader settle after
+ * render.
+ */
+export function shouldAdjustConversationScrollPositionOnItemSizeChange({
+  itemEnd,
+  scrollOffset,
+  isAtEnd,
+}: ConversationSizeAdjustmentInput): boolean {
+  if (isAtEnd) return false;
+  return itemEnd <= scrollOffset;
+}
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -159,6 +184,27 @@ export function useConversationVirtualizer({
     measureElement: defaultMeasureElement,
     useAnimationFrameWithResizeObserver: false,
   });
+
+  // -------------------------------------------------------------------------
+  // Historic replay preservation
+  // -------------------------------------------------------------------------
+
+  useEffect(() => {
+    virtualizer.shouldAdjustScrollPositionOnItemSizeChange = (
+      item,
+      _delta,
+      instance
+    ) =>
+      shouldAdjustConversationScrollPositionOnItemSizeChange({
+        itemEnd: item.end,
+        scrollOffset: instance.scrollOffset ?? 0,
+        isAtEnd: instance.isAtEnd(NEAR_BOTTOM_THRESHOLD_PX),
+      });
+
+    return () => {
+      virtualizer.shouldAdjustScrollPositionOnItemSizeChange = undefined;
+    };
+  }, [virtualizer]);
 
   // -------------------------------------------------------------------------
   // Reactive isAtBottom state
