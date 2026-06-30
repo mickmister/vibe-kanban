@@ -158,6 +158,17 @@ enum ImportedRepoAction {
     Cloned,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ImportedRepo {
+    Imported {
+        id: Uuid,
+        action: ImportedRepoAction,
+    },
+    Skipped {
+        warning: String,
+    },
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RepoImportPathDecision {
     UseExistingHint,
@@ -201,6 +212,8 @@ pub fn sanitize_remote_url(raw: &str) -> String {
         let _ = url.set_username("");
         let _ = url.set_password(None);
     }
+    url.set_query(None);
+    url.set_fragment(None);
 
     url.to_string()
 }
@@ -213,15 +226,15 @@ fn load_profiles_json(path: &Path) -> Result<Option<Value>> {
         .with_context(|| format!("failed to read profiles from {}", path.display()))?;
     let value = serde_json::from_str(&raw)
         .with_context(|| format!("failed to parse profiles JSON from {}", path.display()))?;
-    Ok(Some(redact_sensitive_json(value)))
+    Ok(Some(omit_sensitive_json(value)))
 }
 
-fn redact_sensitive_json(mut value: Value) -> Value {
-    redact_sensitive_json_in_place(&mut value);
+fn omit_sensitive_json(mut value: Value) -> Value {
+    omit_sensitive_json_in_place(&mut value);
     value
 }
 
-fn redact_sensitive_json_in_place(value: &mut Value) {
+fn omit_sensitive_json_in_place(value: &mut Value) {
     match value {
         Value::Object(map) => {
             let keys = map.keys().cloned().collect::<Vec<_>>();
@@ -232,18 +245,18 @@ fn redact_sensitive_json_in_place(value: &mut Value) {
                 }
 
                 if is_sensitive_key(&key) {
-                    map.insert(key, Value::String("__REDACTED__".to_string()));
+                    map.remove(&key);
                     continue;
                 }
 
                 if let Some(child) = map.get_mut(&key) {
-                    redact_sensitive_json_in_place(child);
+                    omit_sensitive_json_in_place(child);
                 }
             }
         }
         Value::Array(values) => {
             for value in values {
-                redact_sensitive_json_in_place(value);
+                omit_sensitive_json_in_place(value);
             }
         }
         _ => {}
@@ -425,7 +438,7 @@ pub async fn import_backup(
     }
 
     save_config_to_file(&portable_config(backup.config.clone()), &paths.config_path).await?;
-    let executor_profiles = backup.executor_profiles.clone().map(redact_sensitive_json);
+    let executor_profiles = backup.executor_profiles.clone().map(omit_sensitive_json);
     write_profiles_json(&paths.profiles_path, &executor_profiles)?;
 
     let git = GitService::new();
@@ -434,18 +447,16 @@ pub async fn import_backup(
 
     for backup_repo in &backup.repos {
         match import_repo(pool, &git, &paths.default_repo_root, backup_repo).await? {
-            Some((new_repo_id, action)) => {
-                repo_id_map.insert(backup_repo.source_id, new_repo_id);
+            ImportedRepo::Imported { id, action } => {
+                repo_id_map.insert(backup_repo.source_id, id);
                 report.repos_registered += 1;
                 if action == ImportedRepoAction::Cloned {
                     report.repos_cloned += 1;
                 }
             }
-            None => {
+            ImportedRepo::Skipped { warning } => {
                 report.repos_skipped += 1;
-                report
-                    .warnings
-                    .push(format!("Skipped repo '{}'", backup_repo.name));
+                report.warnings.push(warning);
             }
         }
     }
@@ -463,7 +474,7 @@ async fn import_repo(
     git: &GitService,
     repo_root: &Path,
     backup_repo: &BackupRepo,
-) -> Result<Option<(Uuid, ImportedRepoAction)>> {
+) -> Result<ImportedRepo> {
     let destination = repo_root.join(&backup_repo.name);
     let clone_url = backup_repo.clone.url.as_deref();
     let (path, action) = match decide_repo_import_path(
@@ -480,11 +491,24 @@ async fn import_repo(
         }
         RepoImportPathDecision::Clone => {
             let clone_url = clone_url.ok_or_else(|| anyhow!("clone URL missing"))?;
-            clone_repo(clone_url, &destination)?;
+            if let Err(err) = clone_repo(clone_url, &destination) {
+                return Ok(ImportedRepo::Skipped {
+                    warning: format!(
+                        "Skipped repo '{}' because cloning {} into {} failed: {err}",
+                        backup_repo.name,
+                        clone_url,
+                        destination.display()
+                    ),
+                });
+            }
             (destination, ImportedRepoAction::Cloned)
         }
         RepoImportPathDecision::SkipExistingNonRepoDestination
-        | RepoImportPathDecision::SkipNoCloneUrl => return Ok(None),
+        | RepoImportPathDecision::SkipNoCloneUrl => {
+            return Ok(ImportedRepo::Skipped {
+                warning: format!("Skipped repo '{}'", backup_repo.name),
+            });
+        }
     };
 
     let repo = Repo::find_or_create(pool, &path, &backup_repo.display_name).await?;
@@ -505,7 +529,10 @@ async fn import_repo(
     )
     .await?;
 
-    Ok(Some((updated.id, action)))
+    Ok(ImportedRepo::Imported {
+        id: updated.id,
+        action,
+    })
 }
 
 fn clone_repo(clone_url: &str, destination: &Path) -> Result<()> {
@@ -735,6 +762,14 @@ mod tests {
     }
 
     #[test]
+    fn sanitize_remote_url_strips_query_and_fragment() {
+        assert_eq!(
+            sanitize_remote_url("https://user:secret@example.com/org/repo.git?token=abc#frag"),
+            "https://example.com/org/repo.git"
+        );
+    }
+
+    #[test]
     fn sanitize_remote_url_keeps_ssh_style_remote() {
         assert_eq!(
             sanitize_remote_url("git@github.com:org/repo.git"),
@@ -743,8 +778,8 @@ mod tests {
     }
 
     #[test]
-    fn redact_sensitive_json_omits_env_and_redacts_secret_like_keys() {
-        let redacted = redact_sensitive_json(serde_json::json!({
+    fn omit_sensitive_json_omits_env_and_secret_like_keys_without_placeholders() {
+        let sanitized = omit_sensitive_json(serde_json::json!({
             "executors": {
                 "CLAUDE_CODE": {
                     "DEFAULT": {
@@ -761,17 +796,23 @@ mod tests {
         }));
 
         assert_eq!(
-            redacted["executors"]["CLAUDE_CODE"]["DEFAULT"]["cmd"]["safe"],
+            sanitized["executors"]["CLAUDE_CODE"]["DEFAULT"]["cmd"]["safe"],
             "kept"
         );
-        assert_eq!(
-            redacted["executors"]["CLAUDE_CODE"]["DEFAULT"]["cmd"]["token"],
-            "__REDACTED__"
+        assert!(
+            sanitized["executors"]["CLAUDE_CODE"]["DEFAULT"]["cmd"]
+                .get("token")
+                .is_none()
         );
         assert!(
-            redacted["executors"]["CLAUDE_CODE"]["DEFAULT"]["cmd"]
+            sanitized["executors"]["CLAUDE_CODE"]["DEFAULT"]["cmd"]
                 .get("env")
                 .is_none()
+        );
+        assert!(
+            !serde_json::to_string(&sanitized)
+                .unwrap()
+                .contains("__REDACTED__")
         );
     }
 
