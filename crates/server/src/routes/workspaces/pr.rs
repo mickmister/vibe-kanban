@@ -15,9 +15,7 @@ use db::models::{
     repo::{Repo, RepoError},
     session::{CreateSession, Session},
     workspace::{CreateWorkspace, Workspace, WorkspaceError},
-    workspace_repo::{
-        CreateWorkspaceRepo, WorkspaceRepo, branch_names_conflict_as_self_target,
-    },
+    workspace_repo::{CreateWorkspaceRepo, WorkspaceRepo, branch_names_conflict_as_self_target},
 };
 use deployment::Deployment;
 use executors::actions::{
@@ -258,7 +256,9 @@ pub async fn create_pr(
     let git = deployment.git();
     let branch_name = workspace_repo.branch_name(&workspace.branch);
     let target_is_remote = branch_name != target_branch
-        && git.is_remote_branch(&repo_path, &target_branch).unwrap_or(false);
+        && git
+            .is_remote_branch(&repo_path, &target_branch)
+            .unwrap_or(false);
     if branch_names_conflict_as_self_target(branch_name, &target_branch, target_is_remote) {
         return Err(ApiError::BadRequest(format!(
             "Cannot create a pull request from branch '{branch_name}' to itself. Select a different target/base branch."

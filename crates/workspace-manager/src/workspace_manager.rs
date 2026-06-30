@@ -191,7 +191,10 @@ mod tests {
         };
 
         assert_eq!(deletion_context.branch_name, workspace_branch);
-        assert_ne!(deletion_context.branch_name, repo.branch_name(workspace_branch));
+        assert_ne!(
+            deletion_context.branch_name,
+            repo.branch_name(workspace_branch)
+        );
     }
 
     #[test]
@@ -209,7 +212,6 @@ mod tests {
             super::WorkspaceError::DirectCheckoutBranchMatchesTarget { .. }
         ));
     }
-
 }
 
 #[derive(Debug, Clone)]

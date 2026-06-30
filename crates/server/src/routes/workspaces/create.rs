@@ -245,7 +245,6 @@ pub async fn create_and_start_workspace(
         .load_managed_workspace(create_workspace_record(&deployment, name).await?)
         .await?;
 
-
     for repo in &repos {
         managed_workspace
             .add_repository(repo, deployment.git())
