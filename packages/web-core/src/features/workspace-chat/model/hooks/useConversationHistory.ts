@@ -23,8 +23,12 @@ import {
 export interface UseConversationHistoryResult {
   /** Whether the conversation only has a single coding agent turn (no follow-ups) */
   isFirstTurn: boolean;
-  /** Whether background batches are still loading older history entries */
+  /** Whether a user-requested batch of older history entries is loading */
   isLoadingHistory: boolean;
+  /** Whether there are older completed process logs that have not been loaded */
+  hasMoreHistory: boolean;
+  /** Loads one bounded batch of older history entries on explicit user request */
+  loadEarlierHistory: () => Promise<void>;
   /** Error state when earlier conversation history could not be fully replayed */
   historyError: string | null;
 }
@@ -68,7 +72,9 @@ export const useConversationHistory = ({
   const historicRetryDueAtRef = useRef<Map<string, number>>(new Map());
   const historicRetryInFlightRef = useRef<Set<string>>(new Set());
   const historicRetryTimerRef = useRef<number | null>(null);
+  const loadEarlierHistoryInFlightRef = useRef(false);
   const [isLoadingHistoryState, setIsLoadingHistory] = useState(false);
+  const [hasMoreHistory, setHasMoreHistory] = useState(false);
   const scopeGenerationRef = useRef(0);
   const [failedHistoricProcessIds, setFailedHistoricProcessIds] = useState<
     Set<string>
@@ -249,6 +255,22 @@ export const useConversationHistory = ({
       )
       .flatMap((p) => p.entries);
   };
+
+  const hasUnloadedHistoricProcesses = useCallback((): boolean => {
+    return executionProcesses.current.some(
+      (process) =>
+        process.status !== ExecutionProcessStatus.running &&
+        !displayedExecutionProcesses.current[process.id]
+    );
+  }, []);
+
+  const updateHasMoreHistoryForGeneration = useCallback(
+    (generation: number) => {
+      if (!isCurrentGeneration(generation)) return;
+      setHasMoreHistory(hasUnloadedHistoricProcesses());
+    },
+    [hasUnloadedHistoricProcesses, isCurrentGeneration]
+  );
 
   const getActiveAgentProcesses = (): ExecutionProcess[] => {
     return (
@@ -788,9 +810,11 @@ export const useConversationHistory = ({
     displayedExecutionProcesses.current = {};
     loadedInitialEntries.current = false;
     emittedEmptyInitialRef.current = false;
+    loadEarlierHistoryInFlightRef.current = false;
     streamingProcessIdsRef.current.clear();
     previousStatusMapRef.current.clear();
     setIsLoadingHistory(false);
+    setHasMoreHistory(false);
     setFailedHistoricProcessIds(new Set());
     emitEntries(displayedExecutionProcesses.current, 'initial', true);
   }, [
@@ -842,26 +866,7 @@ export const useConversationHistory = ({
         'initial',
         false
       );
-
-      setLoadingHistoryForGeneration(generation, true);
-      while (
-        !cancelled &&
-        (await loadRemainingEntriesInBatches(REMAINING_BATCH_SIZE))
-      ) {
-        if (cancelled || !isCurrentGeneration(generation)) {
-          setLoadingHistoryForGeneration(generation, false);
-          return;
-        }
-        emitEntriesForGeneration(
-          generation,
-          displayedExecutionProcesses.current,
-          'historic',
-          false
-        );
-      }
-      if (!cancelled && isCurrentGeneration(generation)) {
-        setLoadingHistoryForGeneration(generation, false);
-      }
+      updateHasMoreHistoryForGeneration(generation);
     })();
     return () => {
       cancelled = true;
@@ -873,10 +878,48 @@ export const useConversationHistory = ({
     isLoading,
     emitEntriesForGeneration,
     loadHistoricEntries,
-    loadRemainingEntriesInBatches,
     mergeIntoDisplayedForGeneration,
     setLoadingHistoryForGeneration,
+    updateHasMoreHistoryForGeneration,
   ]); // include idListKey so new processes trigger reload
+
+  const loadEarlierHistory = useCallback(async () => {
+    const generation = scopeGenerationRef.current;
+    if (!isCurrentGeneration(generation)) return;
+    if (loadEarlierHistoryInFlightRef.current) return;
+    if (!hasUnloadedHistoricProcesses()) {
+      updateHasMoreHistoryForGeneration(generation);
+      return;
+    }
+
+    loadEarlierHistoryInFlightRef.current = true;
+    setLoadingHistoryForGeneration(generation, true);
+    try {
+      const anyUpdated =
+        await loadRemainingEntriesInBatches(REMAINING_BATCH_SIZE);
+      if (!isCurrentGeneration(generation)) return;
+
+      if (anyUpdated) {
+        emitEntriesForGeneration(
+          generation,
+          displayedExecutionProcesses.current,
+          'historic',
+          false
+        );
+      }
+      updateHasMoreHistoryForGeneration(generation);
+    } finally {
+      loadEarlierHistoryInFlightRef.current = false;
+      setLoadingHistoryForGeneration(generation, false);
+    }
+  }, [
+    emitEntriesForGeneration,
+    hasUnloadedHistoricProcesses,
+    isCurrentGeneration,
+    loadRemainingEntriesInBatches,
+    setLoadingHistoryForGeneration,
+    updateHasMoreHistoryForGeneration,
+  ]);
 
   useEffect(() => {
     const activeProcesses = getActiveAgentProcesses();
@@ -1031,6 +1074,8 @@ export const useConversationHistory = ({
   return {
     isFirstTurn,
     isLoadingHistory: isLoadingHistoryState,
+    hasMoreHistory,
+    loadEarlierHistory,
     historyError,
   };
 };

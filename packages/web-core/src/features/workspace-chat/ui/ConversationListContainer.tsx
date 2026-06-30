@@ -43,6 +43,7 @@ import { useSetTokenUsageInfo } from '../model/contexts/EntriesContext';
 import type { WorkspaceWithSession } from '@/shared/types/attempt';
 import type { RepoWithTargetBranch } from 'shared/types';
 import { Alert, AlertDescription } from '@vibe/ui/components/Alert';
+import { Button } from '@vibe/ui/components/Button';
 import { ChatEmptyState } from '@vibe/ui/components/ChatEmptyState';
 import { ChatScriptPlaceholder } from '@vibe/ui/components/ChatScriptPlaceholder';
 import { ScriptFixerDialog } from '@/shared/dialogs/scripts/ScriptFixerDialog';
@@ -385,12 +386,17 @@ export const ConversationList = forwardRef<
     }
   };
 
-  const { isFirstTurn, isLoadingHistory, historyError } =
-    useConversationHistory({
-      attempt,
-      onTimelineUpdated,
-      scopeKey: conversationScopeKey,
-    });
+  const {
+    isFirstTurn,
+    isLoadingHistory,
+    hasMoreHistory,
+    loadEarlierHistory,
+    historyError,
+  } = useConversationHistory({
+    attempt,
+    onTimelineUpdated,
+    scopeKey: conversationScopeKey,
+  });
 
   const prevEntriesRef = useRef<DisplayEntry[]>([]);
   const prevRowsRef = useRef<ConversationRow[]>([]);
@@ -779,6 +785,23 @@ export const ConversationList = forwardRef<
               </div>
             )}
           </div>
+
+          {hasMoreHistory && !showLoader && !isLoadingHistory && (
+            <div className="flex justify-center px-double py-3">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  void loadEarlierHistory();
+                }}
+              >
+                {t('conversation.loadEarlierMessages', {
+                  defaultValue: 'Load earlier messages',
+                })}
+              </Button>
+            </div>
+          )}
 
           {isLoadingHistory && !showLoader && (
             <div className="flex flex-col items-center gap-2 px-double py-3">
