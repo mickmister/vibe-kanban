@@ -293,6 +293,10 @@ fn generate_types_content() -> String {
     );
 
     format!("{HEADER}\n\n{body}\n\n{constants}")
+        .lines()
+        .map(str::trim_end)
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn generate_json_schema<T: JsonSchema>() -> Result<String, serde_json::Error> {
