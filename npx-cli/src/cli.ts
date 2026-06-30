@@ -241,6 +241,17 @@ async function runReview(args: string[]): Promise<void> {
   });
 }
 
+async function runSettingsCommand(command: string, args: string[]): Promise<void> {
+  await extractAndRun("vibe-kanban", (bin) => {
+    const proc = spawn(bin, [command, ...args], { stdio: "inherit" });
+    proc.on("exit", (c) => process.exit(c || 0));
+    proc.on("error", (e) => {
+      console.error(`${command} command error:`, e.message);
+      process.exit(1);
+    });
+  });
+}
+
 async function runMain(desktopMode: boolean): Promise<void> {
   checkForUpdates();
 
@@ -310,14 +321,6 @@ async function main(): Promise<void> {
   const cli = cac("vibe-kanban");
 
   cli
-    .command("[...args]", "Launch the local vibe-kanban app")
-    .option("--desktop", "Launch the desktop app instead of browser mode")
-    .allowUnknownOptions()
-    .action((_args: string[], options: RootOptions) => {
-      runOrExit(runMain(Boolean(options.desktop)));
-    });
-
-  cli
     .command("review [...args]", "Run the review CLI")
     .allowUnknownOptions()
     .action((args: string[]) => {
@@ -329,6 +332,26 @@ async function main(): Promise<void> {
     .allowUnknownOptions()
     .action((args: string[]) => {
       runOrExit(runMcp(args));
+    });
+
+  cli
+    .command("backup <file>", "Back up portable vibe-kanban user settings")
+    .action((file: string) => {
+      runOrExit(runSettingsCommand("backup", [file]));
+    });
+
+  cli
+    .command("import <file>", "Import portable vibe-kanban user settings")
+    .action((file: string) => {
+      runOrExit(runSettingsCommand("import", [file]));
+    });
+
+  cli
+    .command("[...args]", "Launch the local vibe-kanban app")
+    .option("--desktop", "Launch the desktop app instead of browser mode")
+    .allowUnknownOptions()
+    .action((_args: string[], options: RootOptions) => {
+      runOrExit(runMain(Boolean(options.desktop)));
     });
 
   cli.help();
