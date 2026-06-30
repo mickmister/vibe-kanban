@@ -12710,6 +12710,7 @@ dependencies = [
 name = "workspace-manager"
 version = "0.1.44"
 dependencies = [
+ "chrono",
  "db",
  "git",
  "sqlx",
