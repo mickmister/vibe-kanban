@@ -337,6 +337,8 @@ export const ConversationList = forwardRef<
   const {
     isFirstTurn,
     isLoadingHistory,
+    hasMoreHistory,
+    loadEarlierHistory,
     historyError,
     canRetryHistory,
     isRetryingHistory,
@@ -528,7 +530,7 @@ export const ConversationList = forwardRef<
   const showHistoryStatus =
     !showLoader &&
     isNearHistoryBoundary &&
-    (isLoadingHistory || historyError !== null);
+    (isLoadingHistory || historyError !== null || hasMoreHistory);
 
   const { virtualItems, totalSize, measureElement } = conversationVirtualizer;
 
@@ -592,6 +594,20 @@ export const ConversationList = forwardRef<
                     )}
                   </AlertDescription>
                 </Alert>
+              ) : hasMoreHistory ? (
+                <div className="flex justify-center">
+                  <div className="pointer-events-auto rounded border bg-panel px-double py-3 shadow-sm">
+                    <PrimaryButton
+                      variant="tertiary"
+                      onClick={() => {
+                        void loadEarlierHistory();
+                      }}
+                      value={t('conversation.loadEarlierMessages', {
+                        defaultValue: 'Load earlier messages',
+                      })}
+                    />
+                  </div>
+                </div>
               ) : null}
             </div>
           )}
