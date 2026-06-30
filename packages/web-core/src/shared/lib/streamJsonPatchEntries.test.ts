@@ -108,6 +108,43 @@ describe('streamJsonPatchEntries', () => {
     expect(onEntries).toHaveBeenLastCalledWith(['first', 'second']);
   });
 
+  it('resets retry budget after a healthy reconnect', async () => {
+    const sockets = Array.from({ length: 9 }, () => new FakeWebSocket());
+    const availableSockets = [...sockets];
+    const onError = vi.fn();
+
+    setLocalApiTransport({
+      request: vi.fn(),
+      openWebSocket: () => availableSockets.shift()! as unknown as WebSocket,
+    });
+
+    const controller = streamJsonPatchEntries('/test', {
+      onError,
+      retryOnUnexpectedClose: true,
+      replaySafeAppendOnly: true,
+    });
+
+    await vi.runAllTimersAsync();
+
+    sockets[0]!.emit('close', { code: 1006, wasClean: false });
+    await vi.runAllTimersAsync();
+    sockets[1]!.emit('close', { code: 1006, wasClean: false });
+    await vi.runAllTimersAsync();
+
+    sockets[2]!.emitMessage({
+      JsonPatch: [{ op: 'add', path: '/entries/0', value: 'healthy' }],
+    });
+    await vi.runAllTimersAsync();
+    expect(controller.getEntries()).toEqual(['healthy']);
+
+    for (const socket of sockets.slice(2, 8)) {
+      socket.emit('close', { code: 1006, wasClean: false });
+      await vi.runAllTimersAsync();
+    }
+
+    expect(onError).not.toHaveBeenCalled();
+  });
+
   it('stops retrying after repeated closes before any payload arrives', async () => {
     const sockets = Array.from({ length: 7 }, () => new FakeWebSocket());
     const availableSockets = [...sockets];
