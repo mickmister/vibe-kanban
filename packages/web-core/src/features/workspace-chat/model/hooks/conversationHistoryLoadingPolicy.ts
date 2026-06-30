@@ -39,6 +39,42 @@ export type LoadExplicitEarlierHistoryBatchResult =
   | 'deduped'
   | 'stale';
 
+interface ShouldAutoLoadEarlierHistoryInput {
+  hasMoreHistory: boolean;
+  isNearHistoryBoundary: boolean;
+  isLoadingHistory: boolean;
+  hasHistoryError: boolean;
+  hasRequestedForCurrentBoundary: boolean;
+  hasLeftInitialBoundary: boolean;
+  isScrollable: boolean;
+  isAtBottom: boolean;
+}
+
+export function shouldAutoLoadEarlierHistoryAtBoundary({
+  hasMoreHistory,
+  isNearHistoryBoundary,
+  isLoadingHistory,
+  hasHistoryError,
+  hasRequestedForCurrentBoundary,
+  hasLeftInitialBoundary,
+  isScrollable,
+  isAtBottom,
+}: ShouldAutoLoadEarlierHistoryInput): boolean {
+  if (!hasMoreHistory) return false;
+  if (!isNearHistoryBoundary) return false;
+  if (isLoadingHistory) return false;
+  if (hasHistoryError) return false;
+  if (hasRequestedForCurrentBoundary) return false;
+  if (!hasLeftInitialBoundary) return false;
+
+  // On initial render the boundary state can briefly be true before the
+  // initial-bottom anchor settles. Avoid interpreting that as a top-boundary
+  // read when the scrollable transcript is actually at the bottom.
+  if (isScrollable && isAtBottom) return false;
+
+  return true;
+}
+
 export async function loadExplicitEarlierHistoryBatch({
   generation,
   batchSize,

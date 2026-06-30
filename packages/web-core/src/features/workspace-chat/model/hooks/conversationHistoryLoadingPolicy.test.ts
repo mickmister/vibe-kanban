@@ -5,6 +5,7 @@ import { ExecutionProcessStatus } from 'shared/types';
 import {
   hasUnloadedCompletedHistoryProcesses,
   loadExplicitEarlierHistoryBatch,
+  shouldAutoLoadEarlierHistoryAtBoundary,
   shouldAutoReplayRemainingHistoryAfterInitialLoad,
 } from './conversationHistoryLoadingPolicy';
 
@@ -43,6 +44,87 @@ describe('conversationHistoryLoadingPolicy', () => {
         [{ id: 'running', status: ExecutionProcessStatus.running }],
         {}
       )
+    ).toBe(false);
+  });
+
+  it('auto-loads earlier history only after reaching the top boundary', () => {
+    expect(
+      shouldAutoLoadEarlierHistoryAtBoundary({
+        hasMoreHistory: true,
+        isNearHistoryBoundary: true,
+        isLoadingHistory: false,
+        hasHistoryError: false,
+        hasRequestedForCurrentBoundary: false,
+        hasLeftInitialBoundary: true,
+        isScrollable: true,
+        isAtBottom: false,
+      })
+    ).toBe(true);
+
+    expect(
+      shouldAutoLoadEarlierHistoryAtBoundary({
+        hasMoreHistory: true,
+        isNearHistoryBoundary: false,
+        isLoadingHistory: false,
+        hasHistoryError: false,
+        hasRequestedForCurrentBoundary: false,
+        hasLeftInitialBoundary: true,
+        isScrollable: true,
+        isAtBottom: false,
+      })
+    ).toBe(false);
+  });
+
+  it('does not auto-load while already loading, errored, requested, or settled at bottom', () => {
+    const base = {
+      hasMoreHistory: true,
+      isNearHistoryBoundary: true,
+      isLoadingHistory: false,
+      hasHistoryError: false,
+      hasRequestedForCurrentBoundary: false,
+      hasLeftInitialBoundary: true,
+      isScrollable: true,
+      isAtBottom: false,
+    };
+
+    expect(
+      shouldAutoLoadEarlierHistoryAtBoundary({
+        ...base,
+        isLoadingHistory: true,
+      })
+    ).toBe(false);
+    expect(
+      shouldAutoLoadEarlierHistoryAtBoundary({
+        ...base,
+        hasHistoryError: true,
+      })
+    ).toBe(false);
+    expect(
+      shouldAutoLoadEarlierHistoryAtBoundary({
+        ...base,
+        hasRequestedForCurrentBoundary: true,
+      })
+    ).toBe(false);
+    expect(
+      shouldAutoLoadEarlierHistoryAtBoundary({
+        ...base,
+        isAtBottom: true,
+      })
+    ).toBe(false);
+  });
+
+  it('does not auto-load from the initial boundary state before the reader scrolls away', () => {
+    expect(
+      shouldAutoLoadEarlierHistoryAtBoundary({
+        hasMoreHistory: true,
+        isNearHistoryBoundary: true,
+        isLoadingHistory: false,
+        hasHistoryError: false,
+        hasRequestedForCurrentBoundary: false,
+        hasLeftInitialBoundary: false,
+        isScrollable: true,
+        isAtBottom: false,
+      })
     ).toBe(false);
   });
 

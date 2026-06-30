@@ -38,6 +38,7 @@ import {
   isAggregatedThinkingGroup,
 } from '@/shared/hooks/useConversationHistory/types';
 import { useConversationHistory } from '../model/hooks/useConversationHistory';
+import { shouldAutoLoadEarlierHistoryAtBoundary } from '../model/hooks/conversationHistoryLoadingPolicy';
 import { useSetTokenUsageInfo } from '../model/contexts/EntriesContext';
 import type { WorkspaceWithSession } from '@/shared/types/attempt';
 import type { RepoWithTargetBranch } from 'shared/types';
@@ -188,6 +189,9 @@ export const ConversationList = forwardRef<
   // rAF naturally limits updates to the display refresh rate (~60fps) while
   // ensuring every frame reflects the latest data.
   const rafIdRef = useRef<number | null>(null);
+  const autoLoadEarlierHistoryFrameRef = useRef<number | null>(null);
+  const autoLoadEarlierHistoryRequestedRef = useRef(false);
+  const autoLoadEarlierHistoryArmedRef = useRef(false);
   const conversationRows = useMemo(
     () => prevRowsRef.current,
     [filteredEntries]
@@ -241,6 +245,8 @@ export const ConversationList = forwardRef<
     setHasCleanupScriptRun(false);
     setHasRunningProcess(false);
     setIsNearHistoryBoundary(true);
+    autoLoadEarlierHistoryRequestedRef.current = false;
+    autoLoadEarlierHistoryArmedRef.current = false;
     setFilteredEntries([]);
     setDataVersion(0);
     reset();
@@ -250,6 +256,9 @@ export const ConversationList = forwardRef<
     return () => {
       if (rafIdRef.current !== null) {
         cancelAnimationFrame(rafIdRef.current);
+      }
+      if (autoLoadEarlierHistoryFrameRef.current !== null) {
+        cancelAnimationFrame(autoLoadEarlierHistoryFrameRef.current);
       }
     };
   }, []);
@@ -263,6 +272,10 @@ export const ConversationList = forwardRef<
     const nextValue = scrollEl
       ? scrollEl.scrollTop <= HISTORY_BOUNDARY_THRESHOLD_PX
       : true;
+    if (!nextValue) {
+      autoLoadEarlierHistoryRequestedRef.current = false;
+      autoLoadEarlierHistoryArmedRef.current = true;
+    }
     setIsNearHistoryBoundary((current) =>
       current === nextValue ? current : nextValue
     );
@@ -354,6 +367,62 @@ export const ConversationList = forwardRef<
     scrollContainerRef: tanstackScrollRef,
     onAtBottomChange,
   });
+
+  useEffect(() => {
+    if (!hasMoreHistory) {
+      autoLoadEarlierHistoryRequestedRef.current = false;
+      return;
+    }
+
+    if (!isNearHistoryBoundary || isLoadingHistory || historyError !== null) {
+      return;
+    }
+
+    if (autoLoadEarlierHistoryFrameRef.current !== null) {
+      cancelAnimationFrame(autoLoadEarlierHistoryFrameRef.current);
+    }
+
+    autoLoadEarlierHistoryFrameRef.current = requestAnimationFrame(() => {
+      autoLoadEarlierHistoryFrameRef.current = null;
+      const scrollEl = tanstackScrollRef.current;
+      const isScrollable = scrollEl
+        ? scrollEl.scrollHeight - scrollEl.clientHeight > 1
+        : false;
+
+      if (
+        !shouldAutoLoadEarlierHistoryAtBoundary({
+          hasMoreHistory,
+          isNearHistoryBoundary,
+          isLoadingHistory,
+          hasHistoryError: historyError !== null,
+          hasRequestedForCurrentBoundary:
+            autoLoadEarlierHistoryRequestedRef.current,
+          hasLeftInitialBoundary: autoLoadEarlierHistoryArmedRef.current,
+          isScrollable,
+          isAtBottom: conversationVirtualizer.checkIsAtBottom(),
+        })
+      ) {
+        return;
+      }
+
+      autoLoadEarlierHistoryRequestedRef.current = true;
+      void loadEarlierHistory();
+    });
+
+    return () => {
+      if (autoLoadEarlierHistoryFrameRef.current !== null) {
+        cancelAnimationFrame(autoLoadEarlierHistoryFrameRef.current);
+        autoLoadEarlierHistoryFrameRef.current = null;
+      }
+    };
+  }, [
+    conversationVirtualizer,
+    hasMoreHistory,
+    historyError,
+    isLoadingHistory,
+    isNearHistoryBoundary,
+    loadEarlierHistory,
+  ]);
 
   const scrollExecutor = useScrollCommandExecutor({
     virtualizer: conversationVirtualizer.virtualizer,
@@ -530,7 +599,7 @@ export const ConversationList = forwardRef<
   const showHistoryStatus =
     !showLoader &&
     isNearHistoryBoundary &&
-    (isLoadingHistory || historyError !== null || hasMoreHistory);
+    (isLoadingHistory || historyError !== null);
 
   const { virtualItems, totalSize, measureElement } = conversationVirtualizer;
 
@@ -594,20 +663,6 @@ export const ConversationList = forwardRef<
                     )}
                   </AlertDescription>
                 </Alert>
-              ) : hasMoreHistory ? (
-                <div className="flex justify-center">
-                  <div className="pointer-events-auto rounded border bg-panel px-double py-3 shadow-sm">
-                    <PrimaryButton
-                      variant="tertiary"
-                      onClick={() => {
-                        void loadEarlierHistory();
-                      }}
-                      value={t('conversation.loadEarlierMessages', {
-                        defaultValue: 'Load earlier messages',
-                      })}
-                    />
-                  </div>
-                </div>
               ) : null}
             </div>
           )}
