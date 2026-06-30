@@ -27,7 +27,7 @@ pub struct WorkspaceRepo {
     pub repo_id: Uuid,
     pub target_branch: String,
     pub create_branch: bool,
-    #[ts(optional)]
+    #[ts(optional, type = "string | null")]
     pub checkout_branch: Option<String>,
     #[ts(type = "Date")]
     pub created_at: DateTime<Utc>,
@@ -40,7 +40,7 @@ pub struct CreateWorkspaceRepo {
     pub repo_id: Uuid,
     pub target_branch: String,
     pub create_branch: bool,
-    #[ts(optional)]
+    #[ts(optional, type = "string | null")]
     pub checkout_branch: Option<String>,
 }
 
@@ -50,7 +50,7 @@ pub struct RepoWithTargetBranch {
     pub repo: Repo,
     pub target_branch: String,
     pub create_branch: bool,
-    #[ts(optional)]
+    #[ts(optional, type = "string | null")]
     pub checkout_branch: Option<String>,
 }
 

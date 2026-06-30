@@ -203,7 +203,7 @@ pub struct DraftWorkspaceRepo {
     #[serde(default = "default_true")]
     pub create_branch: bool,
     #[serde(default)]
-    #[ts(optional)]
+    #[ts(optional, type = "string | null")]
     pub checkout_branch: Option<String>,
 }
 

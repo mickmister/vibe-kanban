@@ -18,11 +18,11 @@ score: bigint, };
 
 export type SearchMatchType = "FileName" | "DirectoryName" | "FullPath";
 
-export type WorkspaceRepo = { id: string, workspace_id: string, repo_id: string, target_branch: string, create_branch: boolean, checkout_branch?: string, created_at: Date, updated_at: Date, };
+export type WorkspaceRepo = { id: string, workspace_id: string, repo_id: string, target_branch: string, create_branch: boolean, checkout_branch?: string | null, created_at: Date, updated_at: Date, };
 
-export type CreateWorkspaceRepo = { repo_id: string, target_branch: string, create_branch: boolean, checkout_branch?: string, };
+export type CreateWorkspaceRepo = { repo_id: string, target_branch: string, create_branch: boolean, checkout_branch?: string | null, };
 
-export type RepoWithTargetBranch = { target_branch: string, create_branch: boolean, checkout_branch?: string, id: string, path: string, name: string, display_name: string, setup_script: string | null, cleanup_script: string | null, archive_script: string | null, copy_files: string | null, parallel_setup_script: boolean, dev_server_script: string | null, default_target_branch: string | null, default_working_dir: string | null, created_at: Date, updated_at: Date, };
+export type RepoWithTargetBranch = { target_branch: string, create_branch: boolean, checkout_branch?: string | null, id: string, path: string, name: string, display_name: string, setup_script: string | null, cleanup_script: string | null, archive_script: string | null, copy_files: string | null, parallel_setup_script: boolean, dev_server_script: string | null, default_target_branch: string | null, default_working_dir: string | null, created_at: Date, updated_at: Date, };
 
 export type Tag = { id: string, tag_name: string, content: string, created_at: string, updated_at: string, };
 
@@ -38,7 +38,7 @@ export type DraftWorkspaceAttachment = { id: string, file_path: string, original
 
 export type DraftWorkspaceLinkedIssue = { issue_id: string, simple_id: string, title: string, remote_project_id: string, };
 
-export type DraftWorkspaceRepo = { repo_id: string, target_branch: string, create_branch: boolean, checkout_branch?: string, };
+export type DraftWorkspaceRepo = { repo_id: string, target_branch: string, create_branch: boolean, checkout_branch?: string | null, };
 
 export type DraftIssueData = { title: string, description: string | null, status_id: string,
 /**
@@ -369,7 +369,7 @@ export type WorkspaceRepoInput = { repo_id: string, target_branch: string, creat
  * Existing local branch to check out when `create_branch` is false.
  * `target_branch` remains the separate base branch for diffs, merges, and PRs.
  */
-checkout_branch?: string, };
+checkout_branch?: string | null, };
 
 export type RunAgentSetupRequest = { executor_profile_id: ExecutorProfileId, };
 
