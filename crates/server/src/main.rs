@@ -1,7 +1,10 @@
 use anyhow::{self, Error as AnyhowError};
 use axum::Router;
 use deployment::{Deployment, DeploymentError};
-use server::{middleware::origin::validate_origin, routes, runtime::relay_registration, startup};
+use server::{
+    middleware::origin::validate_origin, routes, runtime::relay_registration, settings_backup,
+    startup,
+};
 use sqlx::Error as SqlxError;
 use strip_ansi_escapes::strip;
 use thiserror::Error;
@@ -44,6 +47,11 @@ async fn main() -> Result<(), VibeKanbanError> {
         .with(tracing_subscriber::fmt::layer().with_filter(env_filter))
         .with(sentry_layer())
         .init();
+
+    if handle_settings_backup_command().await? {
+        return Ok(());
+    }
+
     startup::begin_startup_diagnostics();
 
     let shutdown_token = CancellationToken::new();
@@ -155,6 +163,50 @@ async fn main() -> Result<(), VibeKanbanError> {
     perform_cleanup_actions(&deployment).await;
 
     Ok(())
+}
+
+async fn handle_settings_backup_command() -> Result<bool, VibeKanbanError> {
+    let mut args = std::env::args().skip(1);
+    let Some(command) = args.next() else {
+        return Ok(false);
+    };
+    let Some(path) = args.next() else {
+        if matches!(command.as_str(), "backup" | "import") {
+            return Err(anyhow::anyhow!("usage: vibe-kanban {command} <file>").into());
+        }
+        return Ok(false);
+    };
+    if args.next().is_some() && matches!(command.as_str(), "backup" | "import") {
+        return Err(anyhow::anyhow!("usage: vibe-kanban {command} <file>").into());
+    }
+
+    let db = db::DBService::new().await?;
+    let paths = settings_backup::BackupPaths::from_assets();
+    let path = std::path::PathBuf::from(path);
+
+    match command.as_str() {
+        "backup" => {
+            settings_backup::backup_to_file(&db.pool, &paths, &path).await?;
+            eprintln!("Backup written to {}", path.display());
+            Ok(true)
+        }
+        "import" => {
+            let report = settings_backup::import_from_file(&db.pool, &paths, &path).await?;
+            eprintln!(
+                "Import complete: {} repo(s) registered, {} cloned, {} skipped, {} tag(s), {} project(s)",
+                report.repos_registered,
+                report.repos_cloned,
+                report.repos_skipped,
+                report.tags_imported,
+                report.projects_imported
+            );
+            for warning in report.warnings {
+                eprintln!("Warning: {warning}");
+            }
+            Ok(true)
+        }
+        _ => Ok(false),
+    }
 }
 
 pub async fn shutdown_signal() {
