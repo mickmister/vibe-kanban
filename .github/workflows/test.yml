@@ -6,7 +6,7 @@ on:
       - main
     paths-ignore:
       - .github/workflows/**
-      - '!.github/workflows/test.yml'
+      - "!.github/workflows/test.yml"
   push:
     branches:
       - main
@@ -227,59 +227,14 @@ jobs:
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
           cache-key: backend-schema-checks-${{ runner.os }}-${{ runner.arch }}-${{ env.RUNNER_LABEL }}
-          setup-node: 'true'
-          setup-sqlx-cli: 'true'
+          setup-node: "true"
+          setup-sqlx-cli: "true"
 
       - name: Check generated types
         run: npm run generate-types:check
 
       - name: Sqlx checks
         run: npm run prepare-db:check
-
-  backend-remote-checks:
-    needs: changes
-    if: false
-    runs-on: *runner_label
-    env:
-      SCCACHE_GHA_ENABLED: "true"
-      RUSTC_WRAPPER: "sccache"
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Setup Rust
-        uses: ./.github/actions/cargo-checks-common-setup
-        with:
-          toolchain: ${{ env.RUST_TOOLCHAIN }}
-          components: rustfmt, clippy
-          cache-key: backend-remote-checks-${{ runner.os }}-${{ runner.arch }}-${{ env.RUNNER_LABEL }}
-          setup-node: 'true'
-          setup-sqlx-cli: 'true'
-
-      - name: Setup SSH Agent for private dependencies
-        uses: webfactory/ssh-agent@dc588b651fe13675774614f8e6a936a468676387 # v0.9.0
-        with:
-          ssh-private-key: ${{ secrets.VK_PRIVATE_DEPLOY_KEY }}
-
-      - name: Check remote Cargo.lock is consistent
-        run: |
-          cargo metadata --locked --format-version 1 --manifest-path crates/remote/Cargo.toml > /dev/null
-          cargo metadata --locked --format-version 1 --manifest-path crates/relay-tunnel/Cargo.toml > /dev/null
-
-      - name: Check formatting
-        run: |
-          cargo fmt --all --manifest-path crates/remote/Cargo.toml -- --check
-          cargo fmt --all --manifest-path crates/relay-tunnel/Cargo.toml -- --check
-
-      - name: Run Clippy
-        run: |
-          cargo clippy --all-targets --manifest-path crates/remote/Cargo.toml -- -D warnings
-          cargo clippy --all-targets --manifest-path crates/relay-tunnel/Cargo.toml -- -D warnings
-
-      - name: Check generated types
-        run: npm run remote:generate-types:check
-
-      - name: Sqlx checks
-        run: npm run remote:prepare-db:check
 
   backend-clippy:
     needs: changes
@@ -330,33 +285,3 @@ jobs:
 
       - name: Run Cargo tests
         run: cargo nextest run --workspace --exclude vibe-kanban-tauri
-
-  tauri-checks:
-    needs: changes
-    if: false
-    runs-on: *runner_label
-    env:
-      SCCACHE_GHA_ENABLED: "true"
-      RUSTC_WRAPPER: "sccache"
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Setup Rust
-        uses: ./.github/actions/cargo-checks-common-setup
-        with:
-          toolchain: ${{ env.RUST_TOOLCHAIN }}
-          components: rustfmt, clippy
-          cache-key: tauri-checks-${{ runner.os }}-${{ runner.arch }}-${{ env.RUNNER_LABEL }}
-
-      - name: Install Linux dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential \
-            libssl-dev libayatana-appindicator3-dev librsvg2-dev \
-            libxdo-dev file pkg-config xdg-utils
-
-      - name: Run Tauri fmt, clippy, and compile checks
-        run: |
-          cargo fmt --all --manifest-path crates/tauri-app/Cargo.toml -- --check
-          cargo clippy --all-targets --manifest-path crates/tauri-app/Cargo.toml -- -D warnings
-          cargo check -p vibe-kanban-tauri
