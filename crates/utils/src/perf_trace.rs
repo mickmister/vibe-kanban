@@ -1,4 +1,5 @@
 pub const PERF_TRACE_DIRECTIVES: &[&str] = &[
+    "perf.agent_startup=debug",
     "tower_http=debug",
     "sqlx::query=debug",
     "server::middleware::signed_ws=trace",
@@ -86,6 +87,7 @@ mod tests {
 
         assert!(filter.contains("server=info"));
         assert!(filter.contains("tower_http=debug"));
+        assert!(filter.contains("perf.agent_startup=debug"));
         assert!(filter.contains("sqlx::query=debug"));
         assert!(filter.contains("server::middleware::signed_ws=trace"));
         assert!(filter.contains("ws_bridge=trace"));

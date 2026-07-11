@@ -27,6 +27,7 @@ use tokio::{
     sync::{Mutex, oneshot},
 };
 use tokio_util::sync::CancellationToken;
+use tracing::Instrument;
 
 use crate::executors::{ExecutorError, ExecutorExitResult};
 
@@ -80,6 +81,7 @@ impl JsonRpcPeer {
         let reader_peer = peer.clone();
         let callbacks = callbacks.clone();
 
+        let reader_span = tracing::Span::current();
         tokio::spawn(async move {
             let mut reader = BufReader::new(stdout);
             let mut buffer = String::new();
@@ -168,7 +170,7 @@ impl JsonRpcPeer {
 
             exit_tx.send_exit_signal(ExecutorExitResult::Success).await;
             let _ = reader_peer.shutdown().await;
-        });
+        }.instrument(reader_span));
 
         peer
     }

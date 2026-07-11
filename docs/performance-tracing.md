@@ -12,6 +12,8 @@ VK_PERF_TRACING=1 RUST_LOG=info pnpm run backend:dev:watch
 `VK_PERF_TRACING=1` keeps the normal application log level but also installs
 the HTTP tracing middleware and enables:
 
+- `perf.agent_startup=debug` for agent turn startup spans, including
+  full workspace/session/execution IDs and Codex app-server/MCP startup timing;
 - `tower_http=debug` for HTTP request spans and response latency;
 - `sqlx::query=debug` for SQLx query timings;
 - `server::middleware::signed_ws=trace` for signed/plain WebSocket upgrade,
@@ -73,7 +75,8 @@ For a profiling run that sends data to SigNoz:
 5. In Traces, confirm spans are present for session load or message streaming,
    such as `http.request`, `sessions.find_by_workspace_id`,
    `events.stream_execution_processes.initial_snapshot`,
-   `normalized_logs.*`, and `ws.send`.
+   `normalized_logs.*`, `agent.turn`, `codex.spawn_app_server`,
+   `codex.mcp_startup`, and `ws.send`.
 6. Confirm HTTP span data uses route templates rather than raw query strings or
    full request URIs.
 
@@ -90,6 +93,32 @@ so the server instruments those paths explicitly. Look for spans/events named:
 
 Message logs include the message kind, byte length, and whether a close frame
 was present. Payload contents are intentionally not logged.
+
+## Agent startup notes
+
+Agent startup tracing is intentionally grouped under low-cardinality span names
+so SigNoz can aggregate runs cleanly while still exposing concrete IDs as span
+attributes. Look for:
+
+- `agent.turn`: follow-up or queued-message submission to process startup;
+- `agent.turn.start_execution_inner`: local execution setup, including the
+  full `workspace_id`, `session_id`, and `execution_process_id`;
+- `agent.turn.executor_spawn`: the executor-specific child process spawn wait;
+- `codex.spawn_app_server`: Codex app-server setup in the background task;
+- `codex.rpc.initialize`, `codex.get_account`, `codex.thread_start`,
+  `codex.thread_fork`, `codex.turn_start`: the Codex RPC startup sequence;
+- `codex.mcp_startup`: collective MCP startup timing. This span records
+  server counts, update counts, ready/failed/cancelled server names, and emits
+  `codex.mcp_startup.update` events for per-server status changes. Error text
+  is not recorded; only error lengths are included to avoid leaking secrets.
+- `codex.mcp_server_startup`: per-server MCP startup spans, keyed by
+  `mcp_server`, with final `mcp_status` and `elapsed_ms` when Codex emits both
+  starting and terminal updates for that server.
+
+First model-configuration and output milestones are recorded as
+`codex.session_configured`, `codex.first_reasoning_delta`, and
+`codex.first_message_delta` events on the same trace. These help separate time
+to show the model/reasoning-effort banner from time to first model output.
 
 Low-level sink polling events such as `ws.sink.start_send`,
 `ws.sink.poll_ready`, and `ws.sink.poll_flush` are intentionally gated behind an

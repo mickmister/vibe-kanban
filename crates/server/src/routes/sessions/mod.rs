@@ -197,6 +197,7 @@ pub async fn follow_up(
             .await?;
     }
 
+    let retry_process_id = payload.retry_process_id;
     let latest_session_info = CodingAgentTurn::find_latest_session_info(pool, session.id).await?;
 
     let prompt = payload.prompt;
@@ -239,6 +240,15 @@ pub async fn follow_up(
             &action,
             &ExecutionProcessRunReason::CodingAgent,
         )
+        .instrument(tracing::debug_span!(
+            target: "perf.agent_startup",
+            "agent.turn",
+            workspace_id = %workspace.id,
+            session_id = %session.id,
+            executor = %executor_profile_id.executor,
+            retry_process_id = ?retry_process_id,
+            execution_process_id = tracing::field::Empty,
+        ))
         .await?;
 
     // Clear the draft follow-up scratch on successful spawn

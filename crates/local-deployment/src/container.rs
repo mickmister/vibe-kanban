@@ -53,6 +53,7 @@ use services::services::{
 };
 use tokio::{sync::RwLock, task::JoinHandle};
 use tokio_util::io::ReaderStream;
+use tracing::Instrument;
 use utils::{
     log_msg::LogMsg,
     msg_store::MsgStore,
@@ -1143,6 +1144,15 @@ impl LocalContainerService {
             &action,
             &ExecutionProcessRunReason::CodingAgent,
         )
+        .instrument(tracing::debug_span!(
+            target: "perf.agent_startup",
+            "agent.turn",
+            workspace_id = %ctx.workspace.id,
+            session_id = %ctx.session.id,
+            executor = %executor_profile_id.executor,
+            queued = true,
+            execution_process_id = tracing::field::Empty,
+        ))
         .await
     }
 }
@@ -1342,6 +1352,18 @@ impl ContainerService for LocalContainerService {
         Ok(true)
     }
 
+    #[tracing::instrument(
+        name = "agent.turn.start_execution_inner",
+        target = "perf.agent_startup",
+        level = "debug",
+        skip(self, workspace, execution_process, executor_action),
+        fields(
+            workspace_id = %workspace.id,
+            session_id = %execution_process.session_id,
+            execution_process_id = %execution_process.id,
+            executor = ?executor_action.base_executor(),
+        )
+    )]
     async fn start_execution_inner(
         &self,
         workspace: &Workspace,
@@ -1399,7 +1421,14 @@ impl ContainerService for LocalContainerService {
         // Create the child and stream, add to execution tracker with timeout
         let mut spawned = tokio::time::timeout(
             Duration::from_secs(30),
-            executor_action.spawn(&current_dir, approvals_service, &env),
+            executor_action
+                .spawn(&current_dir, approvals_service, &env)
+                .instrument(tracing::debug_span!(
+                    target: "perf.agent_startup",
+                    "agent.turn.executor_spawn",
+                    execution_process_id = %execution_process.id,
+                    executor = ?executor_action.base_executor(),
+                )),
         )
         .await
         .map_err(|_| {
