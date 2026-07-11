@@ -36,7 +36,10 @@ use uuid::Uuid;
 use crate::{
     DeploymentImpl,
     error::ApiError,
-    middleware::signed_ws::{MaybeSignedWebSocket, SignedWsUpgrade},
+    middleware::{
+        origin::allowed_dev_server_origin_entries,
+        signed_ws::{MaybeSignedWebSocket, SignedWsUpgrade},
+    },
     runtime::relay_registration,
 };
 
@@ -99,6 +102,7 @@ pub struct UserSystemInfo {
     pub capabilities: HashMap<String, Vec<BaseAgentCapability>>,
     pub shared_api_base: Option<String>,
     pub preview_proxy_port: Option<u16>,
+    pub allowed_dev_server_origins: Vec<String>,
 }
 
 // TODO: update frontend, BE schema has changed, this replaces GET /config and /config/constants
@@ -172,6 +176,7 @@ async fn get_user_system_info(
         },
         shared_api_base: deployment.remote_info().get_api_base(),
         preview_proxy_port: deployment.client_info().get_preview_proxy_port(),
+        allowed_dev_server_origins: allowed_dev_server_origin_entries(),
     };
 
     ResponseJson(ApiResponse::success(user_system_info))

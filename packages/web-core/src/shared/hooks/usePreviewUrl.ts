@@ -8,8 +8,9 @@ export interface PreviewUrlInfo {
 }
 
 const urlPatterns = [
-  // Full URL pattern (e.g., http://localhost:3000, https://127.0.0.1:8080)
-  /(https?:\/\/(?:\[[0-9a-f:]+\]|localhost|127\.0\.0\.1|0\.0\.0\.0|\d{1,3}(?:\.\d{1,3}){3})(?::\d{2,5})?(?:\/\S*)?)/i,
+  // Full URL pattern. Candidate URLs are parsed and then accepted only if
+  // they are local previews or match configured allowed dev server origins.
+  /(https?:\/\/[^\s"'<>]+)/gi,
   // Host:port pattern (e.g., localhost:3000, 0.0.0.0:8080)
   /((?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[[0-9a-f:]+\]|(?:\d{1,3}\.){3}\d{1,3})):(\d{2,5})/gi,
 ];
@@ -25,6 +26,152 @@ const LOOPBACK_HOSTS = new Set([
 
 const isIpv4Host = (host: string): boolean =>
   /^\d{1,3}(?:\.\d{1,3}){3}$/.test(host);
+
+type AllowedPreviewOrigin = {
+  scheme: 'http' | 'https';
+  host: string;
+  port: number;
+  wildcard: boolean;
+};
+
+const defaultPort = (scheme: 'http' | 'https'): number =>
+  scheme === 'https' ? 443 : 80;
+
+const normalizeOriginHost = (host: string): string =>
+  host.trim().replace(/^\[/, '').replace(/\]$/, '').toLowerCase();
+
+const parseWildcardAllowedOrigin = (
+  entry: string
+): AllowedPreviewOrigin | null => {
+  const [schemePart, remainder] = entry.split('://');
+  if (
+    !remainder ||
+    (schemePart !== 'http' && schemePart !== 'https') ||
+    /[/?#@]/.test(remainder.replace(/\/$/, ''))
+  ) {
+    return null;
+  }
+
+  const authority = remainder.endsWith('/')
+    ? remainder.slice(0, -1)
+    : remainder;
+  const portSeparatorIndex = authority.lastIndexOf(':');
+  const hostPattern =
+    portSeparatorIndex >= 0
+      ? authority.slice(0, portSeparatorIndex)
+      : authority;
+  const portText =
+    portSeparatorIndex >= 0 ? authority.slice(portSeparatorIndex + 1) : '';
+  const port = portText.length > 0 ? Number(portText) : defaultPort(schemePart);
+
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    return null;
+  }
+
+  const host = normalizeOriginHost(hostPattern);
+  const suffix = host.startsWith('*.') ? host.slice(2) : '';
+  if (!validWildcardSuffix(suffix)) {
+    return null;
+  }
+
+  return {
+    scheme: schemePart,
+    host: suffix,
+    port,
+    wildcard: true,
+  };
+};
+
+const validOriginHost = (host: string): boolean =>
+  host.length > 0 && !host.split('.').some((label) => label.length === 0);
+
+const validWildcardSuffix = (suffix: string): boolean => {
+  const labels = suffix.split('.');
+  if (labels.length < 2 || labels.some((label) => label.length === 0)) {
+    return false;
+  }
+
+  return labels.every(
+    (label) =>
+      !label.startsWith('-') &&
+      !label.endsWith('-') &&
+      /^[A-Za-z0-9-]+$/.test(label)
+  );
+};
+
+const parseAllowedPreviewOrigin = (
+  entry: string
+): AllowedPreviewOrigin | null => {
+  const trimmed = entry.trim();
+  if (!trimmed) return null;
+
+  if (trimmed.includes('*')) {
+    return parseWildcardAllowedOrigin(trimmed);
+  }
+
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      return null;
+    }
+    if (
+      parsed.username ||
+      parsed.password ||
+      parsed.pathname !== '/' ||
+      parsed.search ||
+      parsed.hash
+    ) {
+      return null;
+    }
+
+    const scheme = parsed.protocol === 'https:' ? 'https' : 'http';
+    const host = normalizeOriginHost(parsed.hostname);
+    if (!validOriginHost(host)) {
+      return null;
+    }
+
+    return {
+      scheme,
+      host,
+      port: parsed.port ? Number(parsed.port) : defaultPort(scheme),
+      wildcard: false,
+    };
+  } catch {
+    return null;
+  }
+};
+
+const wildcardHostMatches = (suffix: string, host: string): boolean => {
+  if (!host.endsWith(suffix)) return false;
+  const prefix = host.slice(0, -suffix.length);
+  if (!prefix.endsWith('.')) return false;
+  const label = prefix.slice(0, -1);
+  return label.length > 0 && !label.includes('.');
+};
+
+const matchesAllowedPreviewOrigin = (
+  parsed: URL,
+  allowedOrigins: string[]
+): boolean => {
+  const scheme = parsed.protocol === 'https:' ? 'https' : 'http';
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    return false;
+  }
+
+  const host = normalizeOriginHost(parsed.hostname);
+  const port = parsed.port ? Number(parsed.port) : defaultPort(scheme);
+
+  return allowedOrigins.some((entry) => {
+    const allowed = parseAllowedPreviewOrigin(entry);
+    if (!allowed || allowed.scheme !== scheme || allowed.port !== port) {
+      return false;
+    }
+
+    return allowed.wildcard
+      ? wildcardHostMatches(allowed.host, host)
+      : allowed.host === host;
+  });
+};
 
 const normalizeDetectedHost = (host: string): string => {
   const normalized = host.toLowerCase();
@@ -148,7 +295,10 @@ const toOriginUrlInfo = (
   };
 };
 
-export const detectPreviewUrl = (line: string): PreviewUrlInfo | null => {
+export const detectPreviewUrl = (
+  line: string,
+  allowedDevServerOrigins: string[] = []
+): PreviewUrlInfo | null => {
   const cleaned = stripAnsi(line);
   // Some dev servers split terminal output into chunks, which can break
   // ports as `:40\n00`. Collapse whitespace inside the port before matching.
@@ -158,8 +308,10 @@ export const detectPreviewUrl = (line: string): PreviewUrlInfo | null => {
   );
   const vibeKanbanPort = getVibeKanbanPort();
 
-  const fullUrlMatch = urlPatterns[0].exec(normalized);
-  if (fullUrlMatch) {
+  const fullUrlPattern = new RegExp(urlPatterns[0]);
+  let fullUrlMatch: RegExpExecArray | null;
+
+  while ((fullUrlMatch = fullUrlPattern.exec(normalized)) !== null) {
     try {
       const candidateUrl = trimMatchedUrlCandidate(fullUrlMatch[1]);
       const parsed = new URL(candidateUrl);
@@ -169,17 +321,24 @@ export const detectPreviewUrl = (line: string): PreviewUrlInfo | null => {
       if (isLocalhost && !parsed.port) {
         // Fall through to host:port pattern detection
       } else {
+        if (
+          !isLocalhost &&
+          !matchesAllowedPreviewOrigin(parsed, allowedDevServerOrigins)
+        ) {
+          continue;
+        }
+
         parsed.hostname = normalizedHost;
 
         if (vibeKanbanPort && parsed.port === vibeKanbanPort) {
-          return null;
+          continue;
         }
 
         const scheme = parsed.protocol === 'https:' ? 'https' : 'http';
         return toOriginUrlInfo(parsed, scheme);
       }
     } catch {
-      // Ignore invalid URLs and fall through to host:port detection
+      // Ignore invalid URLs and keep scanning.
     }
   }
 
@@ -221,7 +380,8 @@ export const detectPreviewUrl = (line: string): PreviewUrlInfo | null => {
 
 function detectPreviewUrlFromBuffer(
   buffer: string,
-  blockedPort?: number
+  blockedPort?: number,
+  allowedDevServerOrigins: string[] = []
 ): PreviewUrlInfo | null {
   const lines = buffer.split(/\r?\n/);
   let best: PreviewUrlInfo | null = null;
@@ -231,7 +391,7 @@ function detectPreviewUrlFromBuffer(
     const line = lines[i];
     if (!line) continue;
 
-    const detected = detectPreviewUrl(line);
+    const detected = detectPreviewUrl(line, allowedDevServerOrigins);
     if (!detected || (blockedPort && detected.port === blockedPort)) {
       continue;
     }
@@ -243,7 +403,7 @@ function detectPreviewUrlFromBuffer(
   if (best) return best;
 
   // Fallback for URLs split across chunk boundaries where line-by-line matching fails.
-  const fallback = detectPreviewUrl(buffer);
+  const fallback = detectPreviewUrl(buffer, allowedDevServerOrigins);
   if (fallback && blockedPort && fallback.port === blockedPort) {
     return null;
   }
@@ -252,13 +412,20 @@ function detectPreviewUrlFromBuffer(
 
 export function usePreviewUrl(
   logs: Array<{ content: string }> | undefined,
-  previewProxyPort?: number
+  previewProxyPort?: number,
+  allowedDevServerOrigins: string[] = []
 ): PreviewUrlInfo | undefined {
   const [urlInfo, setUrlInfo] = useState<PreviewUrlInfo | undefined>();
   const lastIndexRef = useRef(0);
   const logBufferRef = useRef('');
+  const allowedDevServerOriginsKey = allowedDevServerOrigins.join('\0');
+  const lastAllowedDevServerOriginsKeyRef = useRef(allowedDevServerOriginsKey);
 
   useEffect(() => {
+    const allowedOriginsChanged =
+      lastAllowedDevServerOriginsKeyRef.current !== allowedDevServerOriginsKey;
+    lastAllowedDevServerOriginsKeyRef.current = allowedDevServerOriginsKey;
+
     if (!logs) {
       setUrlInfo(undefined);
       lastIndexRef.current = 0;
@@ -292,8 +459,25 @@ export function usePreviewUrl(
           ? merged.slice(-LOG_SCAN_BUFFER_LIMIT)
           : merged;
       detectedUrl =
-        detectPreviewUrlFromBuffer(logBufferRef.current, previewProxyPort) ??
-        undefined;
+        detectPreviewUrlFromBuffer(
+          logBufferRef.current,
+          previewProxyPort,
+          allowedDevServerOrigins
+        ) ?? undefined;
+    }
+
+    if (
+      !detectedUrl &&
+      !urlInfo &&
+      allowedOriginsChanged &&
+      logBufferRef.current
+    ) {
+      detectedUrl =
+        detectPreviewUrlFromBuffer(
+          logBufferRef.current,
+          previewProxyPort,
+          allowedDevServerOrigins
+        ) ?? undefined;
     }
 
     if (detectedUrl) {
@@ -306,7 +490,13 @@ export function usePreviewUrl(
     }
 
     lastIndexRef.current = logs.length;
-  }, [logs, urlInfo, previewProxyPort]);
+  }, [
+    logs,
+    urlInfo,
+    previewProxyPort,
+    allowedDevServerOrigins,
+    allowedDevServerOriginsKey,
+  ]);
 
   return urlInfo;
 }

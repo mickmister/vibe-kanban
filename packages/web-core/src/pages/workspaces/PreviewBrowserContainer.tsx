@@ -186,7 +186,7 @@ export function PreviewBrowserContainer({
     (s) => s.triggerPreviewRefresh
   );
   const { repos, workspaceId: activeWorkspaceId } = useWorkspaceContext();
-  const { previewProxyPort } = useUserSystem();
+  const { previewProxyPort, allowedDevServerOrigins } = useUserSystem();
   const hostId = useHostId();
 
   const {
@@ -209,7 +209,11 @@ export function PreviewBrowserContainer({
     );
   }, [runningDevServers]);
   const { logs } = useLogStream(primaryDevServer?.id ?? '');
-  const urlInfo = usePreviewUrl(logs, previewProxyPort ?? undefined);
+  const urlInfo = usePreviewUrl(
+    logs,
+    previewProxyPort ?? undefined,
+    allowedDevServerOrigins
+  );
 
   // Detect failed dev server process (failed status or completed with non-zero exit code)
   const failedDevServerProcess = devServerProcesses.find(

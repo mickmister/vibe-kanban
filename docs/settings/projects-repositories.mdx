@@ -62,6 +62,8 @@ Command to start your development server. This enables the built-in preview brow
 
 <Tip>
 The dev server must output its URL (e.g., `http://localhost:3000`) to stdout for Vibe Kanban to detect and display it in the preview panel.
+For non-local preview URLs, add exact or single-label wildcard origins to
+`VK_ALLOWED_DEV_SERVER_ORIGINS` (for example, `https://*.trycloudflare.com`).
 </Tip>
 
 <Card title="Browser Testing" icon="eye" href="/browser-testing">

@@ -18,7 +18,10 @@ use utils::{
 
 use crate::{
     DeploymentImpl,
-    middleware::origin::{validate_allowed_origins_config, validate_origin},
+    middleware::origin::{
+        validate_allowed_dev_server_origins_config, validate_allowed_origins_config,
+        validate_origin,
+    },
     routes,
     runtime::relay_registration,
 };
@@ -148,6 +151,8 @@ pub async fn initialize_deployment(
 ) -> Result<DeploymentImpl, DeploymentError> {
     begin_startup_diagnostics();
     validate_allowed_origins_config()
+        .map_err(|error| DeploymentError::Other(anyhow::anyhow!(error)))?;
+    validate_allowed_dev_server_origins_config()
         .map_err(|error| DeploymentError::Other(anyhow::anyhow!(error)))?;
 
     // Create asset directory if it doesn't exist
