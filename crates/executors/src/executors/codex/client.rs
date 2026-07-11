@@ -54,6 +54,11 @@ struct CodexNotificationParams {
     msg: EventMsg,
 }
 
+fn perf_agent_startup_tracing_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(workspace_utils::perf_trace::enabled)
+}
+
 #[derive(Default)]
 struct CodexStartupTraceState {
     mcp: McpStartupTraceState,
@@ -159,7 +164,9 @@ impl McpStartupTraceState {
             McpStartupStatus::Failed { error } => Some(error.len()),
             _ => None,
         };
-        let server_elapsed_ms = self.handle_server_update(update, status, error_len);
+        let aggregate_span = self.span().clone();
+        let server_elapsed_ms =
+            aggregate_span.in_scope(|| self.handle_server_update(update, status, error_len));
 
         let update_count = self.update_count;
         let server_count = self.seen_servers.len() as u64;
@@ -1161,7 +1168,8 @@ impl JsonRpcCallbacks for AppServerClient {
 
         let method = notification.method.as_str();
 
-        if method.starts_with("codex/event")
+        if perf_agent_startup_tracing_enabled()
+            && method.starts_with("codex/event")
             && let Some(params) = notification.params.as_ref()
             && let Ok(params) = serde_json::from_value::<CodexNotificationParams>(params.clone())
         {

@@ -9,7 +9,7 @@ use crate::{
     actions::{
         coding_agent_follow_up::CodingAgentFollowUpRequest,
         coding_agent_initial::CodingAgentInitialRequest, review::ReviewRequest,
-        script::ScriptRequest,
+        script::ScriptRequest, session_command::CodingAgentSessionCommandRequest,
     },
     approvals::ExecutorApprovalService,
     env::ExecutionEnv,
@@ -19,6 +19,7 @@ pub mod coding_agent_follow_up;
 pub mod coding_agent_initial;
 pub mod review;
 pub mod script;
+pub mod session_command;
 
 pub use review::RepoReviewContext;
 
@@ -28,6 +29,7 @@ pub use review::RepoReviewContext;
 pub enum ExecutorActionType {
     CodingAgentInitialRequest,
     CodingAgentFollowUpRequest,
+    CodingAgentSessionCommandRequest,
     ScriptRequest,
     ReviewRequest,
 }
@@ -63,6 +65,9 @@ impl ExecutorAction {
         match self.typ() {
             ExecutorActionType::CodingAgentInitialRequest(request) => Some(request.base_executor()),
             ExecutorActionType::CodingAgentFollowUpRequest(request) => {
+                Some(request.base_executor())
+            }
+            ExecutorActionType::CodingAgentSessionCommandRequest(request) => {
                 Some(request.base_executor())
             }
             ExecutorActionType::ReviewRequest(request) => Some(request.base_executor()),

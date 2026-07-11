@@ -386,9 +386,17 @@ impl StandardCodingAgentExecutor for Codex {
             },
             slash_commands: vec![
                 SlashCommandDescription {
+                    name: "clear".to_string(),
+                    description: Some(
+                        "clear VK's session context while keeping conversation history visible"
+                            .to_string(),
+                    ),
+                },
+                SlashCommandDescription {
                     name: "compact".to_string(),
                     description: Some(
-                        "summarize conversation to prevent hitting the context limit".to_string(),
+                        "summarize conversation to prevent hitting the context limit; extra instructions are provider-dependent best-effort"
+                            .to_string(),
                     ),
                 },
                 SlashCommandDescription {

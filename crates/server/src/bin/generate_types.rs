@@ -199,6 +199,8 @@ fn generate_types_content() -> String {
         executors::profile::ExecutorConfig::decl(),
         executors::actions::script::ScriptContext::decl(),
         executors::actions::script::ScriptRequest::decl(),
+        executors::actions::session_command::SessionCommand::decl(),
+        executors::actions::session_command::CodingAgentSessionCommandRequest::decl(),
         executors::actions::script::ScriptRequestLanguage::decl(),
         executors::executors::BaseCodingAgent::decl(),
         executors::executors::CodingAgent::decl(),
