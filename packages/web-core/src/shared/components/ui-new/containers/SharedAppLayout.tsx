@@ -39,6 +39,7 @@ import {
   isProjectDestination,
   isLocalWorkspacesDestination,
 } from '@/shared/lib/routes/appNavigation';
+import { openIframeHostSidebarOrFallback } from '@/shared/lib/iframeHostBridge';
 import {
   CreateRemoteProjectDialog,
   type CreateRemoteProjectResult,
@@ -308,6 +309,10 @@ export function SharedAppLayout() {
     openRelaySettings();
   }, [openRelaySettings]);
 
+  const handleOpenMobileDrawer = useCallback(() => {
+    openIframeHostSidebarOrFallback(() => setIsDrawerOpen(true));
+  }, []);
+
   return (
     <SyncErrorProvider>
       <div
@@ -442,7 +447,7 @@ export function SharedAppLayout() {
             <NavbarContainer
               mobileMode={isMobile}
               onOrgSelect={setSelectedOrgId}
-              onOpenDrawer={() => setIsDrawerOpen(true)}
+              onOpenDrawer={handleOpenMobileDrawer}
             />
             <div className="flex-1 min-h-0 overflow-hidden">
               <Outlet />
