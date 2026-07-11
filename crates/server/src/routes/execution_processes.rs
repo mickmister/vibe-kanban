@@ -315,7 +315,7 @@ async fn get_normalized_log_messages_single_flight(
 
 #[tracing::instrument(level = "debug", skip(store))]
 fn collect_live_normalized_log_messages(store: &MsgStore) -> Arc<Vec<String>> {
-    let messages = store
+    let messages: Vec<String> = store
         .get_history()
         .into_iter()
         .take_while(|msg| !matches!(msg, LogMsg::Finished))
