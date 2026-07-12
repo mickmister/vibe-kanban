@@ -328,6 +328,42 @@ impl StandardCodingAgentExecutor for Codex {
             model_selector: ModelSelectorConfig {
                 models: vec![
                     ModelInfo {
+                        id: "gpt-5.6".to_string(),
+                        name: "GPT-5.6".to_string(),
+                        provider_id: None,
+                        reasoning_options: xhigh_reasoning_options.clone(),
+                    },
+                    ModelInfo {
+                        id: "gpt-5.6-sol".to_string(),
+                        name: "GPT-5.6 Sol".to_string(),
+                        provider_id: None,
+                        reasoning_options: xhigh_reasoning_options.clone(),
+                    },
+                    ModelInfo {
+                        id: "gpt-5.6-sol-fast".to_string(),
+                        name: "GPT-5.6 Sol Fast".to_string(),
+                        provider_id: None,
+                        reasoning_options: xhigh_reasoning_options.clone(),
+                    },
+                    ModelInfo {
+                        id: "gpt-5.6-terra".to_string(),
+                        name: "GPT-5.6 Terra".to_string(),
+                        provider_id: None,
+                        reasoning_options: xhigh_reasoning_options.clone(),
+                    },
+                    ModelInfo {
+                        id: "gpt-5.6-terra-fast".to_string(),
+                        name: "GPT-5.6 Terra Fast".to_string(),
+                        provider_id: None,
+                        reasoning_options: xhigh_reasoning_options.clone(),
+                    },
+                    ModelInfo {
+                        id: "gpt-5.6-luna".to_string(),
+                        name: "GPT-5.6 Luna".to_string(),
+                        provider_id: None,
+                        reasoning_options: xhigh_reasoning_options.clone(),
+                    },
+                    ModelInfo {
                         id: "gpt-5.5".to_string(),
                         name: "GPT-5.5".to_string(),
                         provider_id: None,
@@ -453,7 +489,7 @@ impl StandardCodingAgentExecutor for Codex {
 
 impl Codex {
     pub fn base_command() -> &'static str {
-        "npx -y @openai/codex@0.124.0"
+        "npx -y @openai/codex@0.144.1"
     }
 
     fn build_command_builder(&self) -> Result<CommandBuilder, CommandBuildError> {
@@ -481,7 +517,7 @@ impl Codex {
             }
             None => None,
             Some(AskForApproval::UnlessTrusted) => Some(V2AskForApproval::UnlessTrusted),
-            Some(AskForApproval::OnFailure) => Some(V2AskForApproval::OnFailure),
+            Some(AskForApproval::OnFailure) => Some(V2AskForApproval::UnlessTrusted),
             Some(AskForApproval::OnRequest) => Some(V2AskForApproval::OnRequest),
             Some(AskForApproval::Never) => Some(V2AskForApproval::Never),
         };
@@ -517,7 +553,7 @@ impl Codex {
 
         let (model, is_fast) = resolve_model(self.model.as_deref());
         let service_tier = if is_fast {
-            Some(Some(ServiceTier::Fast))
+            Some(Some(ServiceTier::Fast.request_value().to_string()))
         } else {
             None
         };
@@ -775,12 +811,17 @@ mod tests {
 
     #[test]
     fn resolve_model_detects_fast_suffix() {
+        assert_eq!(
+            resolve_model(Some("gpt-5.6-sol-fast")),
+            (Some("gpt-5.6-sol"), true)
+        );
         assert_eq!(resolve_model(Some("gpt-5.5-fast")), (Some("gpt-5.5"), true));
         assert_eq!(resolve_model(Some("gpt-5.4-fast")), (Some("gpt-5.4"), true));
     }
 
     #[test]
     fn resolve_model_leaves_non_fast_models_unchanged() {
+        assert_eq!(resolve_model(Some("gpt-5.6")), (Some("gpt-5.6"), false));
         assert_eq!(resolve_model(Some("gpt-5.5")), (Some("gpt-5.5"), false));
         assert_eq!(
             resolve_model(Some("gpt-5.4-mini")),
