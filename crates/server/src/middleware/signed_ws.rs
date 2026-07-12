@@ -321,7 +321,7 @@ impl From<&Message> for WsMessageMetadata {
         match message {
             Message::Text(text) => Self {
                 kind: "text",
-                len_bytes: text.as_bytes().len(),
+                len_bytes: text.len(),
                 has_close_frame: false,
             },
             Message::Binary(bytes) => Self {
@@ -341,10 +341,7 @@ impl From<&Message> for WsMessageMetadata {
             },
             Message::Close(frame) => Self {
                 kind: "close",
-                len_bytes: frame
-                    .as_ref()
-                    .map(|frame| frame.reason.as_bytes().len())
-                    .unwrap_or(0),
+                len_bytes: frame.as_ref().map(|frame| frame.reason.len()).unwrap_or(0),
                 has_close_frame: frame.is_some(),
             },
         }
