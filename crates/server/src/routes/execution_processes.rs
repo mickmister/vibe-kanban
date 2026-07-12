@@ -318,7 +318,7 @@ async fn get_normalized_log_messages_single_flight(
 fn collect_live_normalized_log_messages(store: &MsgStore) -> LiveNormalizedLogMessages {
     let history = store.get_history();
     let finished = history.iter().any(|msg| matches!(msg, LogMsg::Finished));
-    let payloads = history
+    let payloads: Vec<String> = history
         .into_iter()
         .take_while(|msg| !matches!(msg, LogMsg::Finished))
         .filter_map(|msg| match msg {
