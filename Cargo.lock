@@ -6118,7 +6118,6 @@ dependencies = [
  "reqwest 0.12.28",
  "thiserror 2.0.18",
  "tonic",
- "tracing",
 ]
 
 [[package]]
