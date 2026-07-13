@@ -284,6 +284,7 @@ jobs:
           VK_SHARED_API_BASE: ${{ secrets.VK_SHARED_API_BASE }}
           VK_SHARED_RELAY_API_BASE: ${{ secrets.VK_SHARED_RELAY_API_BASE }}
           SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+          VK_BUILD_COMMIT_HASH: ${{ needs.prepare.outputs.vk_sha }}
 
       - name: Build macOS runtime binary
         if: runner.os == 'macOS'
@@ -297,6 +298,7 @@ jobs:
           VK_SHARED_API_BASE: ${{ secrets.VK_SHARED_API_BASE }}
           VK_SHARED_RELAY_API_BASE: ${{ secrets.VK_SHARED_RELAY_API_BASE }}
           SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+          VK_BUILD_COMMIT_HASH: ${{ needs.prepare.outputs.vk_sha }}
 
       - name: Prepare package directory
         run: |

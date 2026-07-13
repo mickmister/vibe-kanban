@@ -153,9 +153,13 @@ async fn get_user_system_info(
         }
     };
 
+    let commit_hash = option_env!("VK_BUILD_COMMIT_HASH")
+        .map(str::to_string)
+        .or_else(runtime_build_version);
+
     let user_system_info = UserSystemInfo {
         version: env!("CARGO_PKG_VERSION").to_string(),
-        commit_hash: option_env!("VK_BUILD_COMMIT_HASH").map(str::to_string),
+        commit_hash,
         config,
         machine_id: deployment.user_id().to_string(),
         login_status,
@@ -177,6 +181,13 @@ async fn get_user_system_info(
     };
 
     ResponseJson(ApiResponse::success(user_system_info))
+}
+
+fn runtime_build_version() -> Option<String> {
+    std::fs::read_to_string("/usr/local/share/vibe-kanban-build-version")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
 }
 
 async fn update_config(

@@ -292,13 +292,19 @@ fn generate_types_content() -> String {
         serde_json::to_string(DEFAULT_COMMIT_REMINDER_PROMPT).unwrap()
     );
 
-    trim_trailing_line_whitespace(format!("{HEADER}\n\n{body}\n\n{constants}"))
+    trim_user_system_info_line_whitespace(format!("{HEADER}\n\n{body}\n\n{constants}"))
 }
 
-fn trim_trailing_line_whitespace(content: String) -> String {
+fn trim_user_system_info_line_whitespace(content: String) -> String {
     content
         .lines()
-        .map(str::trim_end)
+        .map(|line| {
+            if line.starts_with("export type UserSystemInfo = ") {
+                line.trim_end()
+            } else {
+                line
+            }
+        })
         .collect::<Vec<_>>()
         .join("\n")
 }

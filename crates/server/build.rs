@@ -32,10 +32,7 @@ fn main() {
             vk_shared_relay_api_base
         );
     }
-    if let Some(commit_hash) = std::env::var("VK_BUILD_COMMIT_HASH")
-        .ok()
-        .or_else(|| git_commit_hash(&workspace_root))
-    {
+    if let Some(commit_hash) = env_commit_hash().or_else(|| git_commit_hash(&workspace_root)) {
         println!("cargo:rustc-env=VK_BUILD_COMMIT_HASH={}", commit_hash);
     }
 
@@ -52,6 +49,13 @@ fn main() {
 
         fs::write(dist_path.join("index.html"), dummy_html).unwrap();
     }
+}
+
+fn env_commit_hash() -> Option<String> {
+    std::env::var("VK_BUILD_COMMIT_HASH")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
 }
 
 fn git_commit_hash(workspace_root: &Path) -> Option<String> {
