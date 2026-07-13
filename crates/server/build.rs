@@ -70,14 +70,13 @@ fn emit_git_rerun_if_changed(workspace_root: &Path) {
         );
     }
 
-    if let Some(ref_name) = git_output(workspace_root, &["symbolic-ref", "-q", "HEAD"]) {
-        if let Some(ref_path) = git_output(workspace_root, &["rev-parse", "--git-path", &ref_name])
-        {
-            println!(
-                "cargo:rerun-if-changed={}",
-                workspace_root.join(ref_path).display()
-            );
-        }
+    if let Some(ref_name) = git_output(workspace_root, &["symbolic-ref", "-q", "HEAD"])
+        && let Some(ref_path) = git_output(workspace_root, &["rev-parse", "--git-path", &ref_name])
+    {
+        println!(
+            "cargo:rerun-if-changed={}",
+            workspace_root.join(ref_path).display()
+        );
     }
 
     if let Some(packed_refs_path) =
