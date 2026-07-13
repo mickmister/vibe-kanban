@@ -131,6 +131,28 @@ The following environment variables can be configured at build time or runtime:
 
 **Build-time variables** must be set when running `pnpm run build`. **Runtime variables** are read when the application starts.
 
+#### Performance tracing with SigNoz
+
+Performance tracing is disabled by default. To export HTTP, SQL, function, and
+WebSocket tracing spans to SigNoz, start the backend with `VK_PERF_TRACING=1`
+and an OTLP endpoint:
+
+```bash
+VK_PERF_TRACING=1 \
+OTEL_EXPORTER_OTLP_ENDPOINT='https://ingest.<region>.signoz.cloud:443' \
+OTEL_EXPORTER_OTLP_HEADERS='signoz-ingestion-key=<your-ingestion-key>' \
+OTEL_SERVICE_NAME='vibe-kanban-backend' \
+OTEL_RESOURCE_ATTRIBUTES="service.version=$(git rev-parse --short HEAD)" \
+pnpm run backend:dev:watch
+```
+
+Use `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` instead when traces should use a
+different endpoint from other OTLP signals. `OTEL_EXPORTER_OTLP_HEADERS` is
+needed for SigNoz Cloud auth, but is usually unnecessary for a local collector.
+`VK_WS_POLL_TRACING=1` enables extra noisy WebSocket poll tracing and is not
+normally needed. See [docs/performance-tracing.md](docs/performance-tracing.md)
+for local collector examples and a smoke-test checklist.
+
 #### Self-Hosting with a Reverse Proxy or Custom Domain
 
 When running Vibe Kanban behind a reverse proxy (e.g., nginx, Caddy, Traefik) or on a custom domain, you must set the `VK_ALLOWED_ORIGINS` environment variable. Without this, the browser's Origin header won't match the backend's expected host, and API requests will be rejected with a 403 Forbidden error.
