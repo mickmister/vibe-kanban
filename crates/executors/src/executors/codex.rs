@@ -517,7 +517,7 @@ impl Codex {
             }
             None => None,
             Some(AskForApproval::UnlessTrusted) => Some(V2AskForApproval::UnlessTrusted),
-            Some(AskForApproval::OnFailure) => Some(V2AskForApproval::UnlessTrusted),
+            Some(AskForApproval::OnFailure) => Some(V2AskForApproval::OnRequest),
             Some(AskForApproval::OnRequest) => Some(V2AskForApproval::OnRequest),
             Some(AskForApproval::Never) => Some(V2AskForApproval::Never),
         };
@@ -807,7 +807,9 @@ impl Codex {
 
 #[cfg(test)]
 mod tests {
-    use super::resolve_model;
+    use codex_app_server_protocol::AskForApproval as V2AskForApproval;
+
+    use super::{AskForApproval, Codex, resolve_model};
 
     #[test]
     fn resolve_model_detects_fast_suffix() {
@@ -828,5 +830,32 @@ mod tests {
             (Some("gpt-5.4-mini"), false)
         );
         assert_eq!(resolve_model(None), (None, false));
+    }
+
+    #[test]
+    fn on_failure_approval_maps_to_on_request() {
+        let codex = Codex {
+            append_prompt: Default::default(),
+            sandbox: None,
+            ask_for_approval: Some(AskForApproval::OnFailure),
+            oss: None,
+            model: None,
+            model_reasoning_effort: None,
+            model_reasoning_summary: None,
+            model_reasoning_summary_format: None,
+            profile: None,
+            base_instructions: None,
+            include_apply_patch_tool: None,
+            model_provider: None,
+            compact_prompt: None,
+            developer_instructions: None,
+            plan: false,
+            cmd: Default::default(),
+            approvals: None,
+        };
+
+        let params = codex.build_thread_start_params(std::path::Path::new("/tmp/test-worktree"));
+
+        assert_eq!(params.approval_policy, Some(V2AskForApproval::OnRequest));
     }
 }

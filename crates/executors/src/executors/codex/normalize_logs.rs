@@ -2775,7 +2775,8 @@ mod tests {
                     "turnId": "turn-1",
                     "itemId": call_id,
                     "approvalId": "approval-1",
-                    "command": "git push"
+                    "command": "git push",
+                    "startedAtMs": 1
                 }
             })
             .to_string(),
@@ -2883,7 +2884,8 @@ mod tests {
                         }],
                         "success": true,
                         "durationMs": 1
-                    }
+                    },
+                    "completedAtMs": 2
                 }
             })
             .to_string(),
