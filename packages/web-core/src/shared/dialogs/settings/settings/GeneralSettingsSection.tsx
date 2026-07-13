@@ -3,7 +3,9 @@ import { useTranslation } from 'react-i18next';
 import { cloneDeep, isEqual, merge } from 'lodash';
 import {
   FolderSimpleIcon,
+  PlusIcon,
   SpeakerHighIcon,
+  TrashIcon,
   SpinnerIcon,
 } from '@phosphor-icons/react';
 import { FolderPickerDialog } from '@/shared/dialogs/shared/FolderPickerDialog';
@@ -15,6 +17,8 @@ import {
   type ExecutorProfileId,
   type SendMessageShortcut,
   SoundFile,
+  type WebhookConfig,
+  type WebhookProvider,
   ThemeMode,
   UiLanguage,
 } from 'shared/types';
@@ -53,6 +57,14 @@ import {
   SettingsTextarea,
 } from './SettingsComponents';
 import { useSettingsDirty } from './SettingsDirtyContext';
+
+const WEBHOOK_PROVIDERS: WebhookProvider[] = [
+  'SLACK',
+  'DISCORD',
+  'PUSHOVER',
+  'TELEGRAM',
+  'GENERIC',
+];
 
 export function GeneralSettingsSection() {
   const { t } = useTranslation(['settings', 'common']);
@@ -247,6 +259,53 @@ export function GeneralSettingsSection() {
     value: sound,
     label: toPrettyCase(sound),
   }));
+  const webhookProviderOptions = WEBHOOK_PROVIDERS.map((provider) => ({
+    value: provider,
+    label: toPrettyCase(provider),
+  }));
+
+  const updateNotifications = (
+    patch: Partial<NonNullable<typeof draft>['notifications']>
+  ) => {
+    updateDraft({
+      notifications: {
+        ...draft!.notifications,
+        ...patch,
+      },
+    });
+  };
+
+  const addWebhook = () => {
+    const newWebhook: WebhookConfig = {
+      enabled: true,
+      provider: 'GENERIC',
+      webhook_url: '',
+      signing_secret: null,
+      pushover_user_key: null,
+      telegram_chat_id: null,
+    };
+
+    updateNotifications({
+      webhooks: [...(draft!.notifications.webhooks ?? []), newWebhook],
+    });
+  };
+
+  const updateWebhook = (index: number, patch: Partial<WebhookConfig>) => {
+    updateNotifications({
+      webhooks: (draft!.notifications.webhooks ?? []).map((webhook, current) =>
+        current === index ? { ...webhook, ...patch } : webhook
+      ),
+    });
+  };
+
+  const removeWebhook = (index: number) => {
+    updateNotifications({
+      webhooks: (draft!.notifications.webhooks ?? []).filter(
+        (_, current) => current !== index
+      ),
+    });
+  };
+
 
   return (
     <>
@@ -753,15 +812,147 @@ export function GeneralSettingsSection() {
           label={t('settings.general.notifications.push.label')}
           description={t('settings.general.notifications.push.helper')}
           checked={draft?.notifications.push_enabled ?? false}
+          onChange={(checked) => updateNotifications({ push_enabled: checked })}
+        />
+
+        <SettingsCheckbox
+          id="webhook-notifications"
+          label={t('settings.general.notifications.webhook.label', {
+            defaultValue: 'Webhook Notifications',
+          })}
+          description={t('settings.general.notifications.webhook.helper', {
+            defaultValue: 'Send execution and approval events to configured webhooks',
+          })}
+          checked={draft?.notifications.webhook_notifications_enabled ?? false}
           onChange={(checked) =>
-            updateDraft({
-              notifications: {
-                ...draft!.notifications,
-                push_enabled: checked,
-              },
-            })
+            updateNotifications({ webhook_notifications_enabled: checked })
           }
         />
+
+        {draft?.notifications.webhook_notifications_enabled && (
+          <div className="ml-7 space-y-3">
+            {(draft.notifications.webhooks ?? []).map((webhook, index) => (
+              <div
+                key={index}
+                className="rounded-sm border border-border bg-secondary/40 p-3 space-y-3"
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <SettingsCheckbox
+                    id={`webhook-${index}-enabled`}
+                    label={t('settings.general.notifications.webhook.enabled', {
+                      defaultValue: 'Enabled',
+                    })}
+                    checked={webhook.enabled}
+                    onChange={(checked) => updateWebhook(index, { enabled: checked })}
+                  />
+                  <IconButton
+                    icon={TrashIcon}
+                    variant="tertiary"
+                    onClick={() => removeWebhook(index)}
+                    aria-label={t('settings.general.notifications.webhook.remove', {
+                      defaultValue: 'Remove webhook',
+                    })}
+                    title={t('settings.general.notifications.webhook.remove', {
+                      defaultValue: 'Remove webhook',
+                    })}
+                  />
+                </div>
+
+                <SettingsField
+                  label={t('settings.general.notifications.webhook.provider', {
+                    defaultValue: 'Provider',
+                  })}
+                >
+                  <SettingsSelect
+                    value={webhook.provider}
+                    options={webhookProviderOptions}
+                    onChange={(provider: WebhookProvider) =>
+                      updateWebhook(index, { provider })
+                    }
+                  />
+                </SettingsField>
+
+                <SettingsField
+                  label={t('settings.general.notifications.webhook.url', {
+                    defaultValue: 'Webhook URL',
+                  })}
+                >
+                  <SettingsInput
+                    value={webhook.webhook_url}
+                    onChange={(value) =>
+                      updateWebhook(index, { webhook_url: value })
+                    }
+                    placeholder="https://..."
+                  />
+                </SettingsField>
+
+                <SettingsField
+                  label={t('settings.general.notifications.webhook.signingSecret', {
+                    defaultValue: 'Signing Secret',
+                  })}
+                  description={t(
+                    'settings.general.notifications.webhook.signingSecretHelper',
+                    {
+                      defaultValue:
+                        'Optional shared secret used for HMAC-SHA256 signatures.',
+                    }
+                  )}
+                >
+                  <SettingsInput
+                    value={webhook.signing_secret ?? ''}
+                    onChange={(value) =>
+                      updateWebhook(index, { signing_secret: value || null })
+                    }
+                    placeholder="Shared secret"
+                  />
+                </SettingsField>
+
+                {webhook.provider === 'PUSHOVER' && (
+                  <SettingsField
+                    label={t(
+                      'settings.general.notifications.webhook.pushoverUserKey',
+                      { defaultValue: 'Pushover User Key' }
+                    )}
+                  >
+                    <SettingsInput
+                      value={webhook.pushover_user_key ?? ''}
+                      onChange={(value) =>
+                        updateWebhook(index, {
+                          pushover_user_key: value || null,
+                        })
+                      }
+                    />
+                  </SettingsField>
+                )}
+
+                {webhook.provider === 'TELEGRAM' && (
+                  <SettingsField
+                    label={t(
+                      'settings.general.notifications.webhook.telegramChatId',
+                      { defaultValue: 'Telegram Chat ID' }
+                    )}
+                  >
+                    <SettingsInput
+                      value={webhook.telegram_chat_id ?? ''}
+                      onChange={(value) =>
+                        updateWebhook(index, { telegram_chat_id: value || null })
+                      }
+                    />
+                  </SettingsField>
+                )}
+              </div>
+            ))}
+
+            <PrimaryButton
+              variant="tertiary"
+              actionIcon={PlusIcon}
+              value={t('settings.general.notifications.webhook.add', {
+                defaultValue: 'Add Webhook',
+              })}
+              onClick={addWebhook}
+            />
+          </div>
+        )}
       </SettingsCard>
 
       {/* Message Input */}

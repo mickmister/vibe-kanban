@@ -3,11 +3,71 @@ use executors::{executors::BaseCodingAgent, profile::ExecutorProfileId};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 pub use v7::{
-    EditorConfig, EditorType, GitHubConfig, NotificationConfig, ShowcaseState, SoundFile,
-    ThemeMode, UiLanguage,
+    EditorConfig, EditorType, GitHubConfig, ShowcaseState, SoundFile, ThemeMode, UiLanguage,
 };
 
 use crate::services::config::versions::v7;
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq, Eq)]
+#[ts(export)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum WebhookProvider {
+    Slack,
+    Discord,
+    Pushover,
+    Telegram,
+    Generic,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct WebhookConfig {
+    pub enabled: bool,
+    pub provider: WebhookProvider,
+    pub webhook_url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signing_secret: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pushover_user_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub telegram_chat_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct NotificationConfig {
+    pub sound_enabled: bool,
+    pub push_enabled: bool,
+    pub sound_file: SoundFile,
+    #[serde(default)]
+    pub webhook_notifications_enabled: bool,
+    #[serde(default)]
+    pub webhooks: Vec<WebhookConfig>,
+}
+
+impl From<v7::NotificationConfig> for NotificationConfig {
+    fn from(old: v7::NotificationConfig) -> Self {
+        Self {
+            sound_enabled: old.sound_enabled,
+            push_enabled: old.push_enabled,
+            sound_file: old.sound_file,
+            webhook_notifications_enabled: false,
+            webhooks: Vec::new(),
+        }
+    }
+}
+
+impl Default for NotificationConfig {
+    fn default() -> Self {
+        Self {
+            sound_enabled: true,
+            push_enabled: true,
+            sound_file: SoundFile::CowMooing,
+            webhook_notifications_enabled: false,
+            webhooks: Vec::new(),
+        }
+    }
+}
 
 fn default_git_branch_prefix() -> String {
     "vk".to_string()
@@ -82,7 +142,7 @@ impl Config {
             disclaimer_acknowledged: old_config.disclaimer_acknowledged,
             onboarding_acknowledged: old_config.onboarding_acknowledged,
             remote_onboarding_acknowledged: false,
-            notifications: old_config.notifications,
+            notifications: NotificationConfig::from(old_config.notifications),
             editor: old_config.editor,
             github: old_config.github,
             analytics_enabled,

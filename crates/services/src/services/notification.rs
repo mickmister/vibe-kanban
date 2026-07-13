@@ -5,7 +5,10 @@ use tokio::sync::RwLock;
 use utils::{self, command_ext::NoWindowExt};
 use uuid::Uuid;
 
-use crate::services::config::{Config, SoundFile};
+use crate::services::{
+    config::{Config, SoundFile},
+    webhook_notification::{WebhookMetadata, WebhookNotificationService},
+};
 
 /// Trait for sending push notifications. Implementations can use
 /// platform-specific OS commands, Tauri's notification plugin, etc.
@@ -58,6 +61,7 @@ impl PushNotifier for DefaultPushNotifier {
 pub struct NotificationService {
     config: Arc<RwLock<Config>>,
     push_notifier: Arc<dyn PushNotifier>,
+    webhook_service: WebhookNotificationService,
 }
 
 impl std::fmt::Debug for NotificationService {
@@ -70,9 +74,11 @@ impl std::fmt::Debug for NotificationService {
 
 impl NotificationService {
     pub fn new(config: Arc<RwLock<Config>>) -> Self {
+        let webhook_service = WebhookNotificationService::new(config.clone());
         Self {
             config,
             push_notifier: get_global_push_notifier(),
+            webhook_service,
         }
     }
 
@@ -89,6 +95,72 @@ impl NotificationService {
         if config.push_enabled {
             self.push_notifier.send(title, message, workspace_id).await;
         }
+    }
+
+    /// Send sound, push, and webhook notifications if enabled.
+    pub async fn notify_with_metadata(
+        &self,
+        title: &str,
+        message: &str,
+        workspace_id: Option<Uuid>,
+        metadata: &WebhookMetadata,
+    ) {
+        self.notify(title, message, workspace_id).await;
+        self.webhook_service
+            .send_notification(title, message, metadata)
+            .await;
+    }
+
+    /// Notify when execution starts (webhook only, no sound).
+    pub async fn notify_execution_started(&self, metadata: WebhookMetadata) {
+        let title = "Task Execution Started";
+        let task_title = metadata.task_title.as_deref().unwrap_or("Unknown Task");
+        let message = format!("Started working on: {}", task_title);
+        let metadata = metadata.with_event_type("execution.started");
+        self.webhook_service
+            .send_notification(title, &message, &metadata)
+            .await;
+    }
+
+    /// Notify when execution is halted (completed, failed, or cancelled).
+    pub async fn notify_execution_halted(
+        &self,
+        status: &str,
+        success: bool,
+        metadata: WebhookMetadata,
+    ) {
+        let task_title = metadata.task_title.as_deref().unwrap_or("Unknown Task");
+
+        let (title, message) = match status {
+            "Completed" if success => (
+                "Task Execution Completed",
+                format!("Successfully completed: {}", task_title),
+            ),
+            "Failed" => (
+                "Task Execution Failed",
+                format!("Execution failed for: {}", task_title),
+            ),
+            "Killed" => (
+                "Task Execution Cancelled",
+                format!("Execution was cancelled for: {}", task_title),
+            ),
+            _ => (
+                "Task Execution Halted",
+                format!("Execution halted for: {}", task_title),
+            ),
+        };
+
+        let event_type = match status {
+            "Completed" if success => "execution.completed",
+            "Completed" => "execution.failed",
+            "Failed" => "execution.failed",
+            "Killed" => "execution.cancelled",
+            _ => "execution.halted",
+        };
+        let metadata = metadata.with_event_type(event_type);
+        let workspace_id = metadata.workspace_id;
+        self.notify_with_metadata(title, &message, workspace_id, &metadata)
+            .await;
     }
 
     /// Play a system sound notification across platforms

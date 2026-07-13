@@ -51,6 +51,7 @@ use services::services::{
     queued_message::QueuedMessageService,
     remote_client::RemoteClient,
     remote_sync,
+    webhook_notification::WebhookMetadata,
 };
 use tokio::{sync::RwLock, task::JoinHandle};
 use tokio_util::io::ReaderStream;
@@ -1453,6 +1454,16 @@ impl ContainerService for LocalContainerService {
         // Spawn unified exit monitor: watches OS exit and optional executor signal
         let hn = self.spawn_exit_monitor(&execution_process.id, spawned.exit_signal);
         self.add_exit_monitor_handle(execution_process.id, hn).await;
+
+        // Notify execution started (webhook only, no sound). Detailed task/project
+        // metadata is added by later lifecycle notifications when full context is loaded.
+        let metadata = WebhookMetadata::new()
+            .with_workspace(workspace.id)
+            .with_session(execution_process.session_id)
+            .with_execution(execution_process.id);
+        self.notification_service
+            .notify_execution_started(metadata)
+            .await;
 
         Ok(())
     }

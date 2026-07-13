@@ -494,7 +494,11 @@ export type SearchMode = "taskform" | "settings";
 
 export type Config = { config_version: string, theme: ThemeMode, executor_profile: ExecutorProfileId, disclaimer_acknowledged: boolean, onboarding_acknowledged: boolean, remote_onboarding_acknowledged: boolean, notifications: NotificationConfig, editor: EditorConfig, github: GitHubConfig, analytics_enabled: boolean, workspace_dir: string | null, last_app_version: string | null, show_release_notes: boolean, language: UiLanguage, git_branch_prefix: string, showcases: ShowcaseState, pr_auto_description_enabled: boolean, pr_auto_description_prompt: string | null, commit_reminder_enabled: boolean, commit_reminder_prompt: string | null, send_message_shortcut: SendMessageShortcut, relay_enabled: boolean, host_nickname: string | null, };
 
-export type NotificationConfig = { sound_enabled: boolean, push_enabled: boolean, sound_file: SoundFile, };
+export type NotificationConfig = { sound_enabled: boolean, push_enabled: boolean, sound_file: SoundFile, webhook_notifications_enabled: boolean, webhooks: Array<WebhookConfig>, };
+
+export type WebhookConfig = { enabled: boolean, provider: WebhookProvider, webhook_url: string, signing_secret?: string | null, pushover_user_key?: string | null, telegram_chat_id?: string | null, };
+
+export type WebhookProvider = "SLACK" | "DISCORD" | "PUSHOVER" | "TELEGRAM" | "GENERIC";
 
 export enum ThemeMode { LIGHT = "LIGHT", DARK = "DARK", SYSTEM = "SYSTEM" }
 

@@ -8,7 +8,9 @@ use tokio_util::sync::CancellationToken;
 use utils::approvals::{ApprovalOutcome, ApprovalRequest, ApprovalStatus, QuestionStatus};
 use uuid::Uuid;
 
-use crate::services::{approvals::Approvals, notification::NotificationService};
+use crate::services::{
+    approvals::Approvals, notification::NotificationService, webhook_notification::WebhookMetadata,
+};
 
 type ApprovalWaiter = futures::future::Shared<futures::future::BoxFuture<'static, ApprovalOutcome>>;
 
@@ -59,17 +61,26 @@ impl ExecutorApprovalBridge {
             .await
             .insert(approval_id.clone(), waiter);
 
-        let (workspace_name, workspace_id) =
-            ExecutionProcess::load_context(&self.db.pool, self.execution_process_id)
-                .await
-                .map(|ctx| {
-                    let name = ctx
+        let (workspace_name, workspace_id, metadata) =
+            match ExecutionProcess::load_context(&self.db.pool, self.execution_process_id).await {
+                Ok(ctx) => {
+                    let workspace_name = ctx
                         .workspace
                         .name
+                        .clone()
                         .unwrap_or_else(|| ctx.workspace.branch.clone());
-                    (name, Some(ctx.workspace.id))
-                })
-                .unwrap_or_else(|_| ("Unknown workspace".to_string(), None));
+                    let metadata = WebhookMetadata::new()
+                        .with_workspace(ctx.workspace.id)
+                        .with_session(ctx.execution_process.session_id)
+                        .with_execution(ctx.execution_process.id);
+                    (workspace_name, Some(ctx.workspace.id), metadata)
+                }
+                Err(_) => (
+                    "Unknown workspace".to_string(),
+                    None,
+                    WebhookMetadata::new(),
+                ),
+            };
 
         let (title, message) = if let Some(count) = question_count {
             if count == 1 {
@@ -90,8 +101,14 @@ impl ExecutorApprovalBridge {
             )
         };
 
+        let metadata = metadata.with_event_type(if is_question {
+            "question.requested"
+        } else {
+            "approval.requested"
+        });
+
         self.notification_service
-            .notify(&title, &message, workspace_id)
+            .notify_with_metadata(&title, &message, workspace_id, &metadata)
             .await;
 
         Ok(approval_id)

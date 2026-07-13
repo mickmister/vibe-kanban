@@ -33,6 +33,8 @@ pub enum ConfigError {
 
 pub type Config = versions::v8::Config;
 pub type NotificationConfig = versions::v8::NotificationConfig;
+pub type WebhookConfig = versions::v8::WebhookConfig;
+pub type WebhookProvider = versions::v8::WebhookProvider;
 pub type EditorConfig = versions::v8::EditorConfig;
 pub type ThemeMode = versions::v8::ThemeMode;
 pub type SoundFile = versions::v8::SoundFile;
