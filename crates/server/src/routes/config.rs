@@ -88,6 +88,7 @@ impl Environment {
 #[derive(Debug, Serialize, Deserialize, TS)]
 pub struct UserSystemInfo {
     pub version: String,
+    pub commit_hash: Option<String>,
     pub config: Config,
     pub machine_id: String,
     pub login_status: LoginStatus,
@@ -154,6 +155,7 @@ async fn get_user_system_info(
 
     let user_system_info = UserSystemInfo {
         version: env!("CARGO_PKG_VERSION").to_string(),
+        commit_hash: option_env!("VK_BUILD_COMMIT_HASH").map(str::to_string),
         config,
         machine_id: deployment.user_id().to_string(),
         login_status,
