@@ -185,12 +185,12 @@ async fn main() -> Result<(), VibeKanbanError> {
     let proxy_server = axum::serve(proxy_listener, proxy_router)
         .with_graceful_shutdown(async move { proxy_shutdown.cancelled().await });
 
-    let main_handle = tokio::spawn(async move {
+    let mut main_handle = tokio::spawn(async move {
         if let Err(e) = main_server.await {
             tracing::error!("Main server error: {}", e);
         }
     });
-    let proxy_handle = tokio::spawn(async move {
+    let mut proxy_handle = tokio::spawn(async move {
         if let Err(e) = proxy_server.await {
             tracing::error!("Preview proxy error: {}", e);
         }
@@ -200,15 +200,38 @@ async fn main() -> Result<(), VibeKanbanError> {
     relay_registration::spawn_relay(&deployment).await;
     startup::log_startup_phase("relay_startup_spawn_complete");
 
+    let mut main_done = false;
+    let mut proxy_done = false;
     tokio::select! {
         _ = shutdown_signal() => {
             tracing::info!("Shutdown signal received");
         }
-        _ = main_handle => {}
-        _ = proxy_handle => {}
+        result = &mut main_handle => {
+            main_done = true;
+            if let Err(error) = result {
+                tracing::error!(%error, "Main server task failed");
+            } else {
+                tracing::warn!("Main server task completed; shutting down");
+            }
+        }
+        result = &mut proxy_handle => {
+            proxy_done = true;
+            if let Err(error) = result {
+                tracing::error!(%error, "Preview proxy task failed");
+            } else {
+                tracing::warn!("Preview proxy task completed; shutting down");
+            }
+        }
     }
 
     shutdown_token.cancel();
+
+    if !main_done && let Err(error) = main_handle.await {
+        tracing::error!(%error, "Main server task failed during shutdown");
+    }
+    if !proxy_done && let Err(error) = proxy_handle.await {
+        tracing::error!(%error, "Preview proxy task failed during shutdown");
+    }
 
     perform_cleanup_actions(&deployment).await;
 
