@@ -132,17 +132,23 @@ fn main() {
 
     let log_level = std::env::var("RUST_LOG").unwrap_or_else(|_| "info".to_string());
     let perf_tracing_enabled = perf_trace::enabled();
-    let filter_string = perf_trace::tracing_filter_string(
+    let log_filter_string = perf_trace::tracing_filter_string(
+        &log_level,
+        false,
+        DEFAULT_TRACING_TARGETS,
+        DEFAULT_TRACING_DIRECTIVES,
+    );
+    let signoz_filter_string = perf_trace::tracing_filter_string(
         &log_level,
         perf_tracing_enabled,
         DEFAULT_TRACING_TARGETS,
         DEFAULT_TRACING_DIRECTIVES,
     );
     let env_filter =
-        EnvFilter::try_new(filter_string.as_str()).expect("Failed to create tracing filter");
+        EnvFilter::try_new(log_filter_string.as_str()).expect("Failed to create tracing filter");
 
     sentry_utils::init_once(SentrySource::Desktop);
-    let signoz_tracing = signoz::init_layer("vibe-kanban-desktop", &filter_string);
+    let signoz_tracing = signoz::init_layer("vibe-kanban-desktop", &signoz_filter_string);
     let signoz_provider = signoz_tracing
         .as_ref()
         .map(|tracing| tracing.provider.clone());

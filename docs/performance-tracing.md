@@ -6,11 +6,16 @@ HTTP-level, SQL query-level, or WebSocket send-path bottlenecks.
 ## Quick start
 
 ```bash
-VK_PERF_TRACING=1 RUST_LOG=info pnpm run backend:dev:watch
+VK_PERF_TRACING=1 \
+OTEL_EXPORTER_OTLP_ENDPOINT='http://localhost:4318' \
+OTEL_SERVICE_NAME='vibe-kanban-backend' \
+RUST_LOG=info \
+pnpm run backend:dev:watch
 ```
 
-`VK_PERF_TRACING=1` keeps the normal application log level but also installs
-the HTTP tracing middleware and enables:
+`VK_PERF_TRACING=1` keeps the normal application log level, installs the HTTP
+tracing middleware, and enables these additional span targets for the SigNoz
+OTLP exporter:
 
 - `perf.agent_startup=debug` for agent turn startup spans, including
   full workspace/session/execution IDs and Codex app-server/MCP startup timing;
@@ -20,7 +25,9 @@ the HTTP tracing middleware and enables:
   send, receive, flush, and close paths;
 - `ws_bridge=trace` for proxied WebSocket bridge send paths.
 
-For deeper targeted function-level traces, add explicit module directives:
+Performance spans are not printed to stdout unless `RUST_LOG` explicitly asks
+for those targets. For deeper targeted console diagnostics, add explicit module
+directives:
 
 ```bash
 VK_PERF_TRACING=1 \
@@ -34,6 +41,10 @@ Performance spans are exported to SigNoz through OpenTelemetry OTLP. Export is
 opt-in and only starts when both `VK_PERF_TRACING=1` and an OTLP endpoint are
 configured. Sentry remains available for errors/breadcrumbs, but performance
 traces should go to SigNoz.
+
+The stdout formatter and SigNoz exporter use separate filters: `RUST_LOG=info`
+keeps console output quiet, while the SigNoz layer still receives the
+performance span targets listed above.
 
 For SigNoz Cloud, use the regional ingest endpoint and ingestion key:
 

@@ -143,12 +143,15 @@ OTEL_EXPORTER_OTLP_ENDPOINT='https://ingest.<region>.signoz.cloud:443' \
 OTEL_EXPORTER_OTLP_HEADERS='signoz-ingestion-key=<your-ingestion-key>' \
 OTEL_SERVICE_NAME='vibe-kanban-backend' \
 OTEL_RESOURCE_ATTRIBUTES="service.version=$(git rev-parse --short HEAD)" \
+RUST_LOG=info \
 pnpm run backend:dev:watch
 ```
 
 Use `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` instead when traces should use a
 different endpoint from other OTLP signals. `OTEL_EXPORTER_OTLP_HEADERS` is
 needed for SigNoz Cloud auth, but is usually unnecessary for a local collector.
+`RUST_LOG=info` keeps console logs quiet; performance span targets are still
+sent to the SigNoz exporter when OTLP is configured.
 `VK_WS_POLL_TRACING=1` enables extra noisy WebSocket poll tracing and is not
 normally needed. See [docs/performance-tracing.md](docs/performance-tracing.md)
 for local collector examples and a smoke-test checklist.
