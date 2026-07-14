@@ -75,12 +75,11 @@ async fn main() -> Result<(), VibeKanbanError> {
     );
     let env_filter =
         EnvFilter::try_new(log_filter_string.as_str()).expect("Failed to create tracing filter");
-    let signoz_tracing = signoz::init_layer("vibe-kanban-backend", &signoz_filter_string);
-    let signoz_enabled = signoz_tracing.is_some();
-    let signoz_provider = signoz_tracing
-        .as_ref()
-        .map(|tracing| tracing.provider.clone());
-    let signoz_layer = signoz_tracing.map(|tracing| tracing.layer);
+    let (signoz_layer, signoz_provider, signoz_enabled) =
+        match signoz::init_layer("vibe-kanban-backend", &signoz_filter_string) {
+            Some(signoz::SignozTracing { layer, provider }) => (Some(layer), Some(provider), true),
+            None => (None, None, false),
+        };
     tracing_subscriber::registry()
         .with(tracing_subscriber::fmt::layer().with_filter(env_filter))
         .with(signoz_layer)

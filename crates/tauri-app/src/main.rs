@@ -148,11 +148,11 @@ fn main() {
         EnvFilter::try_new(log_filter_string.as_str()).expect("Failed to create tracing filter");
 
     sentry_utils::init_once(SentrySource::Desktop);
-    let signoz_tracing = signoz::init_layer("vibe-kanban-desktop", &signoz_filter_string);
-    let signoz_provider = signoz_tracing
-        .as_ref()
-        .map(|tracing| tracing.provider.clone());
-    let signoz_layer = signoz_tracing.map(|tracing| tracing.layer);
+    let (signoz_layer, signoz_provider) =
+        match signoz::init_layer("vibe-kanban-desktop", &signoz_filter_string) {
+            Some(signoz::SignozTracing { layer, provider }) => (Some(layer), Some(provider)),
+            None => (None, None),
+        };
 
     tracing_subscriber::registry()
         .with(tracing_subscriber::fmt::layer().with_filter(env_filter))
