@@ -63,11 +63,29 @@ fn perf_agent_startup_tracing_enabled() -> bool {
 struct CodexStartupTraceState {
     mcp: McpStartupTraceState,
     saw_session_configured: bool,
+    saw_turn_started: bool,
     saw_first_reasoning_delta: bool,
     saw_first_message_delta: bool,
+    saw_first_tool_request: bool,
+    turn_start_response_at: Option<Instant>,
 }
 
 impl CodexStartupTraceState {
+    fn mark_turn_start_response(&mut self, thread_id: &str, input_count: usize) {
+        self.turn_start_response_at = Some(Instant::now());
+        tracing::debug!(
+            target: "perf.agent_startup",
+            thread_id,
+            input_count,
+            "codex.turn_start.response_received"
+        );
+    }
+
+    fn elapsed_since_turn_start_response_ms(&self) -> Option<u64> {
+        self.turn_start_response_at
+            .map(|started_at| started_at.elapsed().as_millis() as u64)
+    }
+
     fn handle_event(&mut self, event: &EventMsg) {
         match event {
             EventMsg::SessionConfigured(config) => {
@@ -87,19 +105,46 @@ impl CodexStartupTraceState {
             }
             EventMsg::McpStartupUpdate(update) => self.mcp.handle_update(update),
             EventMsg::McpStartupComplete(complete) => self.mcp.handle_complete(complete),
-            EventMsg::TurnStarted(_) => {
-                tracing::debug!(target: "perf.agent_startup", "codex.turn_started");
+            EventMsg::TurnStarted(_) if !self.saw_turn_started => {
+                self.saw_turn_started = true;
+                tracing::debug!(
+                    target: "perf.agent_startup",
+                    elapsed_since_turn_start_response_ms = ?self.elapsed_since_turn_start_response_ms(),
+                    "codex.turn_started"
+                );
             }
             EventMsg::AgentReasoningDelta(_) if !self.saw_first_reasoning_delta => {
                 self.saw_first_reasoning_delta = true;
-                tracing::debug!(target: "perf.agent_startup", "codex.first_reasoning_delta");
+                tracing::debug!(
+                    target: "perf.agent_startup",
+                    elapsed_since_turn_start_response_ms = ?self.elapsed_since_turn_start_response_ms(),
+                    "codex.first_reasoning_delta"
+                );
             }
             EventMsg::AgentMessageDelta(_) if !self.saw_first_message_delta => {
                 self.saw_first_message_delta = true;
-                tracing::debug!(target: "perf.agent_startup", "codex.first_message_delta");
+                tracing::debug!(
+                    target: "perf.agent_startup",
+                    elapsed_since_turn_start_response_ms = ?self.elapsed_since_turn_start_response_ms(),
+                    "codex.first_message_delta"
+                );
             }
             _ => {}
         }
+    }
+
+    fn handle_tool_request(&mut self, tool_kind: &'static str, request_id: &RequestId) {
+        if self.saw_first_tool_request {
+            return;
+        }
+        self.saw_first_tool_request = true;
+        tracing::debug!(
+            target: "perf.agent_startup",
+            tool_kind,
+            rpc_request_id = ?request_id,
+            elapsed_since_turn_start_response_ms = ?self.elapsed_since_turn_start_response_ms(),
+            "codex.first_tool_request"
+        );
     }
 }
 
@@ -466,6 +511,8 @@ impl AppServerClient {
         input: Vec<UserInput>,
         collaboration_mode: Option<CollaborationMode>,
     ) -> Result<TurnStartResponse, ExecutorError> {
+        let input_count = input.len();
+        let trace_thread_id = thread_id.clone();
         let request = ClientRequest::TurnStart {
             request_id: self.next_request_id(),
             params: TurnStartParams {
@@ -475,7 +522,14 @@ impl AppServerClient {
                 ..Default::default()
             },
         };
-        self.send_request(request, "turn/start").await
+        let response = self.send_request(request, "turn/start").await?;
+        if perf_agent_startup_tracing_enabled() {
+            self.startup_trace
+                .lock()
+                .await
+                .mark_turn_start_response(&trace_thread_id, input_count);
+        }
+        Ok(response)
     }
 
     fn collaboration_mode(&self, mode: ModeKind) -> Result<CollaborationMode, ExecutorError> {
@@ -616,6 +670,8 @@ impl AppServerClient {
     ) -> Result<(), ExecutorError> {
         match request {
             ServerRequest::FileChangeRequestApproval { request_id, params } => {
+                self.trace_tool_request("file_change_approval", &request_id)
+                    .await;
                 let call_id = params.item_id.clone();
                 let status = self
                     .request_tool_approval("edit", "codex.apply_patch", &call_id)
@@ -651,6 +707,8 @@ impl AppServerClient {
                 Ok(())
             }
             ServerRequest::CommandExecutionRequestApproval { request_id, params } => {
+                self.trace_tool_request("command_execution_approval", &request_id)
+                    .await;
                 let call_id = params.item_id.clone();
                 let status = self
                     .request_tool_approval("bash", "codex.exec_command", &call_id)
@@ -686,6 +744,7 @@ impl AppServerClient {
                 Ok(())
             }
             ServerRequest::ToolRequestUserInput { request_id, params } => {
+                self.trace_tool_request("user_input", &request_id).await;
                 let call_id = params.item_id.clone();
                 let question_count = params.questions.len();
                 let status = self
@@ -721,6 +780,8 @@ impl AppServerClient {
                 Ok(())
             }
             ServerRequest::DynamicToolCall { request_id, params } => {
+                self.trace_tool_request("dynamic_tool_call", &request_id)
+                    .await;
                 tracing::warn!(
                     "received unsupported dynamic tool call: tool={} call_id={}",
                     params.tool,
@@ -760,6 +821,16 @@ impl AppServerClient {
                 .into())
             }
         }
+    }
+
+    async fn trace_tool_request(&self, tool_kind: &'static str, request_id: &RequestId) {
+        if !perf_agent_startup_tracing_enabled() {
+            return;
+        }
+        self.startup_trace
+            .lock()
+            .await
+            .handle_tool_request(tool_kind, request_id);
     }
 
     async fn request_tool_approval(
@@ -1299,16 +1370,27 @@ fn request_id(request: &ClientRequest) -> RequestId {
 #[derive(Clone)]
 pub struct LogWriter {
     writer: Arc<Mutex<BufWriter<Box<dyn AsyncWrite + Send + Unpin>>>>,
+    first_raw_write_seen: Arc<AtomicBool>,
 }
 
 impl LogWriter {
     pub fn new(writer: impl AsyncWrite + Send + Unpin + 'static) -> Self {
         Self {
             writer: Arc::new(Mutex::new(BufWriter::new(Box::new(writer)))),
+            first_raw_write_seen: Arc::new(AtomicBool::new(false)),
         }
     }
 
     pub async fn log_raw(&self, raw: &str) -> Result<(), ExecutorError> {
+        if perf_agent_startup_tracing_enabled()
+            && !self.first_raw_write_seen.swap(true, Ordering::Relaxed)
+        {
+            tracing::debug!(
+                target: "perf.agent_startup",
+                raw_log_bytes = raw.len(),
+                "codex.first_raw_log_write"
+            );
+        }
         let mut guard = self.writer.lock().await;
         guard
             .write_all(raw.as_bytes())
