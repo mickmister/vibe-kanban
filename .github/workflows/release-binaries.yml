@@ -249,8 +249,14 @@ jobs:
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
         run: |
-          sudo apt-get update
-          DEBIAN_FRONTEND=noninteractive sudo apt-get install -y \
+          sudo apt-get \
+            -o Acquire::Retries=5 \
+            -o Acquire::ForceIPv4=true \
+            update
+          DEBIAN_FRONTEND=noninteractive sudo apt-get \
+            -o Acquire::Retries=5 \
+            -o Acquire::ForceIPv4=true \
+            install -y --fix-missing \
             clang libclang-dev lld llvm nasm cmake ninja-build
 
       - name: Install Zig
