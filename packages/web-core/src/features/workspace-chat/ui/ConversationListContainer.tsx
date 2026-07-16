@@ -47,6 +47,10 @@ import { ChatEmptyState } from '@vibe/ui/components/ChatEmptyState';
 import { ChatScriptPlaceholder } from '@vibe/ui/components/ChatScriptPlaceholder';
 import { PrimaryButton } from '@vibe/ui/components/PrimaryButton';
 import { ScriptFixerDialog } from '@/shared/dialogs/scripts/ScriptFixerDialog';
+import {
+  isMobilePerfDiagnosticsEnabled,
+  recordMobilePerfDiagnostic,
+} from '@/shared/lib/mobilePerfDiagnostics';
 
 const HISTORY_BOUNDARY_THRESHOLD_PX = 96;
 const SCROLL_TO_INDEX_SETTLE_FRAMES = 4;
@@ -175,6 +179,7 @@ export const ConversationList = forwardRef<
   >(null);
   const prevEntriesRef = useRef<DisplayEntry[]>([]);
   const prevRowsRef = useRef<ConversationRow[]>([]);
+  const lastScrollDiagnosticAtRef = useRef(0);
   const pendingUpdateRef = useRef<{
     source: ConversationTimelineSource;
     addType: AddEntryType;
@@ -276,10 +281,25 @@ export const ConversationList = forwardRef<
       autoLoadEarlierHistoryRequestedRef.current = false;
       autoLoadEarlierHistoryArmedRef.current = true;
     }
+    if (scrollEl && isMobilePerfDiagnosticsEnabled()) {
+      const now = performance.now();
+      if (now - lastScrollDiagnosticAtRef.current > 1000) {
+        lastScrollDiagnosticAtRef.current = now;
+        recordMobilePerfDiagnostic('conversation.scroll', {
+          workspace_id: attempt.id,
+          session_id: attempt.session?.id ?? null,
+          scroll_top: Math.round(scrollEl.scrollTop),
+          scroll_height: scrollEl.scrollHeight,
+          client_height: scrollEl.clientHeight,
+          row_count: prevRowsRef.current.length,
+          near_history_boundary: nextValue,
+        });
+      }
+    }
     setIsNearHistoryBoundary((current) =>
       current === nextValue ? current : nextValue
     );
-  }, []);
+  }, [attempt.id, attempt.session?.id]);
 
   useEffect(() => {
     const scrollEl = tanstackScrollRef.current;
@@ -300,6 +320,11 @@ export const ConversationList = forwardRef<
     const pending = pendingUpdateRef.current;
     if (!pending) return;
 
+    const diagnosticsEnabled = isMobilePerfDiagnosticsEnabled();
+    const startedAt = diagnosticsEnabled ? performance.now() : 0;
+    const previousEntryCount = prevEntriesRef.current.length;
+    const previousRowCount = prevRowsRef.current.length;
+
     const derivedEntries = deriveConversationEntries({
       source: pending.source,
       scriptOutputCache: scriptOutputCacheRef.current,
@@ -310,6 +335,7 @@ export const ConversationList = forwardRef<
     setHasRunningProcess(derivedEntries.hasRunningProcess);
     setTokenUsageInfo(derivedEntries.latestTokenUsageInfo);
 
+    const timelineStartedAt = diagnosticsEnabled ? performance.now() : 0;
     const derivedTimeline = deriveConversationTimeline(
       derivedEntries.entries,
       prevEntriesRef.current,
@@ -323,6 +349,26 @@ export const ConversationList = forwardRef<
     setDataVersion((current) => current + 1);
     setEntries(derivedEntries.entries);
 
+    if (diagnosticsEnabled) {
+      const finishedAt = performance.now();
+      recordMobilePerfDiagnostic('conversation.timeline_flush', {
+        workspace_id: attempt.id,
+        session_id: attempt.session?.id ?? null,
+        add_type: pending.addType,
+        initial_load: pending.isInitialLoad,
+        loading: pending.loading,
+        entry_count: derivedTimeline.displayEntries.length,
+        row_count: derivedTimeline.rows.length,
+        previous_entry_count: previousEntryCount,
+        previous_row_count: previousRowCount,
+        derive_timeline_ms: Math.round(finishedAt - timelineStartedAt),
+        total_duration_ms: Math.round(finishedAt - startedAt),
+        has_running_process: derivedEntries.hasRunningProcess,
+        setup_script_seen: derivedEntries.hasSetupScriptRun,
+        cleanup_script_seen: derivedEntries.hasCleanupScriptRun,
+      });
+    }
+
     scrollOnEntriesChangedRef.current?.(pending.addType, pending.isInitialLoad);
 
     if (loading) {
@@ -335,12 +381,23 @@ export const ConversationList = forwardRef<
     addType: AddEntryType,
     newLoading: boolean
   ) => {
+    const alreadyScheduled = rafIdRef.current !== null;
     pendingUpdateRef.current = {
       source,
       addType,
       loading: newLoading,
       isInitialLoad: addType === 'initial',
     };
+
+    if (isMobilePerfDiagnosticsEnabled()) {
+      recordMobilePerfDiagnostic('conversation.timeline_update', {
+        workspace_id: attempt.id,
+        session_id: attempt.session?.id ?? null,
+        add_type: addType,
+        loading: newLoading,
+        already_scheduled: alreadyScheduled,
+      });
+    }
 
     if (rafIdRef.current === null) {
       rafIdRef.current = requestAnimationFrame(flushPendingUpdate);

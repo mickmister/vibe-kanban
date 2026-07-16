@@ -91,6 +91,38 @@ For a profiling run that sends data to SigNoz:
 6. Confirm HTTP span data uses route templates rather than raw query strings or
    full request URIs.
 
+## Mobile web freeze diagnostics
+
+Frontend mobile freeze diagnostics are disabled by default and do not send
+network telemetry. They write safe metadata only to `console.debug` and to an
+in-memory ring buffer on `window.__VK_MOBILE_PERF_DIAGNOSTICS__`.
+
+Enable before starting the web app:
+
+```bash
+VITE_VK_MOBILE_PERF_DIAGNOSTICS=1 pnpm run local-web:dev
+```
+
+Or enable at runtime from the browser console, then reload if you want startup
+and page-lifecycle events too:
+
+```js
+window.__VK_MOBILE_PERF_DIAGNOSTICS__?.enable();
+```
+
+Inspect recent events:
+
+```js
+window.__VK_MOBILE_PERF_DIAGNOSTICS__?.snapshot();
+```
+
+The diagnostics capture long tasks, event-loop stalls, memory snapshots when
+browser APIs allow it, page visibility/pagehide/pageshow/freeze/resume events,
+mobile viewport and keyboard-related resize signals, WebSocket patch/log batch
+sizes, conversation timeline/virtualizer update counts, scroll metrics, and
+composer input/send sizes. Prompt text, message bodies, log contents, secrets,
+and file contents are intentionally not recorded.
+
 ## WebSocket notes
 
 HTTP tracing records the upgrade request/response only. After a connection is
