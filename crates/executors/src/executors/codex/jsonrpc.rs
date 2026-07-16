@@ -19,6 +19,8 @@ use async_trait::async_trait;
 use codex_app_server_protocol::{
     JSONRPCError, JSONRPCMessage, JSONRPCNotification, JSONRPCRequest, JSONRPCResponse, RequestId,
 };
+use codex_protocol::protocol::W3cTraceContext;
+use opentelemetry::trace::TraceContextExt;
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use tokio::{
@@ -28,6 +30,7 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
+use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 use crate::executors::{ExecutorError, ExecutorExitResult};
 
@@ -41,6 +44,55 @@ fn request_id_attr(request_id: &RequestId) -> String {
         RequestId::Integer(id) => id.to_string(),
         RequestId::String(id) => id.clone(),
     }
+}
+
+fn current_span_trace_context() -> Option<W3cTraceContext> {
+    let context = tracing::Span::current().context();
+    let span_context = context.span().span_context().clone();
+    if !span_context.is_valid() {
+        return None;
+    }
+
+    Some(W3cTraceContext {
+        traceparent: Some(format!(
+            "00-{}-{}-{:02x}",
+            span_context.trace_id(),
+            span_context.span_id(),
+            span_context.trace_flags().to_u8()
+        )),
+        tracestate: {
+            let header = span_context.trace_state().header();
+            (!header.is_empty()).then_some(header)
+        },
+    })
+}
+
+fn encode_request_with_trace<T>(
+    request_id: RequestId,
+    message: &T,
+    trace: Option<W3cTraceContext>,
+) -> io::Result<String>
+where
+    T: Serialize + Sync,
+{
+    let mut value =
+        serde_json::to_value(message).map_err(|err| io::Error::other(err.to_string()))?;
+    let method = value
+        .get("method")
+        .and_then(Value::as_str)
+        .ok_or_else(|| io::Error::other("JSON-RPC request missing method"))?
+        .to_string();
+    let params = value
+        .as_object_mut()
+        .and_then(|object| object.remove("params"));
+
+    serde_json::to_string(&JSONRPCRequest {
+        id: request_id,
+        method,
+        params,
+        trace,
+    })
+    .map_err(|err| io::Error::other(err.to_string()))
 }
 
 #[derive(Debug)]
@@ -254,16 +306,19 @@ impl JsonRpcPeer {
                     rpc_request_id = %request_id_value,
                     "codex.rpc.serialize"
                 );
-                let raw = serde_json::to_string(message).map_err(|err| {
-                    tracing::debug!(
-                        target: "perf.agent_startup",
-                        rpc_method = label,
-                        rpc_request_id = %request_id_value,
-                        error = %err,
-                        "codex.rpc.serialize_failed"
-                    );
-                    ExecutorError::Io(io::Error::other(err.to_string()))
-                })?;
+                let trace = current_span_trace_context();
+                let raw = encode_request_with_trace(request_id.clone(), message, trace).map_err(
+                    |err| {
+                        tracing::debug!(
+                            target: "perf.agent_startup",
+                            rpc_method = label,
+                            rpc_request_id = %request_id_value,
+                            error = %err,
+                            "codex.rpc.serialize_failed"
+                        );
+                        ExecutorError::Io(io::Error::other(err.to_string()))
+                    },
+                )?;
 
                 tracing::debug!(
                     target: "perf.agent_startup",
@@ -454,4 +509,47 @@ pub trait JsonRpcCallbacks: Send + Sync {
     ) -> Result<bool, ExecutorError>;
 
     async fn on_non_json(&self, _raw: &str) -> Result<(), ExecutorError>;
+}
+
+#[cfg(test)]
+mod tests {
+    use serde::Serialize;
+
+    use super::*;
+
+    #[derive(Serialize)]
+    struct TestRequest {
+        method: &'static str,
+        id: RequestId,
+        params: serde_json::Value,
+    }
+
+    #[test]
+    fn encode_request_with_trace_wraps_typed_request_in_jsonrpc_envelope() {
+        let raw = encode_request_with_trace(
+            RequestId::Integer(7),
+            &TestRequest {
+                method: "thread/fork",
+                id: RequestId::Integer(7),
+                params: serde_json::json!({ "threadId": "thread-1" }),
+            },
+            Some(W3cTraceContext {
+                traceparent: Some(
+                    "00-00000000000000000000000000000001-0000000000000002-01".to_string(),
+                ),
+                tracestate: Some("vk=1".to_string()),
+            }),
+        )
+        .expect("request should encode");
+
+        let value: serde_json::Value = serde_json::from_str(&raw).expect("valid JSON");
+        assert_eq!(value["id"], 7);
+        assert_eq!(value["method"], "thread/fork");
+        assert_eq!(value["params"]["threadId"], "thread-1");
+        assert_eq!(
+            value["trace"]["traceparent"],
+            "00-00000000000000000000000000000001-0000000000000002-01"
+        );
+        assert_eq!(value["trace"]["tracestate"], "vk=1");
+    }
 }
