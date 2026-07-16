@@ -128,6 +128,21 @@ describe('conversationHistoryLoadingPolicy', () => {
     ).toBe(false);
   });
 
+  it('auto-loads from the initial boundary when latest messages are not scrollable', () => {
+    expect(
+      shouldAutoLoadEarlierHistoryAtBoundary({
+        hasMoreHistory: true,
+        isNearHistoryBoundary: true,
+        isLoadingHistory: false,
+        hasHistoryError: false,
+        hasRequestedForCurrentBoundary: false,
+        hasLeftInitialBoundary: false,
+        isScrollable: false,
+        isAtBottom: true,
+      })
+    ).toBe(true);
+  });
+
   it('loads one explicit earlier-history batch and dedupes concurrent calls', async () => {
     let resolveBatch!: (value: boolean) => void;
     const batchPromise = new Promise<boolean>((resolve) => {
