@@ -517,8 +517,8 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     ]);
 
     recordMobilePerfDiagnostic('composer.send', {
-      workspace_id: workspaceId ?? null,
-      session_id: sessionId ?? null,
+      has_workspace: !!workspaceId,
+      has_session: !!sessionId,
       mode,
       prompt_length: prompt.length,
       has_review_markdown: reviewMarkdown.length > 0,
@@ -615,8 +615,8 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
         if (now - lastComposerDiagnosticAtRef.current > 1000) {
           lastComposerDiagnosticAtRef.current = now;
           recordMobilePerfDiagnostic('composer.change', {
-            workspace_id: workspaceId ?? null,
-            session_id: sessionId ?? null,
+            has_workspace: !!workspaceId,
+            has_session: !!sessionId,
             mode,
             value_length: value.length,
             newline_count: (value.match(/\n/g) ?? []).length,

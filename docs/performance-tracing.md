@@ -116,6 +116,12 @@ Inspect recent events:
 window.__VK_MOBILE_PERF_DIAGNOSTICS__?.snapshot();
 ```
 
+Disable runtime diagnostics:
+
+```js
+window.__VK_MOBILE_PERF_DIAGNOSTICS__?.disable();
+```
+
 The diagnostics capture long tasks, event-loop stalls, memory snapshots when
 browser APIs allow it, page visibility/pagehide/pageshow/freeze/resume events,
 mobile viewport and keyboard-related resize signals, WebSocket patch/log batch

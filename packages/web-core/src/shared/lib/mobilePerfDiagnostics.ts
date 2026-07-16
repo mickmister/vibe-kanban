@@ -46,7 +46,7 @@ const VIEWPORT_EVENT_THROTTLE_MS = 1000;
 const MEMORY_SAMPLE_INTERVAL_MS = 30000;
 
 const buffer: MobilePerfDiagnosticEvent[] = [];
-let initialized = false;
+let installed = false;
 let enabled = false;
 let lastViewportEventAt = 0;
 let lastMemorySampleAt = 0;
@@ -171,6 +171,8 @@ function record(name: string, details?: DiagnosticDetails) {
 }
 
 function sampleMemory(reason: string) {
+  if (!enabled) return;
+
   const now = performance.now();
   if (now - lastMemorySampleAt < MEMORY_SAMPLE_INTERVAL_MS) return;
   lastMemorySampleAt = now;
@@ -289,6 +291,28 @@ function installViewportListeners() {
   );
 }
 
+function installDiagnostics() {
+  if (installed) return;
+  installed = true;
+
+  installLongTaskObserver();
+  installHeartbeat();
+  installLifecycleListeners();
+  installViewportListeners();
+
+  record('diagnostics.initialized', {
+    env_enabled: readEnvFlag(),
+    storage_enabled: readLocalStorageFlag(),
+    longtask_supported:
+      typeof PerformanceObserver !== 'undefined' &&
+      PerformanceObserver.supportedEntryTypes?.includes('longtask'),
+    performance_memory_supported: !!performance.memory,
+    ua_specific_memory_supported: !!performance.measureUserAgentSpecificMemory,
+    ...viewportDetails(),
+  });
+  sampleMemory('initialized');
+}
+
 export function isMobilePerfDiagnosticsEnabled(): boolean {
   return enabled;
 }
@@ -317,6 +341,7 @@ export function initializeMobilePerfDiagnostics() {
     enable: () => {
       enabled = true;
       setLocalStorageFlag(true);
+      installDiagnostics();
       record('diagnostics.enabled', viewportDetails());
     },
     disable: () => {
@@ -326,23 +351,7 @@ export function initializeMobilePerfDiagnostics() {
     },
   };
 
-  if (initialized) return;
-  initialized = true;
-
-  installLongTaskObserver();
-  installHeartbeat();
-  installLifecycleListeners();
-  installViewportListeners();
-
-  record('diagnostics.initialized', {
-    env_enabled: readEnvFlag(),
-    storage_enabled: readLocalStorageFlag(),
-    longtask_supported:
-      typeof PerformanceObserver !== 'undefined' &&
-      PerformanceObserver.supportedEntryTypes?.includes('longtask'),
-    performance_memory_supported: !!performance.memory,
-    ua_specific_memory_supported: !!performance.measureUserAgentSpecificMemory,
-    ...viewportDetails(),
-  });
-  sampleMemory('initialized');
+  if (enabled) {
+    installDiagnostics();
+  }
 }

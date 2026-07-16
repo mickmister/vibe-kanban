@@ -75,7 +75,8 @@ export const useLogStream = (processId: string): UseLogStreamResult => {
               return;
             }
             recordMobilePerfDiagnostic('ws.raw_logs.open', {
-              process_id: capturedProcessId,
+              has_process: !!capturedProcessId,
+              stream_kind: 'raw_logs',
               retry_count: retryCountRef.current,
             });
             setError(null);
@@ -128,7 +129,8 @@ export const useLogStream = (processId: string): UseLogStreamResult => {
                   );
                   if (isMobilePerfDiagnosticsEnabled()) {
                     recordMobilePerfDiagnostic('ws.raw_logs.batch', {
-                      process_id: capturedProcessId,
+                      has_process: !!capturedProcessId,
+                      stream_kind: 'raw_logs',
                       patch_count: patches.length,
                       log_count: normalizedLogs.length,
                       payload_bytes:
@@ -144,7 +146,8 @@ export const useLogStream = (processId: string): UseLogStreamResult => {
                 finishedRef.current = true;
                 isIntentionallyClosed.current = true;
                 recordMobilePerfDiagnostic('ws.raw_logs.finished', {
-                  process_id: capturedProcessId,
+                  has_process: !!capturedProcessId,
+                  stream_kind: 'raw_logs',
                   log_count: logsRef.current.length,
                 });
                 ws.close();
@@ -162,7 +165,8 @@ export const useLogStream = (processId: string): UseLogStreamResult => {
 
           ws.onclose = (event) => {
             recordMobilePerfDiagnostic('ws.raw_logs.close', {
-              process_id: capturedProcessId,
+              has_process: !!capturedProcessId,
+              stream_kind: 'raw_logs',
               code: event.code,
               was_clean: event.wasClean,
               intentional: isIntentionallyClosed.current,

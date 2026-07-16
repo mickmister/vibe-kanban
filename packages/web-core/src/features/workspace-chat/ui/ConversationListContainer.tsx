@@ -286,8 +286,8 @@ export const ConversationList = forwardRef<
       if (now - lastScrollDiagnosticAtRef.current > 1000) {
         lastScrollDiagnosticAtRef.current = now;
         recordMobilePerfDiagnostic('conversation.scroll', {
-          workspace_id: attempt.id,
-          session_id: attempt.session?.id ?? null,
+          has_workspace: true,
+          has_session: !!attempt.session?.id,
           scroll_top: Math.round(scrollEl.scrollTop),
           scroll_height: scrollEl.scrollHeight,
           client_height: scrollEl.clientHeight,
@@ -352,8 +352,8 @@ export const ConversationList = forwardRef<
     if (diagnosticsEnabled) {
       const finishedAt = performance.now();
       recordMobilePerfDiagnostic('conversation.timeline_flush', {
-        workspace_id: attempt.id,
-        session_id: attempt.session?.id ?? null,
+        has_workspace: true,
+        has_session: !!attempt.session?.id,
         add_type: pending.addType,
         initial_load: pending.isInitialLoad,
         loading: pending.loading,
@@ -391,8 +391,8 @@ export const ConversationList = forwardRef<
 
     if (isMobilePerfDiagnosticsEnabled()) {
       recordMobilePerfDiagnostic('conversation.timeline_update', {
-        workspace_id: attempt.id,
-        session_id: attempt.session?.id ?? null,
+        has_workspace: true,
+        has_session: !!attempt.session?.id,
         add_type: addType,
         loading: newLoading,
         already_scheduled: alreadyScheduled,
