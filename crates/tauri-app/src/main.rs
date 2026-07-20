@@ -148,10 +148,14 @@ fn main() {
         EnvFilter::try_new(log_filter_string.as_str()).expect("Failed to create tracing filter");
 
     sentry_utils::init_once(SentrySource::Desktop);
-    let (signoz_layer, signoz_provider) =
+    let (signoz_layer, signoz_provider, signoz_endpoint) =
         match signoz::init_layer("vibe-kanban-desktop", &signoz_filter_string) {
-            Some(signoz::SignozTracing { layer, provider }) => (Some(layer), Some(provider)),
-            None => (None, None),
+            Some(signoz::SignozTracing {
+                layer,
+                provider,
+                endpoint,
+            }) => (Some(layer), Some(provider), Some(endpoint)),
+            None => (None, None, signoz::resolved_endpoint_for_diagnostics()),
         };
 
     tracing_subscriber::registry()
@@ -159,6 +163,13 @@ fn main() {
         .with(signoz_layer)
         .with(sentry_layer(SentrySource::Desktop))
         .init();
+    if perf_tracing_enabled {
+        tracing::info!(
+            signoz_enabled = signoz_provider.is_some(),
+            signoz_endpoint = signoz_endpoint.as_deref().unwrap_or("not configured"),
+            "Performance tracing enabled. Desktop spans are traceable."
+        );
+    }
 
     // Shared token so we can tell the server to shut down when the app quits.
     let shutdown_token = Arc::new(CancellationToken::new());

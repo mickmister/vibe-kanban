@@ -68,11 +68,16 @@ RUST_LOG=info \
 pnpm run backend:dev:watch
 ```
 
-The exporter uses the standard OpenTelemetry Rust environment variables, so you
-can also set `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` if traces need a different
-endpoint from other OTLP signals. The desktop app runs the local backend in the
-same process; when `VK_PERF_TRACING=1`, the desktop process installs the same
-performance filter directives and SigNoz OTLP tracing layer.
+Use `http://` or `https://` endpoints. `OTEL_EXPORTER_OTLP_ENDPOINT` is treated
+as the collector base URL and VK appends `/v1/traces` for OTLP/HTTP. Set
+`OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` only when traces need a different full
+trace URL from other OTLP signals. If an endpoint is blank or malformed, VK logs
+a startup warning and does not silently fall back to the SDK default localhost
+collector.
+
+The desktop app runs the local backend in the same process; when
+`VK_PERF_TRACING=1`, the desktop process installs the same performance filter
+directives and SigNoz OTLP tracing layer.
 
 ### SigNoz smoke-test checklist
 

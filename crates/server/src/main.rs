@@ -75,10 +75,19 @@ async fn main() -> Result<(), VibeKanbanError> {
     );
     let env_filter =
         EnvFilter::try_new(log_filter_string.as_str()).expect("Failed to create tracing filter");
-    let (signoz_layer, signoz_provider, signoz_enabled) =
+    let (signoz_layer, signoz_provider, signoz_endpoint, signoz_enabled) =
         match signoz::init_layer("vibe-kanban-backend", &signoz_filter_string) {
-            Some(signoz::SignozTracing { layer, provider }) => (Some(layer), Some(provider), true),
-            None => (None, None, false),
+            Some(signoz::SignozTracing {
+                layer,
+                provider,
+                endpoint,
+            }) => (Some(layer), Some(provider), Some(endpoint), true),
+            None => (
+                None,
+                None,
+                signoz::resolved_endpoint_for_diagnostics(),
+                false,
+            ),
         };
     tracing_subscriber::registry()
         .with(tracing_subscriber::fmt::layer().with_filter(env_filter))
@@ -88,6 +97,7 @@ async fn main() -> Result<(), VibeKanbanError> {
     if perf_tracing_enabled {
         tracing::info!(
             signoz_enabled,
+            signoz_endpoint = signoz_endpoint.as_deref().unwrap_or("not configured"),
             "Performance tracing enabled. HTTP spans, SQLx query logs, \
              and WebSocket send paths are traceable."
         );
