@@ -9,6 +9,7 @@ use crate::{DeploymentImpl, middleware};
 pub mod approvals;
 pub mod config;
 pub mod containers;
+pub mod conversation_preview;
 pub mod filesystem;
 // pub mod github;
 pub mod attachments;
@@ -37,6 +38,7 @@ pub fn router(deployment: DeploymentImpl) -> IntoMakeService<Router> {
     let relay_signed_routes = Router::new()
         .route("/health", get(health::health_check))
         .merge(config::router())
+        .merge(conversation_preview::router())
         .merge(containers::router(&deployment))
         .merge(workspaces::router(&deployment))
         .merge(execution_processes::router(&deployment))
