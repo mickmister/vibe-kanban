@@ -68,6 +68,10 @@ RUST_LOG=info \
 pnpm run backend:dev:watch
 ```
 
+For Docker/Coolify deployments, `localhost` and `127.0.0.1` refer to the Vibe
+Kanban container itself, not the SigNoz host/container. Use the SigNoz collector
+hostname or service URL that is reachable from the VK container.
+
 Use `http://` or `https://` endpoints. `OTEL_EXPORTER_OTLP_ENDPOINT` is treated
 as the collector base URL and VK appends `/v1/traces` for OTLP/HTTP. Set
 `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` only when traces need a different full

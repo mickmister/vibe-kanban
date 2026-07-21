@@ -153,8 +153,8 @@ fn main() {
             Some(signoz::SignozTracing {
                 layer,
                 provider,
-                endpoint,
-            }) => (Some(layer), Some(provider), Some(endpoint)),
+                endpoint_diagnostics,
+            }) => (Some(layer), Some(provider), Some(endpoint_diagnostics)),
             None => (None, None, signoz::resolved_endpoint_for_diagnostics()),
         };
 
@@ -166,7 +166,24 @@ fn main() {
     if perf_tracing_enabled {
         tracing::info!(
             signoz_enabled = signoz_provider.is_some(),
-            signoz_endpoint = signoz_endpoint.as_deref().unwrap_or("not configured"),
+            signoz_endpoint_configured = signoz_endpoint.is_some(),
+            signoz_endpoint_source = signoz_endpoint
+                .as_ref()
+                .map(|endpoint| endpoint.source)
+                .unwrap_or("not configured"),
+            signoz_endpoint_scheme = signoz_endpoint
+                .as_ref()
+                .map(|endpoint| endpoint.scheme.as_str())
+                .unwrap_or("not configured"),
+            signoz_endpoint_host = signoz_endpoint
+                .as_ref()
+                .map(|endpoint| endpoint.host.as_str())
+                .unwrap_or("not configured"),
+            signoz_endpoint_port = signoz_endpoint.as_ref().and_then(|endpoint| endpoint.port),
+            signoz_endpoint_path = signoz_endpoint
+                .as_ref()
+                .map(|endpoint| endpoint.path.as_str())
+                .unwrap_or("not configured"),
             "Performance tracing enabled. Desktop spans are traceable."
         );
     }

@@ -13,7 +13,7 @@ where
 {
     pub layer: Box<dyn Layer<S> + Send + Sync>,
     pub provider: SdkTracerProvider,
-    pub endpoint: String,
+    pub endpoint_diagnostics: OtlpEndpointDiagnostics,
 }
 
 pub fn init_layer<S>(
@@ -45,16 +45,25 @@ where
         eprintln!("SigNoz OTLP endpoint warning: {warning}");
     }
 
+    let endpoint_diagnostics = endpoint.diagnostics();
     let exporter = match SpanExporter::builder()
         .with_http()
         .with_endpoint(endpoint.endpoint.clone())
         .build()
     {
         Ok(exporter) => exporter,
-        Err(error) => {
+        Err(_error) => {
             eprintln!(
-                "Failed to initialize SigNoz OTLP span exporter: {error}. \
-                 Performance traces will remain local."
+                "Failed to initialize SigNoz OTLP span exporter for {} endpoint \
+                 {}://{}{}{}. Performance traces will remain local.",
+                endpoint_diagnostics.source,
+                endpoint_diagnostics.scheme,
+                endpoint_diagnostics.host,
+                endpoint_diagnostics
+                    .port
+                    .map(|port| format!(":{port}"))
+                    .unwrap_or_default(),
+                endpoint_diagnostics.path
             );
             return None;
         }
@@ -87,7 +96,7 @@ where
     Some(SignozTracing {
         layer,
         provider,
-        endpoint: endpoint.endpoint,
+        endpoint_diagnostics,
     })
 }
 
@@ -97,9 +106,24 @@ pub fn enabled() -> bool {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ResolvedOtlpEndpoint {
-    pub endpoint: String,
+    endpoint: String,
+    source: &'static str,
+    warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OtlpEndpointDiagnostics {
     pub source: &'static str,
-    pub warnings: Vec<String>,
+    pub scheme: String,
+    pub host: String,
+    pub port: Option<u16>,
+    pub path: String,
+}
+
+impl ResolvedOtlpEndpoint {
+    fn diagnostics(&self) -> OtlpEndpointDiagnostics {
+        endpoint_diagnostics(&self.endpoint, self.source)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -128,10 +152,10 @@ impl std::fmt::Display for OtlpEndpointConfigError {
     }
 }
 
-pub fn resolved_endpoint_for_diagnostics() -> Option<String> {
+pub fn resolved_endpoint_for_diagnostics() -> Option<OtlpEndpointDiagnostics> {
     resolve_otlp_traces_endpoint()
         .ok()
-        .map(|endpoint| endpoint.endpoint)
+        .map(|endpoint| endpoint.diagnostics())
 }
 
 fn resolve_otlp_traces_endpoint() -> Result<ResolvedOtlpEndpoint, OtlpEndpointConfigError> {
@@ -230,6 +254,52 @@ fn append_traces_path(endpoint: &str) -> String {
     }
 }
 
+fn endpoint_diagnostics(endpoint: &str, source: &'static str) -> OtlpEndpointDiagnostics {
+    let (scheme, without_scheme) = endpoint
+        .split_once("://")
+        .expect("validated OTLP endpoint includes a scheme");
+    let endpoint_without_fragment = without_scheme
+        .split_once('#')
+        .map_or(without_scheme, |part| part.0);
+    let endpoint_without_query = endpoint_without_fragment
+        .split_once('?')
+        .map_or(endpoint_without_fragment, |part| part.0);
+    let (authority, path) = endpoint_without_query
+        .split_once('/')
+        .map_or((endpoint_without_query, "/"), |(authority, path)| {
+            (authority, if path.is_empty() { "/" } else { path })
+        });
+    let authority_without_userinfo = authority.rsplit_once('@').map_or(authority, |part| part.1);
+    let (host, port) = split_host_port(authority_without_userinfo);
+
+    OtlpEndpointDiagnostics {
+        source,
+        scheme: scheme.to_string(),
+        host: host.to_string(),
+        port,
+        path: if path.starts_with('/') {
+            path.to_string()
+        } else {
+            format!("/{path}")
+        },
+    }
+}
+
+fn split_host_port(authority: &str) -> (&str, Option<u16>) {
+    if let Some((host, rest)) = authority
+        .strip_prefix('[')
+        .and_then(|rest| rest.split_once(']'))
+    {
+        let port = rest.strip_prefix(':').and_then(|port| port.parse().ok());
+        return (host, port);
+    }
+
+    authority
+        .rsplit_once(':')
+        .and_then(|(host, port)| Some((host, Some(port.parse::<u16>().ok()?))))
+        .unwrap_or((authority, None))
+}
+
 fn service_name(default_service_name: &'static str) -> String {
     service_name_from(env::var("OTEL_SERVICE_NAME").ok(), default_service_name)
 }
@@ -246,8 +316,8 @@ fn service_name_from(
 #[cfg(test)]
 mod tests {
     use super::{
-        OtlpEndpointConfigError, append_traces_path, resolve_otlp_traces_endpoint_from,
-        service_name_from,
+        OtlpEndpointConfigError, append_traces_path, endpoint_diagnostics,
+        resolve_otlp_traces_endpoint_from, service_name_from,
     };
 
     #[test]
@@ -342,5 +412,29 @@ mod tests {
                 .unwrap_err(),
             OtlpEndpointConfigError::MissingEndpoint
         );
+    }
+
+    #[test]
+    fn endpoint_diagnostics_redacts_userinfo_query_and_fragment() {
+        let diagnostics = endpoint_diagnostics(
+            "https://token:secret@collector.example:443/otlp/v1/traces?key=secret#frag",
+            "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+        );
+
+        assert_eq!(diagnostics.source, "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT");
+        assert_eq!(diagnostics.scheme, "https");
+        assert_eq!(diagnostics.host, "collector.example");
+        assert_eq!(diagnostics.port, Some(443));
+        assert_eq!(diagnostics.path, "/otlp/v1/traces");
+    }
+
+    #[test]
+    fn endpoint_diagnostics_handles_root_and_ipv6_endpoints() {
+        let diagnostics = endpoint_diagnostics("http://[::1]:4318", "OTEL_EXPORTER_OTLP_ENDPOINT");
+
+        assert_eq!(diagnostics.scheme, "http");
+        assert_eq!(diagnostics.host, "::1");
+        assert_eq!(diagnostics.port, Some(4318));
+        assert_eq!(diagnostics.path, "/");
     }
 }
