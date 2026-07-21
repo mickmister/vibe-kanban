@@ -24,7 +24,11 @@ import { useActions } from '@/shared/hooks/useActions';
 import { useTodos } from '../model/hooks/useTodos';
 import { getLatestConfigFromProcesses } from '@/shared/lib/executor';
 import { useExecutorConfig } from '@/shared/hooks/useExecutorConfig';
-import { useSessionMessageEditor } from '../model/hooks/useSessionMessageEditor';
+import {
+  resolveSessionMessageScratchId,
+  restoreQueuedFollowUpDraftAfterCancel,
+  useSessionMessageEditor,
+} from '../model/hooks/useSessionMessageEditor';
 import { useSessionQueueInteraction } from '../model/hooks/useSessionQueueInteraction';
 import { useSessionSend } from '../model/hooks/useSessionSend';
 import { useSessionAttachments } from '../model/hooks/useSessionAttachments';
@@ -282,10 +286,12 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
   // Use approval_id as scratch key when pending approval exists to avoid
   // prefilling approval response with queued follow-up message
   const scratchId = useMemo(() => {
-    if (pendingApproval?.approvalId) {
-      return pendingApproval.approvalId;
-    }
-    return isNewSessionMode ? workspaceId : sessionId;
+    return resolveSessionMessageScratchId({
+      approvalId: pendingApproval?.approvalId,
+      isNewSessionMode,
+      workspaceId,
+      sessionId,
+    });
   }, [pendingApproval?.approvalId, isNewSessionMode, workspaceId, sessionId]);
 
   // Get repos for file search
@@ -407,6 +413,8 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     hasInitialValue,
     saveToScratch,
     clearDraft,
+    discardLocalDraft,
+    deleteDraftScratch,
     cancelDebouncedSave,
     handleMessageChange,
   } = useSessionMessageEditor({ scratchId });
@@ -516,9 +524,10 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     const success = await send(prompt);
     if (success) {
       cancelDebouncedSave();
+      discardLocalDraft();
       setLocalMessage('');
       clearUploadedAttachments();
-      if (isNewSessionMode) await clearDraft();
+      await deleteDraftScratch();
       if (!isSlashCommand) {
         reviewContext?.clearComments();
       }
@@ -534,10 +543,10 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     localMessage,
     reviewMarkdown,
     cancelDebouncedSave,
+    discardLocalDraft,
     setLocalMessage,
     clearUploadedAttachments,
-    isNewSessionMode,
-    clearDraft,
+    deleteDraftScratch,
     reviewContext,
   ]);
 
@@ -573,8 +582,10 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     await queueMessage(prompt, executorConfig);
 
     // Clear local state after queueing (same as handleSend)
+    discardLocalDraft();
     setLocalMessage('');
     clearUploadedAttachments();
+    await deleteDraftScratch();
     reviewContext?.clearComments();
   }, [
     localMessage,
@@ -583,8 +594,10 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     queueMessage,
     cancelDebouncedSave,
     saveToScratch,
+    discardLocalDraft,
     setLocalMessage,
     clearUploadedAttachments,
+    deleteDraftScratch,
     reviewContext,
   ]);
 
@@ -636,19 +649,23 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
 
   // Handle cancel queue - restore message to editor
   const handleCancelQueue = useCallback(async () => {
-    if (queuedMessage) {
-      setLocalMessage(queuedMessage);
-    }
-    if (queuedConfig) {
-      setExecutorOverrides(queuedConfig);
-    }
-    await cancelQueue();
+    await restoreQueuedFollowUpDraftAfterCancel({
+      queuedMessage,
+      queuedConfig,
+      cancelQueue,
+      setLocalMessage,
+      setExecutorOverrides,
+      handleMessageChange,
+      saveToScratch,
+    });
   }, [
     queuedMessage,
     queuedConfig,
+    cancelQueue,
     setLocalMessage,
     setExecutorOverrides,
-    cancelQueue,
+    handleMessageChange,
+    saveToScratch,
   ]);
 
   // Message edit retry mutation
