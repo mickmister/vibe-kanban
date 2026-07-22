@@ -1,6 +1,7 @@
 use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
+    str::FromStr,
     sync::Arc,
 };
 
@@ -9,6 +10,7 @@ use async_trait::async_trait;
 use db::{
     DBService,
     models::{
+        agent_message_queue::AgentMessageQueueItem,
         coding_agent_turn::{CodingAgentTurn, CreateCodingAgentTurn},
         execution_process::{
             CreateExecutionProcess, ExecutionContext, ExecutionProcess, ExecutionProcessError,
@@ -30,10 +32,12 @@ use executors::profile::ExecutorConfigs;
 use executors::{
     actions::{
         ExecutorAction, ExecutorActionType,
+        coding_agent_follow_up::CodingAgentFollowUpRequest,
         coding_agent_initial::CodingAgentInitialRequest,
         script::{ScriptContext, ScriptRequest, ScriptRequestLanguage},
+        session_command::CodingAgentSessionCommandRequest,
     },
-    executors::{ExecutorError, StandardCodingAgentExecutor},
+    executors::{BaseCodingAgent, ExecutorError, StandardCodingAgentExecutor},
     logs::{
         NormalizedEntry, NormalizedEntryError, NormalizedEntryType,
         utils::{
@@ -57,7 +61,12 @@ use utils::{
 use uuid::Uuid;
 use worktree_manager::WorktreeError;
 
-use crate::services::{execution_process, notification::NotificationService};
+use crate::services::{
+    config::Config,
+    execution_process,
+    notification::NotificationService,
+    queued_message::{QueueError, QueuedMessageService},
+};
 pub type ContainerRef = String;
 
 #[derive(Debug, Error)]
@@ -76,6 +85,8 @@ pub enum ContainerError {
     Session(#[from] SessionError),
     #[error(transparent)]
     ExecutionProcess(#[from] ExecutionProcessError),
+    #[error(transparent)]
+    Queue(#[from] QueueError),
     #[error("Io error: {0}")]
     Io(#[from] std::io::Error),
     #[error("Failed to kill process: {0}")]
@@ -91,6 +102,8 @@ pub trait ContainerService {
     fn db(&self) -> &DBService;
 
     fn git(&self) -> &GitService;
+
+    fn config(&self) -> &Arc<RwLock<Config>>;
 
     fn notification_service(&self) -> &NotificationService;
 
@@ -184,6 +197,168 @@ pub trait ContainerService {
                 .await?;
             Ok(Some(stream))
         }
+    }
+
+    async fn try_start_queued_messages(
+        &self,
+        queue: &QueuedMessageService,
+    ) -> Result<(), ContainerError> {
+        let _guard = queue.pump_lock().lock_owned().await;
+        let max_concurrent = self.config().read().await.agent_queue_concurrency.max(1);
+
+        loop {
+            let items = queue.lease_next_batch(max_concurrent).await?;
+            if items.is_empty() {
+                return Ok(());
+            }
+
+            let mut started_any = false;
+            for item in items {
+                if ExecutionProcess::has_running_non_dev_server_processes_for_workspace(
+                    &self.db().pool,
+                    item.workspace_id,
+                )
+                .await?
+                {
+                    queue.requeue(item.id).await?;
+                    continue;
+                }
+
+                match self.start_queued_message(queue, &item).await {
+                    Ok(_) => started_any = true,
+                    Err(error) => {
+                        let message = error.to_string();
+                        tracing::error!(
+                            queue_item_id = %item.id,
+                            ?error,
+                            "failed to start queued follow-up"
+                        );
+                        queue.mark_failed(item.id, &message).await?;
+                    }
+                }
+            }
+
+            if !started_any {
+                return Ok(());
+            }
+        }
+    }
+
+    async fn start_queued_message(
+        &self,
+        queue: &QueuedMessageService,
+        item: &AgentMessageQueueItem,
+    ) -> Result<ExecutionProcess, ContainerError> {
+        let session = Session::find_by_id(&self.db().pool, item.session_id)
+            .await?
+            .ok_or_else(|| ContainerError::Other(anyhow!("Session not found")))?;
+        let workspace = Workspace::find_by_id(&self.db().pool, session.workspace_id)
+            .await?
+            .ok_or_else(|| ContainerError::Other(anyhow!("Workspace not found")))?;
+        self.ensure_container_exists(&workspace).await?;
+
+        let executor_config = self.executor_config_for_session(&session).await?;
+        let latest_session_info =
+            CodingAgentTurn::find_latest_session_info(&self.db().pool, session.id).await?;
+        let repos = WorkspaceRepo::find_repos_for_workspace(&self.db().pool, workspace.id).await?;
+        let cleanup_action = self.cleanup_actions_for_repos(&repos);
+        let working_dir = session
+            .agent_working_dir
+            .as_ref()
+            .filter(|dir| !dir.is_empty())
+            .cloned();
+
+        let action_type = if let Some(command) = item.data.session_command.clone() {
+            let latest_session_info = if command.requires_provider_context(executor_config.executor)
+            {
+                latest_session_info
+            } else {
+                None
+            };
+            ExecutorActionType::CodingAgentSessionCommandRequest(CodingAgentSessionCommandRequest {
+                command,
+                prompt: item.data.message.clone(),
+                session_id: latest_session_info
+                    .as_ref()
+                    .map(|info| info.session_id.clone()),
+                executor_config: executor_config.clone(),
+                working_dir: working_dir.clone(),
+            })
+        } else if let Some(info) = latest_session_info {
+            ExecutorActionType::CodingAgentFollowUpRequest(CodingAgentFollowUpRequest {
+                prompt: item.data.message.clone(),
+                session_id: info.session_id,
+                reset_to_message_id: None,
+                executor_config: executor_config.clone(),
+                working_dir: working_dir.clone(),
+            })
+        } else {
+            ExecutorActionType::CodingAgentInitialRequest(CodingAgentInitialRequest {
+                prompt: item.data.message.clone(),
+                executor_config: executor_config.clone(),
+                working_dir,
+            })
+        };
+
+        let cleanup_action = if matches!(
+            &action_type,
+            ExecutorActionType::CodingAgentSessionCommandRequest(_)
+        ) {
+            None
+        } else {
+            cleanup_action
+        };
+        let action = ExecutorAction::new(action_type, cleanup_action.map(Box::new));
+        let process_id = Uuid::new_v4();
+        if !queue.mark_starting(item.id, process_id).await? {
+            return Err(ContainerError::Other(anyhow!(
+                "queued message lease lost before start"
+            )));
+        }
+
+        match self
+            .start_execution_with_id(
+                &workspace,
+                &session,
+                &action,
+                &ExecutionProcessRunReason::CodingAgent,
+                process_id,
+            )
+            .await
+        {
+            Ok(process) => {
+                queue.mark_running(item.id).await?;
+                Ok(process)
+            }
+            Err(error) => {
+                queue.mark_failed(item.id, &error.to_string()).await?;
+                Err(error)
+            }
+        }
+    }
+
+    async fn executor_config_for_session(
+        &self,
+        session: &Session,
+    ) -> Result<ExecutorConfig, ContainerError> {
+        if let Some(profile) =
+            ExecutionProcess::latest_executor_profile_for_session(&self.db().pool, session.id)
+                .await?
+        {
+            return Ok(profile.into());
+        }
+
+        let executor = session.executor.as_deref().ok_or_else(|| {
+            ContainerError::Other(anyhow!(
+                "session has no configured executor; start the session once before queueing follow-ups"
+            ))
+        })?;
+        let base_agent = BaseCodingAgent::from_str(executor).map_err(|_| {
+            ContainerError::Other(anyhow!(
+                "Unknown executor configured for session: {executor}"
+            ))
+        })?;
+        Ok(ExecutorConfig::new(base_agent))
     }
 
     async fn store_db_stream_handle(&self, id: Uuid, handle: JoinHandle<()>);
@@ -698,7 +873,24 @@ pub trait ContainerService {
             }
         }
 
-        self.try_stop(&workspace, false).await;
+        if let Ok(processes) = ExecutionProcess::find_by_session_id(pool, session_id, false).await {
+            for process in processes {
+                if process.status == ExecutionProcessStatus::Running
+                    && process.run_reason != ExecutionProcessRunReason::DevServer
+                {
+                    self.stop_execution(&process, ExecutionProcessStatus::Killed)
+                        .await
+                        .unwrap_or_else(|e| {
+                            tracing::debug!(
+                                "Failed to stop execution process {} while resetting session {}: {}",
+                                process.id,
+                                session_id,
+                                e
+                            );
+                        });
+                }
+            }
+        }
         ExecutionProcess::drop_at_and_after(pool, session_id, target_process_id).await?;
         Session::recompute_context_reset_boundary(pool, session_id).await?;
 
@@ -1163,6 +1355,24 @@ pub trait ContainerService {
         executor_action: &ExecutorAction,
         run_reason: &ExecutionProcessRunReason,
     ) -> Result<ExecutionProcess, ContainerError> {
+        self.start_execution_with_id(
+            workspace,
+            session,
+            executor_action,
+            run_reason,
+            Uuid::new_v4(),
+        )
+        .await
+    }
+
+    async fn start_execution_with_id(
+        &self,
+        workspace: &Workspace,
+        session: &Session,
+        executor_action: &ExecutorAction,
+        run_reason: &ExecutionProcessRunReason,
+        process_id: Uuid,
+    ) -> Result<ExecutionProcess, ContainerError> {
         // Create new execution process record
         // Capture current HEAD per repository as the "before" commit for this execution
         let repositories =
@@ -1199,7 +1409,7 @@ pub trait ContainerService {
         let execution_process = ExecutionProcess::create(
             &self.db().pool,
             &create_execution_process,
-            Uuid::new_v4(),
+            process_id,
             &repo_states,
         )
         .await?;

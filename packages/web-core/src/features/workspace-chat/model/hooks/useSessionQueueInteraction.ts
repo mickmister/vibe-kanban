@@ -1,7 +1,7 @@
 import { useCallback } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { queueApi } from '@/shared/lib/api';
-import type { ExecutorConfig, QueueStatus } from 'shared/types';
+import type { AgentMessageQueueItem, ExecutorConfig, QueueStatusSummary } from 'shared/types';
 
 interface UseSessionQueueInteractionOptions {
   /** Session ID for queue operations */
@@ -9,20 +9,21 @@ interface UseSessionQueueInteractionOptions {
 }
 
 interface UseSessionQueueInteractionResult {
-  /** Whether a message is currently queued */
+  /** Whether one or more messages are currently queued */
   isQueued: boolean;
-  /** The queued message content, if any */
+  /** Number of pending queued/running queue messages */
+  queuedCount: number;
+  /** Pending queued messages */
+  queuedMessages: AgentMessageQueueItem[];
+  /** First queued message content, if any */
   queuedMessage: string | null;
-  /** The executor config from the queued message, if any */
+  /** The executor config from the first queued message, if any */
   queuedConfig: ExecutorConfig | null;
   /** Whether a queue operation is in progress */
   isQueueLoading: boolean;
   /** Queue a message for later execution */
-  queueMessage: (
-    message: string,
-    executorConfig: ExecutorConfig
-  ) => Promise<void>;
-  /** Cancel the queued message */
+  queueMessage: (message: string) => Promise<void>;
+  /** Cancel queued messages */
   cancelQueue: () => Promise<void>;
   /** Refresh queue status from server */
   refreshQueueStatus: () => Promise<void>;
@@ -39,42 +40,29 @@ export function useSessionQueueInteraction({
 }: UseSessionQueueInteractionOptions): UseSessionQueueInteractionResult {
   const queryClient = useQueryClient();
 
-  // Query for queue status
-  const { data: queueStatus = { status: 'empty' as const }, refetch } =
-    useQuery<QueueStatus>({
+  const { data: queueStatus = { status: 'empty' as const, count: 0, messages: [] }, refetch } =
+    useQuery<QueueStatusSummary>({
       queryKey: [QUEUE_STATUS_KEY, sessionId],
       queryFn: () => queueApi.getStatus(sessionId!),
       enabled: !!sessionId,
     });
 
-  const isQueued = queueStatus.status === 'queued';
-  const queuedMessageData = isQueued
-    ? (queueStatus as Extract<QueueStatus, { status: 'queued' }>).message
-    : null;
+  const queuedMessages = 'messages' in queueStatus ? queueStatus.messages : [];
+  const queuedCount = 'count' in queueStatus ? queueStatus.count : queuedMessages.length;
+  const isQueued = queueStatus.status === 'queued' && queuedCount > 0;
+  const queuedMessageData = queuedMessages[0] ??
+    (queueStatus.status === 'queued' && 'message' in queueStatus ? queueStatus.message : null);
   const queuedMessage = queuedMessageData?.data.message ?? null;
-  const queuedConfig: ExecutorConfig | null =
-    queuedMessageData?.data.executor_config ?? null;
+  const queuedConfig: ExecutorConfig | null = null;
 
-  // Mutation for queueing a message
   const queueMutation = useMutation({
-    mutationFn: ({
-      message,
-      executorConfig,
-    }: {
-      message: string;
-      executorConfig: ExecutorConfig;
-    }) =>
-      queueApi.queue(sessionId!, {
-        message,
-        executor_config: executorConfig,
-        session_command: null,
-      }),
+    mutationFn: ({ message }: { message: string }) =>
+      queueApi.queue(sessionId!, { message }),
     onSuccess: (status) => {
       queryClient.setQueryData([QUEUE_STATUS_KEY, sessionId], status);
     },
   });
 
-  // Mutation for cancelling the queue
   const cancelMutation = useMutation({
     mutationFn: () => queueApi.cancel(sessionId!),
     onSuccess: (status) => {
@@ -83,12 +71,9 @@ export function useSessionQueueInteraction({
   });
 
   const queueMessage = useCallback(
-    async (message: string, executorConfig: ExecutorConfig) => {
+    async (message: string) => {
       if (!sessionId) return;
-      await queueMutation.mutateAsync({
-        message,
-        executorConfig,
-      });
+      await queueMutation.mutateAsync({ message });
     },
     [sessionId, queueMutation]
   );
@@ -105,6 +90,8 @@ export function useSessionQueueInteraction({
 
   return {
     isQueued,
+    queuedCount,
+    queuedMessages,
     queuedMessage,
     queuedConfig,
     isQueueLoading: queueMutation.isPending || cancelMutation.isPending,

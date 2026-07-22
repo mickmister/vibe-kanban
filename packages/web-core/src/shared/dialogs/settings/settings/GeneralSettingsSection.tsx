@@ -790,6 +790,22 @@ export function GeneralSettingsSection() {
             }
           />
         </SettingsField>
+        <SettingsField
+          label="Max concurrent queued agents"
+          description="Maximum number of queued coding-agent runs VK may start at once. Default is 8."
+        >
+          <SettingsInput
+            value={String(draft?.agent_queue_concurrency ?? 8)}
+            onChange={(value) => {
+              const parsed = Number.parseInt(value, 10);
+              updateDraft({
+                agent_queue_concurrency: Number.isFinite(parsed)
+                  ? Math.max(1, parsed)
+                  : 8,
+              });
+            }}
+          />
+        </SettingsField>
       </SettingsCard>
 
       {/* Privacy */}

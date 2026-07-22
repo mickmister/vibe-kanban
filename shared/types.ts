@@ -492,7 +492,7 @@ export type DirectoryListResponse = { entries: Array<DirectoryEntry>, current_pa
 
 export type SearchMode = "taskform" | "settings";
 
-export type Config = { config_version: string, theme: ThemeMode, executor_profile: ExecutorProfileId, disclaimer_acknowledged: boolean, onboarding_acknowledged: boolean, remote_onboarding_acknowledged: boolean, notifications: NotificationConfig, editor: EditorConfig, github: GitHubConfig, analytics_enabled: boolean, workspace_dir: string | null, last_app_version: string | null, show_release_notes: boolean, language: UiLanguage, git_branch_prefix: string, showcases: ShowcaseState, pr_auto_description_enabled: boolean, pr_auto_description_prompt: string | null, commit_reminder_enabled: boolean, commit_reminder_prompt: string | null, send_message_shortcut: SendMessageShortcut, relay_enabled: boolean, host_nickname: string | null, };
+export type Config = { config_version: string, theme: ThemeMode, executor_profile: ExecutorProfileId, disclaimer_acknowledged: boolean, onboarding_acknowledged: boolean, remote_onboarding_acknowledged: boolean, notifications: NotificationConfig, editor: EditorConfig, github: GitHubConfig, analytics_enabled: boolean, workspace_dir: string | null, last_app_version: string | null, show_release_notes: boolean, language: UiLanguage, git_branch_prefix: string, showcases: ShowcaseState, pr_auto_description_enabled: boolean, pr_auto_description_prompt: string | null, commit_reminder_enabled: boolean, commit_reminder_prompt: string | null, send_message_shortcut: SendMessageShortcut, relay_enabled: boolean, host_nickname: string | null, agent_queue_concurrency: number, };
 
 export type NotificationConfig = { sound_enabled: boolean, push_enabled: boolean, sound_file: SoundFile, };
 
@@ -516,21 +516,17 @@ export type SendMessageShortcut = "ModifierEnter" | "Enter";
 
 export type GitBranch = { name: string, is_current: boolean, is_remote: boolean, last_commit_date: Date, };
 
-export type QueuedMessage = { 
-/**
- * The session this message is queued for
- */
-session_id: string, 
-/**
- * The follow-up data (message + variant)
- */
-data: DraftFollowUpData, 
-/**
- * Timestamp when the message was queued
- */
-queued_at: string, };
+export type QueueStatusSummary = { status: QueueStatusKind, count: number, messages: Array<AgentMessageQueueItem>, message: AgentMessageQueueItem | null, };
 
-export type QueueStatus = { "status": "empty" } | { "status": "queued", message: QueuedMessage, };
+export enum QueueStatusKind { empty = "empty", queued = "queued" }
+
+export type AgentMessageQueueItem = { id: string, session_id: string, workspace_id: string, status: AgentMessageQueueStatus, source: AgentMessageSource, priority: bigint, data: QueuedFollowUpData, started_execution_process_id: string | null, lease_owner: string | null, lease_expires_at: string | null, attempt_count: bigint, last_error: string | null, queued_at: string, created_at: string, updated_at: string, };
+
+export enum AgentMessageQueueStatus { queued = "queued", leased = "leased", starting = "starting", running = "running", completed = "completed", failed = "failed", cancelled = "cancelled" }
+
+export enum AgentMessageSource { from_user = "from_user", workflow = "workflow", agent = "agent", system = "system" }
+
+export type QueuedFollowUpData = { message: string, session_command: SessionCommand | null, };
 
 export type ConflictOp = "rebase" | "merge" | "cherry_pick" | "revert";
 

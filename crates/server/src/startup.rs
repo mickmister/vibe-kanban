@@ -183,6 +183,17 @@ pub async fn initialize_deployment(
         .await
         .map_err(DeploymentError::from)?;
     log_startup_phase("cleanup_orphan_executions_complete");
+    deployment
+        .queued_message_service()
+        .recover_stale()
+        .await
+        .map_err(|error| DeploymentError::Other(anyhow::anyhow!(error)))?;
+    deployment
+        .container()
+        .try_start_queued_messages(deployment.queued_message_service())
+        .await
+        .map_err(DeploymentError::from)?;
+    log_startup_phase("queued_message_recovery_complete");
     run_startup_backfills(&deployment).await?;
     deployment
         .track_if_analytics_allowed("session_start", serde_json::json!({}))

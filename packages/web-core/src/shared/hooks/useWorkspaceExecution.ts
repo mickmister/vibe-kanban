@@ -4,22 +4,53 @@ import {
   useMutationState,
   useQueries,
 } from '@tanstack/react-query';
-import { workspacesApi, executionProcessesApi } from '@/shared/lib/api';
+import { executionProcessesApi } from '@/shared/lib/api';
 import { useExecutionProcessesContext } from '@/shared/hooks/useExecutionProcessesContext';
 import type { AttemptData } from '@/shared/lib/types';
 import type { ExecutionProcess } from 'shared/types';
 
+export function getStoppableExecutionProcesses(
+  executionProcesses: ExecutionProcess[]
+) {
+  return executionProcesses.filter(
+    (process) =>
+      process.status === 'running' &&
+      (process.run_reason === 'codingagent' ||
+        process.run_reason === 'setupscript' ||
+        process.run_reason === 'cleanupscript' ||
+        process.run_reason === 'archivescript')
+  );
+}
+
+export function getStopExecutionMutationKey(
+  workspaceId: string | undefined,
+  sessionId: string | undefined
+) {
+  return ['stopSessionExecution', workspaceId, sessionId] as const;
+}
+
 export function useWorkspaceExecution(workspaceId?: string) {
+  const {
+    executionProcessesVisible: executionProcesses,
+    isAttemptRunningVisible: isAttemptRunning,
+    isLoading: streamLoading,
+  } = useExecutionProcessesContext();
+  const sessionId = executionProcesses[0]?.session_id;
+
   const stopMutationKey = useMemo(
-    () => ['stopWorkspaceExecution', workspaceId] as const,
-    [workspaceId]
+    () => getStopExecutionMutationKey(workspaceId, sessionId),
+    [workspaceId, sessionId]
   );
 
   const stopMutation = useMutation({
     mutationKey: stopMutationKey,
-    mutationFn: async () => {
+    mutationFn: async (processesToStop: ExecutionProcess[]) => {
       if (!workspaceId) return;
-      await workspacesApi.stop(workspaceId);
+      await Promise.all(
+        getStoppableExecutionProcesses(processesToStop).map((process) =>
+          executionProcessesApi.stopExecutionProcess(process.id)
+        )
+      );
     },
   });
 
@@ -30,12 +61,6 @@ export function useWorkspaceExecution(workspaceId?: string) {
         status: 'pending',
       },
     }).length > 0;
-
-  const {
-    executionProcessesVisible: executionProcesses,
-    isAttemptRunningVisible: isAttemptRunning,
-    isLoading: streamLoading,
-  } = useExecutionProcessesContext();
 
   // Get setup script processes that need detailed info
   const setupProcesses = useMemo(() => {
@@ -58,7 +83,6 @@ export function useWorkspaceExecution(workspaceId?: string) {
       return { processes: [], runningProcessDetails: {} };
     }
 
-    // Build runningProcessDetails from the detail queries
     const runningProcessDetails: Record<string, ExecutionProcess> = {};
 
     setupProcesses.forEach((process, index) => {
@@ -78,12 +102,12 @@ export function useWorkspaceExecution(workspaceId?: string) {
     if (!workspaceId || isStopping) return;
 
     try {
-      await stopMutation.mutateAsync();
+      await stopMutation.mutateAsync(executionProcesses);
     } catch (error) {
       console.error('Failed to stop executions:', error);
       throw error;
     }
-  }, [workspaceId, isStopping, stopMutation]);
+  }, [workspaceId, isStopping, stopMutation, executionProcesses]);
 
   const isLoading =
     streamLoading || processDetailQueries.some((q) => q.isLoading);
@@ -91,17 +115,12 @@ export function useWorkspaceExecution(workspaceId?: string) {
     streamLoading || processDetailQueries.some((q) => q.isFetching);
 
   return {
-    // Data
     processes: executionProcesses,
     attemptData,
     runningProcessDetails: attemptData.runningProcessDetails,
-
-    // Status
     isAttemptRunning,
     isLoading,
     isFetching,
-
-    // Actions
     stopExecution,
     isStopping,
   };

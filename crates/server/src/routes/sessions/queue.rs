@@ -1,25 +1,32 @@
 use axum::{
-    Extension, Json, Router, extract::State, middleware::from_fn_with_state,
-    response::Json as ResponseJson, routing::get,
+    Extension, Json, Router,
+    extract::{Path, State},
+    middleware::from_fn_with_state,
+    response::Json as ResponseJson,
+    routing::get,
 };
-use db::models::{scratch::DraftFollowUpData, session::Session};
+use db::models::{agent_message_queue::AgentMessageSource, session::Session};
 use deployment::Deployment;
 use executors::profile::ExecutorConfig;
 use serde::Deserialize;
-use services::services::queued_message::QueueStatus;
+use services::services::{container::ContainerService, queued_message::QueueStatus};
 use ts_rs::TS;
 use utils::response::ApiResponse;
+use uuid::Uuid;
 
 use crate::{DeploymentImpl, error::ApiError, middleware::load_session_middleware};
 
-/// Request body for queueing a follow-up message
 #[derive(Debug, Deserialize, TS)]
-struct QueueMessageRequest {
+pub struct QueueMessageRequest {
     pub message: String,
-    pub executor_config: ExecutorConfig,
+    #[serde(default)]
+    pub source: Option<AgentMessageSource>,
+    #[serde(default)]
+    pub priority: Option<i64>,
+    #[serde(default)]
+    pub executor_config: Option<ExecutorConfig>,
 }
 
-/// Queue a follow-up message to be executed when the current execution finishes
 async fn queue_message(
     Extension(session): Extension<Session>,
     State(deployment): State<DeploymentImpl>,
@@ -28,16 +35,18 @@ async fn queue_message(
     if let Some(message) = super::invalid_session_command_message(&payload.message) {
         return Err(ApiError::BadRequest(message));
     }
-
-    let data = DraftFollowUpData {
-        session_command: super::parse_session_command(&payload.message),
-        message: payload.message,
-        executor_config: payload.executor_config,
-    };
-
-    let queued = deployment
+    let session_command = super::parse_session_command(&payload.message);
+    deployment
         .queued_message_service()
-        .queue_message(session.id, data);
+        .queue_message(
+            &session,
+            payload.message,
+            session_command,
+            payload.source.unwrap_or(AgentMessageSource::FromUser),
+            payload.priority,
+        )
+        .await
+        .map_err(|e| ApiError::BadRequest(e.to_string()))?;
 
     deployment
         .track_if_analytics_allowed(
@@ -49,19 +58,26 @@ async fn queue_message(
         )
         .await;
 
-    Ok(ResponseJson(ApiResponse::success(QueueStatus::Queued {
-        message: queued,
-    })))
+    if let Err(e) = deployment
+        .container()
+        .try_start_queued_messages(deployment.queued_message_service())
+        .await
+    {
+        tracing::warn!("Failed to pump queued messages after enqueue: {}", e);
+    }
+
+    get_queue_status(Extension(session), State(deployment)).await
 }
 
-/// Cancel a queued follow-up message
-async fn cancel_queued_message(
+async fn cancel_queued_messages(
     Extension(session): Extension<Session>,
     State(deployment): State<DeploymentImpl>,
 ) -> Result<ResponseJson<ApiResponse<QueueStatus>>, ApiError> {
     deployment
         .queued_message_service()
-        .cancel_queued(session.id);
+        .cancel_queued(session.id)
+        .await
+        .map_err(|e| ApiError::BadRequest(e.to_string()))?;
 
     deployment
         .track_if_analytics_allowed(
@@ -73,16 +89,31 @@ async fn cancel_queued_message(
         )
         .await;
 
-    Ok(ResponseJson(ApiResponse::success(QueueStatus::Empty)))
+    get_queue_status(Extension(session), State(deployment)).await
 }
 
-/// Get the current queue status for a session's workspace
+async fn cancel_queued_message_by_id(
+    Extension(session): Extension<Session>,
+    State(deployment): State<DeploymentImpl>,
+    Path(queue_item_id): Path<Uuid>,
+) -> Result<ResponseJson<ApiResponse<QueueStatus>>, ApiError> {
+    deployment
+        .queued_message_service()
+        .cancel_queued_item(session.id, queue_item_id)
+        .await
+        .map_err(|e| ApiError::BadRequest(e.to_string()))?;
+    get_queue_status(Extension(session), State(deployment)).await
+}
+
 async fn get_queue_status(
     Extension(session): Extension<Session>,
     State(deployment): State<DeploymentImpl>,
 ) -> Result<ResponseJson<ApiResponse<QueueStatus>>, ApiError> {
-    let status = deployment.queued_message_service().get_status(session.id);
-
+    let status = deployment
+        .queued_message_service()
+        .get_status(session.id)
+        .await
+        .map_err(|e| ApiError::BadRequest(e.to_string()))?;
     Ok(ResponseJson(ApiResponse::success(status)))
 }
 
@@ -92,7 +123,11 @@ pub(super) fn router(deployment: &DeploymentImpl) -> Router<DeploymentImpl> {
             "/",
             get(get_queue_status)
                 .post(queue_message)
-                .delete(cancel_queued_message),
+                .delete(cancel_queued_messages),
+        )
+        .route(
+            "/{queue_item_id}",
+            axum::routing::delete(cancel_queued_message_by_id),
         )
         .layer(from_fn_with_state(
             deployment.clone(),

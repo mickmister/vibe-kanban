@@ -82,8 +82,8 @@ function computeExecutionStatus(params: {
   if (params.isStopping) return 'stopping';
   if (params.isQueueLoading) return 'queue-loading';
   if (params.isSendingFollowUp) return 'sending';
-  if (params.isQueued) return 'queued';
   if (params.isAttemptRunning) return 'running';
+  if (params.isQueued) return 'queued';
   return 'idle';
 }
 
@@ -486,6 +486,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     isQueued,
     queuedMessage,
     queuedConfig,
+    queuedCount,
     isQueueLoading,
     queueMessage,
     cancelQueue,
@@ -570,7 +571,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
 
     cancelDebouncedSave();
     await saveToScratch(localMessage, executorConfig);
-    await queueMessage(prompt, executorConfig);
+    await queueMessage(prompt);
 
     // Clear local state after queueing (same as handleSend)
     setLocalMessage('');
@@ -591,7 +592,6 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
   // Editor change handler
   const handleEditorChange = useCallback(
     (value: string) => {
-      if (isQueued) cancelQueue();
       if (executorConfig) {
         handleMessageChange(value, executorConfig);
       } else {
@@ -600,8 +600,6 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
       if (sendError) clearError();
     },
     [
-      isQueued,
-      cancelQueue,
       handleMessageChange,
       executorConfig,
       sendError,
@@ -900,12 +898,11 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
   const editorValue = useMemo(() => {
     if (isScratchLoading || !hasInitialValue) return '';
     if (pendingApproval) return localMessage;
-    return queuedMessage ?? localMessage;
+    return localMessage;
   }, [
     isScratchLoading,
     hasInitialValue,
     pendingApproval,
-    queuedMessage,
     localMessage,
   ]);
 
@@ -1005,6 +1002,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
         onViewCode={disableViewCode ? undefined : handleViewCode}
         chatViewMode={chatViewMode}
         chatViewModeSelector={chatViewModeSelector}
+        queuedCount={0}
       />
     );
   }
@@ -1015,6 +1013,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
       onViewCode={disableViewCode ? undefined : handleViewCode}
       chatViewMode={chatViewMode}
       chatViewModeSelector={chatViewModeSelector}
+      queuedCount={queuedCount}
       onOpenWorkspace={
         showOpenWorkspaceButton && workspaceId ? handleOpenWorkspace : undefined
       }

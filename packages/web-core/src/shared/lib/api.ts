@@ -38,7 +38,6 @@ import {
   AvailabilityInfo,
   BaseCodingAgent,
   ExecutorConfig,
-  DraftFollowUpData,
   AgentPresetOptionsQuery,
   RunAgentSetupRequest,
   RunAgentSetupResponse,
@@ -67,7 +66,7 @@ import {
   PushError,
   TokenResponse,
   CurrentUserResponse,
-  QueueStatus,
+  QueueStatusSummary,
   PrCommentsResponse,
   MergeWorkspaceRequest,
   PushWorkspaceRequest,
@@ -1563,31 +1562,31 @@ export const queueApi = {
    */
   queue: async (
     sessionId: string,
-    data: DraftFollowUpData
-  ): Promise<QueueStatus> => {
+    data: { message: string; source?: 'from_user' | 'workflow' | 'agent' | 'system'; priority?: number | null }
+  ): Promise<QueueStatusSummary> => {
     const response = await makeRequest(`/api/sessions/${sessionId}/queue`, {
       method: 'POST',
       body: JSON.stringify(data),
     });
-    return handleApiResponse<QueueStatus>(response);
+    return handleApiResponse<QueueStatusSummary>(response);
   },
 
   /**
    * Cancel a queued follow-up message
    */
-  cancel: async (sessionId: string): Promise<QueueStatus> => {
+  cancel: async (sessionId: string): Promise<QueueStatusSummary> => {
     const response = await makeRequest(`/api/sessions/${sessionId}/queue`, {
       method: 'DELETE',
     });
-    return handleApiResponse<QueueStatus>(response);
+    return handleApiResponse<QueueStatusSummary>(response);
   },
 
   /**
    * Get the current queue status for a session
    */
-  getStatus: async (sessionId: string): Promise<QueueStatus> => {
+  getStatus: async (sessionId: string): Promise<QueueStatusSummary> => {
     const response = await makeRequest(`/api/sessions/${sessionId}/queue`);
-    return handleApiResponse<QueueStatus>(response);
+    return handleApiResponse<QueueStatusSummary>(response);
   },
 };
 
