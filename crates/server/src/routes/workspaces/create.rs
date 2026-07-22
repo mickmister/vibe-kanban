@@ -177,22 +177,34 @@ fn repo_name_collision_key(repo_name: &str) -> String {
     repo_name.to_lowercase()
 }
 
+#[derive(Debug, thiserror::Error)]
+enum WorkspaceRepoIdentityError {
+    #[error("Repository already attached to workspace")]
+    DuplicateRepoId,
+    #[error("Repository name '{repo_name}' is already attached to workspace")]
+    DuplicateRepoName { repo_name: String },
+}
+
+impl From<WorkspaceRepoIdentityError> for ApiError {
+    fn from(error: WorkspaceRepoIdentityError) -> Self {
+        ApiError::Conflict(error.to_string())
+    }
+}
+
 fn validate_unique_workspace_repo_identity(
     repo_ids: &mut HashSet<Uuid>,
     repo_name_keys: &mut HashSet<String>,
     repo_id: Uuid,
     repo_name: &str,
-) -> Result<(), ApiError> {
+) -> Result<(), WorkspaceRepoIdentityError> {
     if !repo_ids.insert(repo_id) {
-        return Err(ApiError::Conflict(
-            "Repository already attached to workspace".to_string(),
-        ));
+        return Err(WorkspaceRepoIdentityError::DuplicateRepoId);
     }
 
     if !repo_name_keys.insert(repo_name_collision_key(repo_name)) {
-        return Err(ApiError::Conflict(format!(
-            "Repository name '{repo_name}' is already attached to workspace"
-        )));
+        return Err(WorkspaceRepoIdentityError::DuplicateRepoName {
+            repo_name: repo_name.to_string(),
+        });
     }
 
     Ok(())
@@ -388,10 +400,9 @@ mod tests {
     use uuid::Uuid;
 
     use super::{
-        ImportedIssueAttachment, repo_name_collision_key,
+        ImportedIssueAttachment, WorkspaceRepoIdentityError, repo_name_collision_key,
         rewrite_imported_issue_attachments_markdown, validate_unique_workspace_repo_identity,
     };
-    use crate::error::ApiError;
 
     fn imported_file(
         attachment_id: Uuid,
@@ -443,7 +454,10 @@ mod tests {
         )
         .unwrap_err();
 
-        assert!(matches!(error, ApiError::Conflict(message) if message.contains("same-name")));
+        assert!(matches!(
+            error,
+            WorkspaceRepoIdentityError::DuplicateRepoName { repo_name } if repo_name == "same-name"
+        ));
     }
 
     #[test]
@@ -468,9 +482,7 @@ mod tests {
         )
         .unwrap_err();
 
-        assert!(
-            matches!(error, ApiError::Conflict(message) if message.contains("already attached"))
-        );
+        assert!(matches!(error, WorkspaceRepoIdentityError::DuplicateRepoId));
     }
 
     #[test]
