@@ -261,7 +261,7 @@ impl AgentMessageQueueItem {
                  AND NOT EXISTS (
                    SELECT 1 FROM agent_message_queue earlier
                    WHERE earlier.workspace_id = q.workspace_id
-                     AND earlier.status = 'queued'
+                     AND earlier.status IN ('queued','leased','starting','running')
                      AND (
                        earlier.priority > q.priority
                        OR (earlier.priority = q.priority AND earlier.queued_at < q.queued_at)
@@ -699,6 +699,82 @@ mod tests {
             leased.iter().map(|item| item.id).collect::<Vec<_>>(),
             vec![first.id]
         );
+    }
+
+    #[tokio::test]
+    async fn lease_does_not_skip_earlier_non_terminal_items_in_same_workspace() {
+        for blocker_status in ["leased", "starting", "running"] {
+            let pool = test_pool().await;
+            let blocked_workspace_id = Uuid::new_v4();
+            let blocked_session_id = Uuid::new_v4();
+            let free_workspace_id = Uuid::new_v4();
+            let free_session_id = Uuid::new_v4();
+            insert_session(&pool, blocked_session_id, blocked_workspace_id).await;
+            insert_session(&pool, free_session_id, free_workspace_id).await;
+
+            let first = create_item(
+                &pool,
+                blocked_session_id,
+                blocked_workspace_id,
+                AgentMessageSource::Agent,
+                Some(50),
+                "first",
+            )
+            .await;
+            let second = create_item(
+                &pool,
+                blocked_session_id,
+                blocked_workspace_id,
+                AgentMessageSource::Agent,
+                Some(50),
+                "second",
+            )
+            .await;
+            let free = create_item(
+                &pool,
+                free_session_id,
+                free_workspace_id,
+                AgentMessageSource::Agent,
+                Some(50),
+                "free",
+            )
+            .await;
+
+            sqlx::query(
+                "UPDATE agent_message_queue SET status = ?2, lease_owner = 'old-owner', lease_expires_at = ?3 WHERE id = ?1",
+            )
+            .bind(first.id)
+            .bind(blocker_status)
+            .bind(Utc::now() + Duration::seconds(60))
+            .execute(&pool)
+            .await
+            .unwrap();
+
+            let leased = AgentMessageQueueItem::lease_next_batch(
+                &pool,
+                "test-owner",
+                10,
+                Duration::seconds(60),
+            )
+            .await
+            .unwrap();
+
+            assert_eq!(
+                leased.iter().map(|item| item.id).collect::<Vec<_>>(),
+                vec![free.id],
+                "later same-workspace item {second:?} must not leapfrog earlier {blocker_status} item"
+            );
+
+            let still_queued = AgentMessageQueueItem::find_by_id(&pool, second.id)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                still_queued.status,
+                AgentMessageQueueStatus::Queued,
+                "later same-workspace item should remain queued while earlier item is {blocker_status}"
+            );
+        }
     }
 
     #[tokio::test]
