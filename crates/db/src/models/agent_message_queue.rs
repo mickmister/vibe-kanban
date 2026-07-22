@@ -332,7 +332,7 @@ impl AgentMessageQueueItem {
             id,
             AgentMessageQueueStatus::Failed,
             Some(error),
-            &["queued", "leased", "starting"],
+            &["leased", "starting", "running"],
         )
         .await
     }

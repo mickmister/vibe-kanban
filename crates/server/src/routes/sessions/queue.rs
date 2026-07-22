@@ -7,7 +7,6 @@ use axum::{
 };
 use db::models::{agent_message_queue::AgentMessageSource, session::Session};
 use deployment::Deployment;
-use executors::profile::ExecutorConfig;
 use serde::Deserialize;
 use services::services::{container::ContainerService, queued_message::QueueStatus};
 use ts_rs::TS;
@@ -23,10 +22,11 @@ pub struct QueueMessageRequest {
     pub source: Option<AgentMessageSource>,
     #[serde(default)]
     pub priority: Option<i64>,
-    #[serde(default)]
-    pub executor_config: Option<ExecutorConfig>,
 }
 
+/// Queue-aware guarded follow-up path. The legacy `/follow-up` endpoint remains
+/// immediate-start for compatibility; MCP/VD callers should migrate here when
+/// they want VK scheduler concurrency and workspace-exclusivity guardrails.
 async fn queue_message(
     Extension(session): Extension<Session>,
     State(deployment): State<DeploymentImpl>,
