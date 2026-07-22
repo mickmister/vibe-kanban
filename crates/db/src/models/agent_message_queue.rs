@@ -352,7 +352,7 @@ impl AgentMessageQueueItem {
         Ok(())
     }
 
-    pub async fn recover_stale(pool: &SqlitePool, lease_owner: &str) -> Result<(), sqlx::Error> {
+    pub async fn recover_stale(pool: &SqlitePool, _lease_owner: &str) -> Result<(), sqlx::Error> {
         let now = Utc::now();
         sqlx::query(
             r#"UPDATE agent_message_queue
@@ -363,15 +363,14 @@ impl AgentMessageQueueItem {
         .execute(pool)
         .await?;
         let starting_sql = Self::select_sql(
-            "WHERE status = 'starting' AND lease_owner = ?1 AND lease_expires_at IS NOT NULL AND lease_expires_at < ?2",
+            "WHERE status = 'starting' AND lease_expires_at IS NOT NULL AND lease_expires_at < ?1",
         );
         let starting: Vec<Self> = sqlx::query_as::<_, Self>(&starting_sql)
-            .bind(lease_owner)
             .bind(now)
             .fetch_all(pool)
             .await?;
         for item in starting {
-            match item.started_execution_process_id.and_then(|id| Some(id)) {
+            match item.started_execution_process_id {
                 Some(process_id) => match ExecutionProcess::find_by_id(pool, process_id).await? {
                     Some(process) if process.status == ExecutionProcessStatus::Running => {
                         Self::set_status(pool, item.id, AgentMessageQueueStatus::Running, None)
@@ -754,7 +753,7 @@ mod tests {
         );
 
         sqlx::query(
-            "UPDATE agent_message_queue SET status = 'leased', lease_owner = 'old-owner', lease_expires_at = ?2 WHERE id = ?1",
+            "UPDATE agent_message_queue SET status = 'starting', lease_owner = 'old-owner', lease_expires_at = ?2 WHERE id = ?1",
         )
         .bind(busy.id)
         .bind(Utc::now() - Duration::seconds(1))
