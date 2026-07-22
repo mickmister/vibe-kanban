@@ -316,15 +316,36 @@ impl AgentMessageQueueItem {
     }
 
     pub async fn mark_running(pool: &SqlitePool, id: Uuid) -> Result<(), sqlx::Error> {
-        Self::set_status(pool, id, AgentMessageQueueStatus::Running, None).await
+        Self::set_status_from(
+            pool,
+            id,
+            AgentMessageQueueStatus::Running,
+            None,
+            &["starting"],
+        )
+        .await
     }
 
     pub async fn mark_failed(pool: &SqlitePool, id: Uuid, error: &str) -> Result<(), sqlx::Error> {
-        Self::set_status(pool, id, AgentMessageQueueStatus::Failed, Some(error)).await
+        Self::set_status_from(
+            pool,
+            id,
+            AgentMessageQueueStatus::Failed,
+            Some(error),
+            &["queued", "leased", "starting"],
+        )
+        .await
     }
 
     pub async fn requeue(pool: &SqlitePool, id: Uuid) -> Result<(), sqlx::Error> {
-        Self::set_status(pool, id, AgentMessageQueueStatus::Queued, None).await
+        Self::set_status_from(
+            pool,
+            id,
+            AgentMessageQueueStatus::Queued,
+            None,
+            &["leased", "starting"],
+        )
+        .await
     }
 
     pub async fn mark_terminal_for_execution_process(
@@ -373,7 +394,13 @@ impl AgentMessageQueueItem {
             match item.started_execution_process_id {
                 Some(process_id) => match ExecutionProcess::find_by_id(pool, process_id).await? {
                     Some(process) if process.status == ExecutionProcessStatus::Running => {
-                        Self::set_status(pool, item.id, AgentMessageQueueStatus::Running, None)
+                        Self::set_status_from(
+                            pool,
+                            item.id,
+                            AgentMessageQueueStatus::Running,
+                            None,
+                            &["starting"],
+                        )
                             .await?;
                     }
                     Some(process) => {
@@ -381,12 +408,25 @@ impl AgentMessageQueueItem {
                             .await?
                     }
                     None => {
-                        Self::set_status(pool, item.id, AgentMessageQueueStatus::Queued, None)
+                        Self::set_status_from(
+                            pool,
+                            item.id,
+                            AgentMessageQueueStatus::Queued,
+                            None,
+                            &["starting"],
+                        )
                             .await?
                     }
                 },
                 None => {
-                    Self::set_status(pool, item.id, AgentMessageQueueStatus::Queued, None).await?
+                    Self::set_status_from(
+                        pool,
+                        item.id,
+                        AgentMessageQueueStatus::Queued,
+                        None,
+                        &["starting"],
+                    )
+                    .await?
                 }
             }
         }
@@ -402,10 +442,12 @@ impl AgentMessageQueueItem {
                             .await?
                     }
                     None => {
-                        Self::mark_failed(
+                        Self::set_status_from(
                             pool,
                             item.id,
-                            "execution process missing during queue recovery",
+                            AgentMessageQueueStatus::Failed,
+                            Some("execution process missing during queue recovery"),
+                            &["running"],
                         )
                         .await?
                     }
@@ -415,19 +457,28 @@ impl AgentMessageQueueItem {
         Ok(())
     }
 
-    async fn set_status(
+    async fn set_status_from(
         pool: &SqlitePool,
         id: Uuid,
         status: AgentMessageQueueStatus,
         error: Option<&str>,
+        allowed_current_statuses: &[&str],
     ) -> Result<(), sqlx::Error> {
-        sqlx::query(
+        let allowed = allowed_current_statuses
+            .iter()
+            .map(|status| format!("'{status}'"))
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql = format!(
             r#"UPDATE agent_message_queue
                SET status = ?2, last_error = COALESCE(?3, last_error),
                    lease_owner = CASE WHEN ?2 IN ('queued','completed','failed','cancelled') THEN NULL ELSE lease_owner END,
                    lease_expires_at = CASE WHEN ?2 IN ('queued','completed','failed','cancelled') THEN NULL ELSE lease_expires_at END,
                    updated_at = ?4
-               WHERE id = ?1"#,
+               WHERE id = ?1 AND status IN ({allowed})"#
+        );
+        sqlx::query(
+            &sql,
         )
         .bind(id)
         .bind(status)
@@ -449,6 +500,7 @@ mod tests {
         AgentMessageQueueItem, AgentMessageQueueStatus, AgentMessageSource,
         CreateAgentMessageQueueItem, QueuedFollowUpData,
     };
+    use crate::models::execution_process::ExecutionProcessStatus;
 
     async fn test_pool() -> SqlitePool {
         let pool = SqlitePoolOptions::new()
@@ -702,6 +754,62 @@ mod tests {
             .await
             .unwrap();
         assert!(pending.is_empty());
+    }
+
+    #[tokio::test]
+    async fn cancelled_leased_item_is_not_overwritten_by_lost_lease_failure() {
+        let pool = test_pool().await;
+        let session_id = Uuid::new_v4();
+        let workspace_id = Uuid::new_v4();
+        insert_session(&pool, session_id, workspace_id).await;
+
+        let item = create_item(
+            &pool,
+            session_id,
+            workspace_id,
+            AgentMessageSource::FromUser,
+            None,
+            "cancel me",
+        )
+        .await;
+
+        let leased =
+            AgentMessageQueueItem::lease_next_batch(&pool, "test-owner", 1, Duration::seconds(60))
+                .await
+                .unwrap();
+        assert_eq!(leased[0].id, item.id);
+
+        let cancelled = AgentMessageQueueItem::cancel_by_id(&pool, session_id, item.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(cancelled.status, AgentMessageQueueStatus::Cancelled);
+
+        let mark_starting_won =
+            AgentMessageQueueItem::mark_starting(&pool, item.id, Uuid::new_v4())
+                .await
+                .unwrap();
+        assert!(!mark_starting_won);
+
+        AgentMessageQueueItem::mark_failed(&pool, item.id, "scheduler lost lease")
+            .await
+            .unwrap();
+        AgentMessageQueueItem::requeue(&pool, item.id).await.unwrap();
+        AgentMessageQueueItem::mark_running(&pool, item.id).await.unwrap();
+        AgentMessageQueueItem::mark_terminal_for_execution_process(
+            &pool,
+            Uuid::new_v4(),
+            ExecutionProcessStatus::Completed,
+        )
+        .await
+        .unwrap();
+
+        let after_race = AgentMessageQueueItem::find_by_id(&pool, item.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(after_race.status, AgentMessageQueueStatus::Cancelled);
+        assert!(after_race.last_error.is_none());
     }
 
     #[tokio::test]
