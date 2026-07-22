@@ -338,14 +338,7 @@ impl AgentMessageQueueItem {
     }
 
     pub async fn requeue(pool: &SqlitePool, id: Uuid) -> Result<(), sqlx::Error> {
-        Self::set_status_from(
-            pool,
-            id,
-            AgentMessageQueueStatus::Queued,
-            None,
-            &["leased", "starting"],
-        )
-        .await
+        Self::set_status_from(pool, id, AgentMessageQueueStatus::Queued, None, &["leased"]).await
     }
 
     pub async fn mark_terminal_for_execution_process(

@@ -10,7 +10,7 @@ use async_trait::async_trait;
 use db::{
     DBService,
     models::{
-        agent_message_queue::AgentMessageQueueItem,
+        agent_message_queue::{AgentMessageQueueItem, AgentMessageQueueStatus},
         coding_agent_turn::{CodingAgentTurn, CreateCodingAgentTurn},
         execution_process::{
             CreateExecutionProcess, ExecutionContext, ExecutionProcess, ExecutionProcessError,
@@ -225,7 +225,8 @@ pub trait ContainerService {
                 }
 
                 match self.start_queued_message(queue, &item).await {
-                    Ok(_) => started_any = true,
+                    Ok(Some(_)) => started_any = true,
+                    Ok(None) => {}
                     Err(error) => {
                         let message = error.to_string();
                         tracing::error!(
@@ -248,7 +249,7 @@ pub trait ContainerService {
         &self,
         queue: &QueuedMessageService,
         item: &AgentMessageQueueItem,
-    ) -> Result<ExecutionProcess, ContainerError> {
+    ) -> Result<Option<ExecutionProcess>, ContainerError> {
         let session = Session::find_by_id(&self.db().pool, item.session_id)
             .await?
             .ok_or_else(|| ContainerError::Other(anyhow!("Session not found")))?;
@@ -311,9 +312,20 @@ pub trait ContainerService {
         let action = ExecutorAction::new(action_type, cleanup_action.map(Box::new));
         let process_id = Uuid::new_v4();
         if !queue.mark_starting(item.id, process_id).await? {
-            return Err(ContainerError::Other(anyhow!(
-                "queued message lease lost before start"
-            )));
+            let current = AgentMessageQueueItem::find_by_id(&self.db().pool, item.id).await?;
+            if current
+                .as_ref()
+                .is_some_and(|item| item.status == AgentMessageQueueStatus::Cancelled)
+            {
+                tracing::debug!(queue_item_id = %item.id, "queued message was cancelled before start");
+            } else {
+                tracing::warn!(
+                    queue_item_id = %item.id,
+                    current_status = ?current.map(|item| item.status),
+                    "queued message lease was lost before start"
+                );
+            }
+            return Ok(None);
         }
 
         match self
@@ -328,7 +340,7 @@ pub trait ContainerService {
         {
             Ok(process) => {
                 queue.mark_running(item.id).await?;
-                Ok(process)
+                Ok(Some(process))
             }
             Err(error) => {
                 queue.mark_failed(item.id, &error.to_string()).await?;
