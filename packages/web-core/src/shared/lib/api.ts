@@ -66,6 +66,7 @@ import {
   PushError,
   TokenResponse,
   CurrentUserResponse,
+  QueueMessageResponse,
   QueueStatusSummary,
   PrCommentsResponse,
   MergeWorkspaceRequest,
@@ -1572,7 +1573,8 @@ export const queueApi = {
       method: 'POST',
       body: JSON.stringify(data),
     });
-    return handleApiResponse<QueueStatusSummary>(response);
+    const queueResponse = await handleApiResponse<QueueMessageResponse>(response);
+    return queueResponse.status;
   },
 
   /**

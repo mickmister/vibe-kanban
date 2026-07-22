@@ -92,9 +92,14 @@ struct QueuePromptPayload {
 }
 
 #[derive(Debug, Deserialize)]
+struct QueueMessagePayload {
+    queued_item: QueuedMessagePayload,
+    status: QueueStatusPayload,
+}
+
+#[derive(Debug, Deserialize)]
 struct QueueStatusPayload {
     count: usize,
-    message: Option<QueuedMessagePayload>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -176,6 +181,18 @@ struct GetExecutionResponse {
 
 #[tool_router(router = session_tools_router, vis = "pub")]
 impl McpServer {
+    fn queued_prompt_response(
+        session_id: Uuid,
+        queue_response: QueueMessagePayload,
+    ) -> QueueCodingAgentInSessionResponse {
+        QueueCodingAgentInSessionResponse {
+            session_id: session_id.to_string(),
+            queue_item_id: Some(queue_response.queued_item.id.to_string()),
+            queue_status: Some(queue_response.queued_item.status),
+            queued_count: queue_response.status.count,
+        }
+    }
+
     #[tool(description = "Create a new session in a workspace.")]
     async fn create_session(
         &self,
@@ -323,24 +340,13 @@ impl McpServer {
             source: "workflow",
         };
         let url = self.url(&format!("/api/sessions/{session_id}/queue"));
-        let queue_status: QueueStatusPayload =
+        let queue_response: QueueMessagePayload =
             match self.send_json(self.client.post(&url).json(&payload)).await {
                 Ok(value) => value,
                 Err(error_result) => return Ok(Self::tool_error(error_result)),
             };
 
-        Self::success(&QueueCodingAgentInSessionResponse {
-            session_id: session_id.to_string(),
-            queue_item_id: queue_status
-                .message
-                .as_ref()
-                .map(|message| message.id.to_string()),
-            queue_status: queue_status
-                .message
-                .as_ref()
-                .map(|message| message.status.clone()),
-            queued_count: queue_status.count,
-        })
+        Self::success(&Self::queued_prompt_response(session_id, queue_response))
     }
 
     #[tool(
@@ -444,6 +450,35 @@ impl McpServer {
             execution: execution_process_value,
             final_message: None,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use uuid::Uuid;
+
+    use super::{McpServer, QueueMessagePayload, QueueStatusPayload, QueuedMessagePayload};
+
+    #[test]
+    fn queued_prompt_response_uses_created_item_not_first_pending_message() {
+        let session_id = Uuid::new_v4();
+        let created_item_id = Uuid::new_v4();
+
+        let response = McpServer::queued_prompt_response(
+            session_id,
+            QueueMessagePayload {
+                queued_item: QueuedMessagePayload {
+                    id: created_item_id,
+                    status: "queued".to_string(),
+                },
+                status: QueueStatusPayload { count: 2 },
+            },
+        );
+
+        assert_eq!(response.session_id, session_id.to_string());
+        assert_eq!(response.queue_item_id, Some(created_item_id.to_string()));
+        assert_eq!(response.queue_status, Some("queued".to_string()));
+        assert_eq!(response.queued_count, 2);
     }
 }
 

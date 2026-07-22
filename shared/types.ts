@@ -516,6 +516,8 @@ export type SendMessageShortcut = "ModifierEnter" | "Enter";
 
 export type GitBranch = { name: string, is_current: boolean, is_remote: boolean, last_commit_date: Date, };
 
+export type QueueMessageResponse = { queued_item: AgentMessageQueueItem, status: QueueStatusSummary, };
+
 export type QueueStatusSummary = { status: QueueStatusKind, count: number, messages: Array<AgentMessageQueueItem>, message: AgentMessageQueueItem | null, };
 
 export enum QueueStatusKind { empty = "empty", queued = "queued" }

@@ -190,6 +190,7 @@ fn generate_types_content() -> String {
         services::services::config::ShowcaseState::decl(),
         services::services::config::SendMessageShortcut::decl(),
         git::GitBranch::decl(),
+        server::routes::sessions::queue::QueueMessageResponse::decl(),
         services::services::queued_message::QueueStatus::decl(),
         services::services::queued_message::QueueStatusKind::decl(),
         db::models::agent_message_queue::AgentMessageQueueItem::decl(),

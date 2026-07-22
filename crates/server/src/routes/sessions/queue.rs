@@ -5,9 +5,12 @@ use axum::{
     response::Json as ResponseJson,
     routing::get,
 };
-use db::models::{agent_message_queue::AgentMessageSource, session::Session};
+use db::models::{
+    agent_message_queue::{AgentMessageQueueItem, AgentMessageSource},
+    session::Session,
+};
 use deployment::Deployment;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use services::services::{container::ContainerService, queued_message::QueueStatus};
 use ts_rs::TS;
 use utils::response::ApiResponse;
@@ -24,6 +27,12 @@ pub struct QueueMessageRequest {
     pub priority: Option<i64>,
 }
 
+#[derive(Debug, Serialize, TS)]
+pub struct QueueMessageResponse {
+    pub queued_item: AgentMessageQueueItem,
+    pub status: QueueStatus,
+}
+
 /// Queue-aware guarded follow-up path. The legacy `/follow-up` endpoint remains
 /// immediate-start for compatibility; MCP/VD callers should migrate here when
 /// they want VK scheduler concurrency and workspace-exclusivity guardrails.
@@ -31,12 +40,12 @@ async fn queue_message(
     Extension(session): Extension<Session>,
     State(deployment): State<DeploymentImpl>,
     Json(payload): Json<QueueMessageRequest>,
-) -> Result<ResponseJson<ApiResponse<QueueStatus>>, ApiError> {
+) -> Result<ResponseJson<ApiResponse<QueueMessageResponse>>, ApiError> {
     if let Some(message) = super::invalid_session_command_message(&payload.message) {
         return Err(ApiError::BadRequest(message));
     }
     let session_command = super::parse_session_command(&payload.message);
-    deployment
+    let queued_item = deployment
         .queued_message_service()
         .queue_message(
             &session,
@@ -66,7 +75,15 @@ async fn queue_message(
         tracing::warn!("Failed to pump queued messages after enqueue: {}", e);
     }
 
-    get_queue_status(Extension(session), State(deployment)).await
+    let status = deployment
+        .queued_message_service()
+        .get_status(session.id)
+        .await
+        .map_err(|e| ApiError::BadRequest(e.to_string()))?;
+    Ok(ResponseJson(ApiResponse::success(QueueMessageResponse {
+        queued_item,
+        status,
+    })))
 }
 
 async fn cancel_queued_messages(
