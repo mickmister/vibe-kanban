@@ -56,6 +56,7 @@ interface ConversationListProps {
   repos?: RepoWithTargetBranch[];
   onAtBottomChange?: (atBottom: boolean) => void;
   sessionScopeId?: string;
+  previewMode?: 'workspace' | 'session' | 'disabled';
 }
 
 export interface ConversationListHandle {
@@ -151,7 +152,13 @@ export const ConversationList = forwardRef<
   ConversationListHandle,
   ConversationListProps
 >(function ConversationList(
-  { attempt, repos: reposProp = [], onAtBottomChange, sessionScopeId },
+  {
+    attempt,
+    repos: reposProp = [],
+    onAtBottomChange,
+    sessionScopeId,
+    previewMode = attempt.session ? 'session' : 'workspace',
+  },
   ref
 ) {
   const { t } = useTranslation('common');
@@ -359,6 +366,7 @@ export const ConversationList = forwardRef<
   } = useConversationHistory({
     attempt,
     onTimelineUpdated,
+    previewMode,
     scopeKey: conversationScopeKey,
   });
 

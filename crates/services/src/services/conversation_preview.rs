@@ -4,7 +4,7 @@ use std::{
 };
 
 use chrono::{DateTime, Utc};
-use db::models::{execution_process::ExecutionProcess, session::Session};
+use db::models::{execution_process::ExecutionProcess, session::Session, workspace::Workspace};
 use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, SqlitePool};
 use thiserror::Error;
@@ -23,9 +23,11 @@ pub enum ConversationPreviewError {
     Database(#[from] sqlx::Error),
     #[error("Session not found")]
     SessionNotFound,
+    #[error("Workspace not found")]
+    WorkspaceNotFound,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum ConversationPreviewMessageRole {
     User,
@@ -50,7 +52,7 @@ pub struct ConversationPreview {
     pub warmed_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum ConversationPreviewSource {
     Cache,
@@ -102,8 +104,7 @@ pub struct WarmConversationPreviewResponse {
 struct CachedConversationPreview {
     preview: ConversationPreview,
     max_messages: usize,
-    message_count: usize,
-    latest_activity_at: Option<DateTime<Utc>>,
+    source_fingerprint: PreviewSourceFingerprint,
 }
 
 #[derive(Default)]
@@ -114,8 +115,23 @@ struct ConversationPreviewCache {
 
 struct ComputedConversationPreview {
     preview: ConversationPreview,
-    message_count: usize,
-    latest_activity_at: Option<DateTime<Utc>>,
+    source_fingerprint: PreviewSourceFingerprint,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PreviewSourceFingerprint {
+    context_reset_execution_process_id: Option<Uuid>,
+    turns: Vec<PreviewSourceTurnFingerprint>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PreviewSourceTurnFingerprint {
+    execution_process_id: Uuid,
+    process_created_at: DateTime<Utc>,
+    process_completed_at: Option<DateTime<Utc>>,
+    process_status: String,
+    prompt: Option<String>,
+    summary: Option<String>,
 }
 
 type SharedConversationPreviewCache = Arc<Mutex<ConversationPreviewCache>>;
@@ -169,8 +185,7 @@ impl ConversationPreviewCache {
             CachedConversationPreview {
                 preview: computed.preview,
                 max_messages,
-                message_count: computed.message_count,
-                latest_activity_at: computed.latest_activity_at,
+                source_fingerprint: computed.source_fingerprint,
             },
         );
         self.touch(session_id);
@@ -209,6 +224,33 @@ struct ConversationTurnRow {
     process_status: String,
     prompt: Option<String>,
     summary: Option<String>,
+    context_reset_execution_process_id: Option<Uuid>,
+}
+
+impl From<&ConversationTurnRow> for PreviewSourceTurnFingerprint {
+    fn from(row: &ConversationTurnRow) -> Self {
+        Self {
+            execution_process_id: row.execution_process_id,
+            process_created_at: row.process_created_at,
+            process_completed_at: row.process_completed_at,
+            process_status: row.process_status.clone(),
+            prompt: row.prompt.clone(),
+            summary: row.summary.clone(),
+        }
+    }
+}
+
+fn source_fingerprint_from_rows(
+    context_reset_execution_process_id: Option<Uuid>,
+    rows: &[ConversationTurnRow],
+) -> PreviewSourceFingerprint {
+    PreviewSourceFingerprint {
+        context_reset_execution_process_id,
+        turns: rows
+            .iter()
+            .map(PreviewSourceTurnFingerprint::from)
+            .collect(),
+    }
 }
 
 async fn empty_preview_for_session(
@@ -228,22 +270,24 @@ async fn empty_preview_for_session(
             source: ConversationPreviewSource::Computed,
             warmed_at: Utc::now(),
         },
-        message_count: 0,
-        latest_activity_at: None,
+        source_fingerprint: PreviewSourceFingerprint {
+            context_reset_execution_process_id: session.context_reset_execution_process_id,
+            turns: Vec::new(),
+        },
     })
 }
 
-async fn compute_preview_for_session(
+async fn load_preview_source_rows(
     pool: &SqlitePool,
     session_id: Uuid,
-    limit: usize,
-) -> Result<ComputedConversationPreview, ConversationPreviewError> {
-    let rows = sqlx::query_as::<_, ConversationTurnRow>(
+) -> Result<Vec<ConversationTurnRow>, ConversationPreviewError> {
+    Ok(sqlx::query_as::<_, ConversationTurnRow>(
         r#"
         SELECT *
         FROM (
             SELECT
                 s.workspace_id AS workspace_id,
+                s.context_reset_execution_process_id AS context_reset_execution_process_id,
                 ep.id AS execution_process_id,
                 ep.created_at AS process_created_at,
                 ep.completed_at AS process_completed_at,
@@ -253,8 +297,15 @@ async fn compute_preview_for_session(
             FROM coding_agent_turns cat
             JOIN execution_processes ep ON ep.id = cat.execution_process_id
             JOIN sessions s ON s.id = ep.session_id
+            LEFT JOIN execution_processes reset_ep
+              ON reset_ep.id = s.context_reset_execution_process_id
             WHERE ep.session_id = ?
               AND ep.dropped = FALSE
+              AND (
+                  s.context_reset_execution_process_id IS NULL
+                  OR reset_ep.id IS NULL
+                  OR ep.rowid > reset_ep.rowid
+              )
             ORDER BY ep.created_at DESC
             LIMIT ?
         )
@@ -264,16 +315,27 @@ async fn compute_preview_for_session(
     .bind(session_id)
     .bind(RECENT_TURN_SCAN_LIMIT)
     .fetch_all(pool)
-    .await?;
+    .await?)
+}
+
+async fn compute_preview_for_session(
+    pool: &SqlitePool,
+    session_id: Uuid,
+    limit: usize,
+) -> Result<ComputedConversationPreview, ConversationPreviewError> {
+    let rows = load_preview_source_rows(pool, session_id).await?;
 
     let Some(workspace_id) = rows.first().map(|row| row.workspace_id) else {
         return empty_preview_for_session(pool, session_id).await;
     };
+    let context_reset_execution_process_id = rows
+        .first()
+        .and_then(|row| row.context_reset_execution_process_id);
 
     let has_running_turn = rows.iter().any(|row| row.process_status == "running");
     let mut messages = Vec::new();
 
-    for row in rows {
+    for row in &rows {
         if let Some(prompt) = row.prompt.as_deref().map(str::trim)
             && !prompt.is_empty()
         {
@@ -297,9 +359,6 @@ async fn compute_preview_for_session(
         }
     }
 
-    let message_count = messages.len();
-    let latest_activity_at = messages.iter().map(|message| message.created_at).max();
-
     Ok(ComputedConversationPreview {
         preview: ConversationPreview {
             workspace_id,
@@ -309,56 +368,28 @@ async fn compute_preview_for_session(
             source: ConversationPreviewSource::Computed,
             warmed_at: Utc::now(),
         },
-        message_count,
-        latest_activity_at,
+        source_fingerprint: source_fingerprint_from_rows(context_reset_execution_process_id, &rows),
     })
 }
 
-async fn latest_preview_state(
+async fn latest_preview_fingerprint(
     pool: &SqlitePool,
     session_id: Uuid,
-) -> Result<(usize, Option<DateTime<Utc>>), ConversationPreviewError> {
-    #[derive(FromRow)]
-    struct PreviewStateRow {
-        message_count: i64,
-        latest_activity_at: Option<DateTime<Utc>>,
+) -> Result<PreviewSourceFingerprint, ConversationPreviewError> {
+    let rows = load_preview_source_rows(pool, session_id).await?;
+    if rows.is_empty() {
+        return Ok(empty_preview_for_session(pool, session_id)
+            .await?
+            .source_fingerprint);
     }
 
-    let state = sqlx::query_as::<_, PreviewStateRow>(
-        r#"
-        SELECT
-            COUNT(message_at) AS message_count,
-            MAX(message_at) AS latest_activity_at
-        FROM (
-            SELECT ep.created_at AS message_at
-            FROM coding_agent_turns cat
-            JOIN execution_processes ep ON ep.id = cat.execution_process_id
-            WHERE ep.session_id = ?
-              AND ep.dropped = FALSE
-              AND cat.prompt IS NOT NULL
-              AND trim(cat.prompt) != ''
-
-            UNION ALL
-
-            SELECT COALESCE(ep.completed_at, ep.created_at) AS message_at
-            FROM coding_agent_turns cat
-            JOIN execution_processes ep ON ep.id = cat.execution_process_id
-            WHERE ep.session_id = ?
-              AND ep.dropped = FALSE
-              AND cat.summary IS NOT NULL
-              AND trim(cat.summary) != ''
-            ORDER BY message_at DESC
-            LIMIT ?
-        )
-        "#,
-    )
-    .bind(session_id)
-    .bind(session_id)
-    .bind(RECENT_TURN_SCAN_LIMIT * 2)
-    .fetch_one(pool)
-    .await?;
-
-    Ok((state.message_count as usize, state.latest_activity_at))
+    let context_reset_execution_process_id = rows
+        .first()
+        .and_then(|row| row.context_reset_execution_process_id);
+    Ok(source_fingerprint_from_rows(
+        context_reset_execution_process_id,
+        &rows,
+    ))
 }
 
 pub async fn get_or_compute_preview(
@@ -372,12 +403,7 @@ pub async fn get_or_compute_preview(
         .get_cached(session_id, limit);
 
     if let Some(cached) = cached {
-        let (message_count, latest_activity_at) = latest_preview_state(pool, session_id).await?;
-        let has_same_message_count = message_count == cached.message_count;
-        let has_no_newer_activity = latest_activity_at <= cached.latest_activity_at;
-        let is_still_warm = has_same_message_count && has_no_newer_activity;
-
-        if is_still_warm {
+        if latest_preview_fingerprint(pool, session_id).await? == cached.source_fingerprint {
             return Ok(conversation_preview_cache()
                 .lock()
                 .await
@@ -408,6 +434,10 @@ pub async fn get_workspace_conversation_preview(
     workspace_id: Uuid,
     limit: Option<usize>,
 ) -> Result<ConversationPreview, ConversationPreviewError> {
+    Workspace::find_by_id(pool, workspace_id)
+        .await?
+        .ok_or(ConversationPreviewError::WorkspaceNotFound)?;
+
     let Some(session) = Session::find_latest_by_workspace_id(pool, workspace_id).await? else {
         return Ok(ConversationPreview {
             workspace_id,
@@ -461,6 +491,26 @@ async fn resolve_warm_session_ids(
     let mut errors = Vec::new();
 
     for workspace_id in &request.workspace_ids {
+        match Workspace::find_by_id(pool, *workspace_id).await {
+            Ok(Some(_)) => {}
+            Ok(None) => {
+                errors.push(WarmConversationPreviewError {
+                    workspace_id: Some(*workspace_id),
+                    session_id: None,
+                    message: ConversationPreviewError::WorkspaceNotFound.to_string(),
+                });
+                continue;
+            }
+            Err(error) => {
+                errors.push(WarmConversationPreviewError {
+                    workspace_id: Some(*workspace_id),
+                    session_id: None,
+                    message: format!("Failed to validate workspace: {error}"),
+                });
+                continue;
+            }
+        }
+
         match Session::find_latest_by_workspace_id(pool, *workspace_id).await {
             Ok(Some(session)) => session_ids.push(session.id),
             Ok(None) => empty_workspace_ids.push(*workspace_id),
@@ -473,6 +523,30 @@ async fn resolve_warm_session_ids(
     }
 
     for workspace_sessions in &request.workspace_sessions {
+        let workspace_exists =
+            match Workspace::find_by_id(pool, workspace_sessions.workspace_id).await {
+                Ok(Some(_)) => true,
+                Ok(None) => {
+                    errors.push(WarmConversationPreviewError {
+                        workspace_id: Some(workspace_sessions.workspace_id),
+                        session_id: None,
+                        message: ConversationPreviewError::WorkspaceNotFound.to_string(),
+                    });
+                    false
+                }
+                Err(error) => {
+                    errors.push(WarmConversationPreviewError {
+                        workspace_id: Some(workspace_sessions.workspace_id),
+                        session_id: None,
+                        message: format!("Failed to validate workspace: {error}"),
+                    });
+                    false
+                }
+            };
+        if !workspace_exists {
+            continue;
+        }
+
         for session_id in &workspace_sessions.session_ids {
             push_validated_workspace_session_id(
                 pool,
@@ -581,12 +655,15 @@ pub async fn refresh_execution_process_preview(
 
 #[cfg(test)]
 mod tests {
-    use chrono::Utc;
+    use chrono::{Duration, Utc};
+    use sqlx::{Executor, SqlitePool, sqlite::SqlitePoolOptions};
     use uuid::Uuid;
 
     use super::{
-        ConversationPreviewMessage, ConversationPreviewMessageRole, normalize_limit,
-        take_latest_messages,
+        ConversationPreviewError, ConversationPreviewMessage, ConversationPreviewMessageRole,
+        ConversationPreviewSource, WarmConversationPreviewRequest, get_or_compute_preview,
+        get_workspace_conversation_preview, normalize_limit, take_latest_messages,
+        warm_conversation_previews,
     };
 
     #[test]
@@ -621,5 +698,283 @@ mod tests {
         assert_eq!(normalize_limit(None), 3);
         assert_eq!(normalize_limit(Some(0)), 1);
         assert_eq!(normalize_limit(Some(100)), 50);
+    }
+
+    async fn test_pool() -> SqlitePool {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+
+        pool.execute(
+            r#"CREATE TABLE workspaces (
+                id BLOB PRIMARY KEY,
+                task_id BLOB NULL,
+                container_ref TEXT NULL,
+                branch TEXT NOT NULL,
+                setup_completed_at TEXT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                archived BOOLEAN NOT NULL DEFAULT FALSE,
+                pinned BOOLEAN NOT NULL DEFAULT FALSE,
+                name TEXT NULL,
+                worktree_deleted BOOLEAN NOT NULL DEFAULT FALSE
+            )"#,
+        )
+        .await
+        .unwrap();
+
+        pool.execute(
+            r#"CREATE TABLE workspace_repos (
+                id BLOB PRIMARY KEY,
+                workspace_id BLOB NOT NULL,
+                repo_id BLOB NOT NULL,
+                target_branch TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )"#,
+        )
+        .await
+        .unwrap();
+
+        pool.execute(
+            r#"CREATE TABLE sessions (
+                id BLOB PRIMARY KEY,
+                workspace_id BLOB NOT NULL,
+                name TEXT NULL,
+                executor TEXT NULL,
+                agent_working_dir TEXT NULL,
+                context_reset_execution_process_id BLOB NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )"#,
+        )
+        .await
+        .unwrap();
+
+        pool.execute(
+            r#"CREATE TABLE execution_processes (
+                id BLOB PRIMARY KEY,
+                session_id BLOB NOT NULL,
+                run_reason TEXT NOT NULL,
+                executor_action TEXT NOT NULL,
+                status TEXT NOT NULL,
+                exit_code INTEGER NULL,
+                dropped BOOLEAN NOT NULL DEFAULT FALSE,
+                started_at TEXT NOT NULL,
+                completed_at TEXT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )"#,
+        )
+        .await
+        .unwrap();
+
+        pool.execute(
+            r#"CREATE TABLE coding_agent_turns (
+                id BLOB PRIMARY KEY,
+                execution_process_id BLOB NOT NULL,
+                agent_session_id TEXT NULL,
+                agent_message_id TEXT NULL,
+                prompt TEXT NULL,
+                summary TEXT NULL,
+                seen BOOLEAN NOT NULL DEFAULT FALSE,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )"#,
+        )
+        .await
+        .unwrap();
+
+        pool
+    }
+
+    fn follow_up_action_json(prompt: &str) -> String {
+        serde_json::json!({
+            "typ": {
+                "type": "CodingAgentFollowUpRequest",
+                "prompt": prompt,
+                "session_id": "agent-session",
+                "reset_to_message_id": null,
+                "executor_config": { "executor": "CODEX" },
+                "working_dir": null
+            },
+            "next_action": null
+        })
+        .to_string()
+    }
+
+    async fn insert_workspace(pool: &SqlitePool, id: Uuid) {
+        sqlx::query("INSERT INTO workspaces (id, branch, name) VALUES (?, 'branch', 'workspace')")
+            .bind(id)
+            .execute(pool)
+            .await
+            .unwrap();
+    }
+
+    async fn insert_session(pool: &SqlitePool, id: Uuid, workspace_id: Uuid) {
+        sqlx::query("INSERT INTO sessions (id, workspace_id, executor) VALUES (?, ?, 'CODEX')")
+            .bind(id)
+            .bind(workspace_id)
+            .execute(pool)
+            .await
+            .unwrap();
+    }
+
+    async fn set_context_reset_boundary(pool: &SqlitePool, session_id: Uuid, process_id: Uuid) {
+        sqlx::query("UPDATE sessions SET context_reset_execution_process_id = ? WHERE id = ?")
+            .bind(process_id)
+            .bind(session_id)
+            .execute(pool)
+            .await
+            .unwrap();
+    }
+
+    async fn insert_turn(
+        pool: &SqlitePool,
+        session_id: Uuid,
+        prompt: &str,
+        summary: &str,
+        offset_seconds: i64,
+    ) -> Uuid {
+        let process_id = Uuid::new_v4();
+        let turn_id = Uuid::new_v4();
+        let created_at = Utc::now() + Duration::seconds(offset_seconds);
+        let completed_at = created_at + Duration::seconds(1);
+
+        sqlx::query(
+            r#"INSERT INTO execution_processes (
+                id, session_id, run_reason, executor_action, status, exit_code,
+                dropped, started_at, completed_at, created_at, updated_at
+            ) VALUES (?, ?, 'codingagent', ?, 'completed', 0, FALSE, ?, ?, ?, ?)"#,
+        )
+        .bind(process_id)
+        .bind(session_id)
+        .bind(follow_up_action_json(prompt))
+        .bind(created_at)
+        .bind(completed_at)
+        .bind(created_at)
+        .bind(completed_at)
+        .execute(pool)
+        .await
+        .unwrap();
+
+        sqlx::query(
+            r#"INSERT INTO coding_agent_turns (
+                id, execution_process_id, prompt, summary, seen
+            ) VALUES (?, ?, ?, ?, FALSE)"#,
+        )
+        .bind(turn_id)
+        .bind(process_id)
+        .bind(prompt)
+        .bind(summary)
+        .execute(pool)
+        .await
+        .unwrap();
+
+        process_id
+    }
+
+    #[tokio::test]
+    async fn db_preview_respects_context_reset_boundary() {
+        let pool = test_pool().await;
+        let workspace_id = Uuid::new_v4();
+        let session_id = Uuid::new_v4();
+        insert_workspace(&pool, workspace_id).await;
+        insert_session(&pool, session_id, workspace_id).await;
+
+        insert_turn(&pool, session_id, "before", "old answer", 0).await;
+        let boundary = insert_turn(&pool, session_id, "/clear", "cleared", 10).await;
+        insert_turn(&pool, session_id, "after", "new answer", 20).await;
+        set_context_reset_boundary(&pool, session_id, boundary).await;
+
+        let preview = get_or_compute_preview(&pool, session_id, 10).await.unwrap();
+
+        assert_eq!(
+            preview
+                .messages
+                .iter()
+                .map(|message| message.content.as_str())
+                .collect::<Vec<_>>(),
+            vec!["after", "new answer"]
+        );
+    }
+
+    #[tokio::test]
+    async fn db_cached_preview_recomputes_after_drop_with_same_message_count() {
+        let pool = test_pool().await;
+        let workspace_id = Uuid::new_v4();
+        let session_id = Uuid::new_v4();
+        insert_workspace(&pool, workspace_id).await;
+        insert_session(&pool, session_id, workspace_id).await;
+
+        insert_turn(&pool, session_id, "first", "first answer", 0).await;
+        let second = insert_turn(&pool, session_id, "second", "second answer", 10).await;
+
+        let warm = get_or_compute_preview(&pool, session_id, 2).await.unwrap();
+        assert_eq!(
+            warm.messages
+                .iter()
+                .map(|message| message.content.as_str())
+                .collect::<Vec<_>>(),
+            vec!["second", "second answer"]
+        );
+
+        sqlx::query("UPDATE execution_processes SET dropped = TRUE WHERE id = ?")
+            .bind(second)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let recomputed = get_or_compute_preview(&pool, session_id, 2).await.unwrap();
+        assert_eq!(recomputed.source, ConversationPreviewSource::Computed);
+        assert_eq!(
+            recomputed
+                .messages
+                .iter()
+                .map(|message| message.content.as_str())
+                .collect::<Vec<_>>(),
+            vec!["first", "first answer"]
+        );
+    }
+
+    #[tokio::test]
+    async fn db_workspace_preview_distinguishes_empty_from_nonexistent_workspace() {
+        let pool = test_pool().await;
+        let workspace_id = Uuid::new_v4();
+        insert_workspace(&pool, workspace_id).await;
+
+        let empty_preview = get_workspace_conversation_preview(&pool, workspace_id, None)
+            .await
+            .unwrap();
+        assert_eq!(empty_preview.workspace_id, workspace_id);
+        assert!(empty_preview.session_id.is_none());
+        assert!(empty_preview.messages.is_empty());
+
+        let error = get_workspace_conversation_preview(&pool, Uuid::new_v4(), None)
+            .await
+            .unwrap_err();
+        assert!(matches!(error, ConversationPreviewError::WorkspaceNotFound));
+    }
+
+    #[tokio::test]
+    async fn db_warm_returns_error_for_nonexistent_workspace() {
+        let pool = test_pool().await;
+
+        let response = warm_conversation_previews(
+            &pool,
+            WarmConversationPreviewRequest {
+                workspace_ids: vec![Uuid::new_v4()],
+                session_ids: Vec::new(),
+                workspace_sessions: Vec::new(),
+                message_limit: None,
+            },
+        )
+        .await;
+
+        assert!(response.warmed.is_empty());
+        assert_eq!(response.errors.len(), 1);
+        assert_eq!(response.errors[0].message, "Workspace not found");
     }
 }

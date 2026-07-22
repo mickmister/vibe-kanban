@@ -4,6 +4,7 @@ use axum::{
     response::Json as ResponseJson,
     routing::{get, post},
 };
+use db::models::{session::SessionError, workspace::WorkspaceError};
 use deployment::Deployment;
 use serde::Deserialize;
 use services::services::conversation_preview::{
@@ -25,8 +26,9 @@ pub struct ConversationPreviewQuery {
 fn map_conversation_preview_error(error: ConversationPreviewError) -> ApiError {
     match error {
         ConversationPreviewError::Database(error) => ApiError::Database(error),
-        ConversationPreviewError::SessionNotFound => {
-            ApiError::BadRequest("Session not found".to_string())
+        ConversationPreviewError::SessionNotFound => ApiError::Session(SessionError::NotFound),
+        ConversationPreviewError::WorkspaceNotFound => {
+            ApiError::Workspace(WorkspaceError::WorkspaceNotFound)
         }
     }
 }
