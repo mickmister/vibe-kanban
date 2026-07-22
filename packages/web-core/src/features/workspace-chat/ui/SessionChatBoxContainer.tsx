@@ -899,12 +899,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     if (isScratchLoading || !hasInitialValue) return '';
     if (pendingApproval) return localMessage;
     return localMessage;
-  }, [
-    isScratchLoading,
-    hasInitialValue,
-    pendingApproval,
-    localMessage,
-  ]);
+  }, [isScratchLoading, hasInitialValue, pendingApproval, localMessage]);
 
   const renderEditor = useCallback(
     ({

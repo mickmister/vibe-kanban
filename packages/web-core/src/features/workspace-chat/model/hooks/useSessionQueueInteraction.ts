@@ -1,7 +1,11 @@
 import { useCallback } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { queueApi } from '@/shared/lib/api';
-import type { AgentMessageQueueItem, ExecutorConfig, QueueStatusSummary } from 'shared/types';
+import type {
+  AgentMessageQueueItem,
+  ExecutorConfig,
+  QueueStatusSummary,
+} from 'shared/types';
 
 interface UseSessionQueueInteractionOptions {
   /** Session ID for queue operations */
@@ -40,18 +44,24 @@ export function useSessionQueueInteraction({
 }: UseSessionQueueInteractionOptions): UseSessionQueueInteractionResult {
   const queryClient = useQueryClient();
 
-  const { data: queueStatus = { status: 'empty' as const, count: 0, messages: [] }, refetch } =
-    useQuery<QueueStatusSummary>({
-      queryKey: [QUEUE_STATUS_KEY, sessionId],
-      queryFn: () => queueApi.getStatus(sessionId!),
-      enabled: !!sessionId,
-    });
+  const {
+    data: queueStatus = { status: 'empty' as const, count: 0, messages: [] },
+    refetch,
+  } = useQuery<QueueStatusSummary>({
+    queryKey: [QUEUE_STATUS_KEY, sessionId],
+    queryFn: () => queueApi.getStatus(sessionId!),
+    enabled: !!sessionId,
+  });
 
   const queuedMessages = 'messages' in queueStatus ? queueStatus.messages : [];
-  const queuedCount = 'count' in queueStatus ? queueStatus.count : queuedMessages.length;
+  const queuedCount =
+    'count' in queueStatus ? queueStatus.count : queuedMessages.length;
   const isQueued = queueStatus.status === 'queued' && queuedCount > 0;
-  const queuedMessageData = queuedMessages[0] ??
-    (queueStatus.status === 'queued' && 'message' in queueStatus ? queueStatus.message : null);
+  const queuedMessageData =
+    queuedMessages[0] ??
+    (queueStatus.status === 'queued' && 'message' in queueStatus
+      ? queueStatus.message
+      : null);
   const queuedMessage = queuedMessageData?.data.message ?? null;
   const queuedConfig: ExecutorConfig | null = null;
 

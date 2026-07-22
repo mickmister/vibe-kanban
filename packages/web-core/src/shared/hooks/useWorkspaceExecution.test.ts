@@ -34,15 +34,33 @@ describe('getStoppableExecutionProcesses', () => {
     const processes = [
       process('running-agent', 'codingagent', ExecutionProcessStatus.running),
       process('running-setup', 'setupscript', ExecutionProcessStatus.running),
-      process('running-cleanup', 'cleanupscript', ExecutionProcessStatus.running),
-      process('running-archive', 'archivescript', ExecutionProcessStatus.running),
-      process('running-dev-server', 'devserver', ExecutionProcessStatus.running),
-      process('completed-agent', 'codingagent', ExecutionProcessStatus.completed),
+      process(
+        'running-cleanup',
+        'cleanupscript',
+        ExecutionProcessStatus.running
+      ),
+      process(
+        'running-archive',
+        'archivescript',
+        ExecutionProcessStatus.running
+      ),
+      process(
+        'running-dev-server',
+        'devserver',
+        ExecutionProcessStatus.running
+      ),
+      process(
+        'completed-agent',
+        'codingagent',
+        ExecutionProcessStatus.completed
+      ),
       process('failed-agent', 'codingagent', ExecutionProcessStatus.failed),
       process('killed-agent', 'codingagent', ExecutionProcessStatus.killed),
     ];
 
-    expect(getStoppableExecutionProcesses(processes).map(({ id }) => id)).toEqual([
+    expect(
+      getStoppableExecutionProcesses(processes).map(({ id }) => id)
+    ).toEqual([
       'running-agent',
       'running-setup',
       'running-cleanup',
