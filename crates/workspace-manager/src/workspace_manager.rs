@@ -819,9 +819,10 @@ mod tests {
             error,
             WorkspaceError::RepoNameAlreadyAttached { repo_name } if repo_name == "same-name"
         ));
-        let attached = WorkspaceRepo::find_by_workspace_id(&db.pool, managed_workspace.workspace.id)
-            .await
-            .unwrap();
+        let attached =
+            WorkspaceRepo::find_by_workspace_id(&db.pool, managed_workspace.workspace.id)
+                .await
+                .unwrap();
         assert_eq!(attached.len(), 1);
         assert_eq!(attached[0].repo_id, first_repo.id);
     }
@@ -875,9 +876,10 @@ mod tests {
             error,
             WorkspaceError::RepoNameAlreadyAttached { repo_name } if repo_name == "same-name"
         ));
-        let attached = WorkspaceRepo::find_by_workspace_id(&db.pool, managed_workspace.workspace.id)
-            .await
-            .unwrap();
+        let attached =
+            WorkspaceRepo::find_by_workspace_id(&db.pool, managed_workspace.workspace.id)
+                .await
+                .unwrap();
         assert_eq!(attached.len(), 1);
         assert_eq!(attached[0].repo_id, first_repo.id);
     }

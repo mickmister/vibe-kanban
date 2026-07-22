@@ -384,7 +384,6 @@ pub async fn create_and_start_workspace(
 #[cfg(test)]
 mod tests {
     use chrono::Utc;
-    use crate::error::ApiError;
     use db::models::file::File;
     use uuid::Uuid;
 
@@ -392,6 +391,7 @@ mod tests {
         ImportedIssueAttachment, repo_name_collision_key,
         rewrite_imported_issue_attachments_markdown, validate_unique_workspace_repo_identity,
     };
+    use crate::error::ApiError;
 
     fn imported_file(
         attachment_id: Uuid,

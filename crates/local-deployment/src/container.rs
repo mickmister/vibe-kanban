@@ -150,10 +150,12 @@ impl LocalContainerService {
             WorkspaceError::RepoAlreadyAttached => {
                 ContainerError::Other(anyhow!("Repository already attached to workspace"))
             }
-            WorkspaceError::RepoNameAlreadyAttached { repo_name } => ContainerError::Other(anyhow!(
-                "Repository name '{}' is already attached to workspace",
-                repo_name
-            )),
+            WorkspaceError::RepoNameAlreadyAttached { repo_name } => {
+                ContainerError::Other(anyhow!(
+                    "Repository name '{}' is already attached to workspace",
+                    repo_name
+                ))
+            }
             WorkspaceError::BranchNotFound { repo_name, branch } => ContainerError::Other(anyhow!(
                 "Branch '{}' does not exist in repository '{}'",
                 branch,
