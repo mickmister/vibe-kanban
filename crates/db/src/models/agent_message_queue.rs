@@ -401,7 +401,7 @@ impl AgentMessageQueueItem {
                             None,
                             &["starting"],
                         )
-                            .await?;
+                        .await?;
                     }
                     Some(process) => {
                         Self::mark_terminal_for_execution_process(pool, process.id, process.status)
@@ -415,7 +415,7 @@ impl AgentMessageQueueItem {
                             None,
                             &["starting"],
                         )
-                            .await?
+                        .await?
                     }
                 },
                 None => {
@@ -477,15 +477,13 @@ impl AgentMessageQueueItem {
                    updated_at = ?4
                WHERE id = ?1 AND status IN ({allowed})"#
         );
-        sqlx::query(
-            &sql,
-        )
-        .bind(id)
-        .bind(status)
-        .bind(error)
-        .bind(Utc::now())
-        .execute(pool)
-        .await?;
+        sqlx::query(&sql)
+            .bind(id)
+            .bind(status)
+            .bind(error)
+            .bind(Utc::now())
+            .execute(pool)
+            .await?;
         Ok(())
     }
 }
@@ -794,8 +792,12 @@ mod tests {
         AgentMessageQueueItem::mark_failed(&pool, item.id, "scheduler lost lease")
             .await
             .unwrap();
-        AgentMessageQueueItem::requeue(&pool, item.id).await.unwrap();
-        AgentMessageQueueItem::mark_running(&pool, item.id).await.unwrap();
+        AgentMessageQueueItem::requeue(&pool, item.id)
+            .await
+            .unwrap();
+        AgentMessageQueueItem::mark_running(&pool, item.id)
+            .await
+            .unwrap();
         AgentMessageQueueItem::mark_terminal_for_execution_process(
             &pool,
             Uuid::new_v4(),
