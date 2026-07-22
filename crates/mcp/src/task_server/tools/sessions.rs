@@ -77,6 +77,40 @@ struct RunCodingAgentInSessionRequest {
     prompt: String,
 }
 
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct QueueCodingAgentInSessionRequest {
+    #[schemars(description = "Session ID to queue the coding agent prompt in")]
+    session_id: Uuid,
+    #[schemars(description = "Prompt for the coding agent. This uses VK's guarded queue path.")]
+    prompt: String,
+}
+
+#[derive(Debug, Serialize)]
+struct QueuePromptPayload {
+    message: String,
+    source: &'static str,
+}
+
+#[derive(Debug, Deserialize)]
+struct QueueStatusPayload {
+    count: usize,
+    message: Option<QueuedMessagePayload>,
+}
+
+#[derive(Debug, Deserialize)]
+struct QueuedMessagePayload {
+    id: Uuid,
+    status: String,
+}
+
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+struct QueueCodingAgentInSessionResponse {
+    session_id: String,
+    queue_item_id: Option<String>,
+    queue_status: Option<String>,
+    queued_count: usize,
+}
+
 #[derive(Debug, Serialize)]
 struct FollowUpPayload {
     prompt: String,
@@ -249,6 +283,63 @@ impl McpServer {
             success: true,
             session_id: updated.id.to_string(),
             name: updated.name,
+        })
+    }
+
+    #[tool(
+        description = "Queue a coding agent turn in an existing session using VK's guarded scheduler queue. Prefer this for workflow/agent-to-agent traffic."
+    )]
+    async fn queue_session_prompt(
+        &self,
+        Parameters(QueueCodingAgentInSessionRequest { session_id, prompt }): Parameters<
+            QueueCodingAgentInSessionRequest,
+        >,
+    ) -> Result<CallToolResult, ErrorData> {
+        let prompt = prompt.trim();
+        if prompt.is_empty() {
+            return Self::err("prompt must not be empty", None);
+        }
+
+        let session_url = self.url(&format!("/api/sessions/{session_id}"));
+        let session: Session = match self.send_json(self.client.get(&session_url)).await {
+            Ok(value) => value,
+            Err(error_result) => return Ok(Self::tool_error(error_result)),
+        };
+        if let Err(error_result) = self.scope_allows_workspace(session.workspace_id) {
+            return Ok(Self::tool_error(error_result));
+        }
+        if self.orchestrator_session_id() == Some(session_id) {
+            return Self::err(
+                "Cannot queue coding agent in the orchestrator session".to_string(),
+                Some(
+                    "Create or re-use a different session and queue the coding agent there."
+                        .to_string(),
+                ),
+            );
+        }
+
+        let payload = QueuePromptPayload {
+            message: prompt.to_string(),
+            source: "workflow",
+        };
+        let url = self.url(&format!("/api/sessions/{session_id}/queue"));
+        let queue_status: QueueStatusPayload =
+            match self.send_json(self.client.post(&url).json(&payload)).await {
+                Ok(value) => value,
+                Err(error_result) => return Ok(Self::tool_error(error_result)),
+            };
+
+        Self::success(&QueueCodingAgentInSessionResponse {
+            session_id: session_id.to_string(),
+            queue_item_id: queue_status
+                .message
+                .as_ref()
+                .map(|message| message.id.to_string()),
+            queue_status: queue_status
+                .message
+                .as_ref()
+                .map(|message| message.status.clone()),
+            queued_count: queue_status.count,
         })
     }
 
