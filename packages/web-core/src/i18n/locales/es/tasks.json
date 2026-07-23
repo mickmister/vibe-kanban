@@ -6,7 +6,8 @@
   "gitPanel": {
     "advanced": {
       "placeholder": "ej. acme Corp"
-    }
+    },
+    "addRepo": "Agregar repositorio"
   },
   "actions": {
     "addTask": "Agregar tarea"

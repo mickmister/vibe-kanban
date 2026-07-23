@@ -6,7 +6,8 @@
   "gitPanel": {
     "advanced": {
       "placeholder": "例如：Acme Corp"
-    }
+    },
+    "addRepo": "添加仓库"
   },
   "loading": "加载任务中...",
   "actions": {

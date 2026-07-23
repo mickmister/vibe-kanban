@@ -6,7 +6,8 @@
   "gitPanel": {
     "advanced": {
       "placeholder": "ex: Acme Corp"
-    }
+    },
+    "addRepo": "Ajouter un dépôt"
   },
   "loading": "Chargement des tâches...",
   "actions": {
