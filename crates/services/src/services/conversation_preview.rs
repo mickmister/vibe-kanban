@@ -402,13 +402,13 @@ pub async fn get_or_compute_preview(
         .await
         .get_cached(session_id, limit);
 
-    if let Some(cached) = cached {
-        if latest_preview_fingerprint(pool, session_id).await? == cached.source_fingerprint {
-            return Ok(conversation_preview_cache()
-                .lock()
-                .await
-                .touch_cached_preview(session_id, cached, limit));
-        }
+    if let Some(cached) = cached
+        && latest_preview_fingerprint(pool, session_id).await? == cached.source_fingerprint
+    {
+        return Ok(conversation_preview_cache()
+            .lock()
+            .await
+            .touch_cached_preview(session_id, cached, limit));
     }
 
     let computed = compute_preview_for_session(pool, session_id, limit).await?;
