@@ -264,8 +264,14 @@ jobs:
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
         run: |
-          sudo apt-get update
-          DEBIAN_FRONTEND=noninteractive sudo apt-get install -y \
+          sudo apt-get \
+            -o Acquire::Retries=5 \
+            -o Acquire::ForceIPv4=true \
+            update
+          DEBIAN_FRONTEND=noninteractive sudo apt-get \
+            -o Acquire::Retries=5 \
+            -o Acquire::ForceIPv4=true \
+            install -y --fix-missing \
             clang libclang-dev lld llvm nasm cmake ninja-build
 
       - name: Install Zig
@@ -299,6 +305,7 @@ jobs:
           VK_SHARED_API_BASE: ${{ secrets.VK_SHARED_API_BASE }}
           VK_SHARED_RELAY_API_BASE: ${{ secrets.VK_SHARED_RELAY_API_BASE }}
           SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+          VK_BUILD_COMMIT_HASH: ${{ needs.prepare.outputs.vk_sha }}
 
       - name: Build macOS runtime binary
         if: runner.os == 'macOS'
@@ -312,6 +319,7 @@ jobs:
           VK_SHARED_API_BASE: ${{ secrets.VK_SHARED_API_BASE }}
           VK_SHARED_RELAY_API_BASE: ${{ secrets.VK_SHARED_RELAY_API_BASE }}
           SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+          VK_BUILD_COMMIT_HASH: ${{ needs.prepare.outputs.vk_sha }}
 
       - name: Prepare package directory
         run: |

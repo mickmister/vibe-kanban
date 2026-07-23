@@ -70,6 +70,10 @@ import { useAppNavigation } from '@/shared/hooks/useAppNavigation';
 import { sessionsApi } from '@/shared/lib/api';
 import { RenameSessionDialog } from '@vibe/ui/components/RenameSessionDialog';
 import type { TurnNavigationItem } from '@vibe/ui/components/TurnNavigationPopup';
+import {
+  isMobilePerfDiagnosticsEnabled,
+  recordMobilePerfDiagnostic,
+} from '@/shared/lib/mobilePerfDiagnostics';
 
 /** Compute execution status from boolean flags */
 function computeExecutionStatus(params: {
@@ -181,6 +185,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     mode === 'existing-session' ? props.onStartNewSession : undefined;
 
   const sessionId = session?.id;
+  const lastComposerDiagnosticAtRef = useRef(0);
   const queryClient = useQueryClient();
   const hostId = useHostId();
 
@@ -519,6 +524,16 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
       reviewMarkdown,
     ]);
 
+    recordMobilePerfDiagnostic('composer.send', {
+      has_workspace: !!workspaceId,
+      has_session: !!sessionId,
+      mode,
+      prompt_length: prompt.length,
+      has_review_markdown: reviewMarkdown.length > 0,
+      attachment_count: localAttachments.length,
+      is_slash_command: isSlashCommand,
+    });
+
     onScrollToBottom('auto');
 
     const success = await send(prompt);
@@ -548,6 +563,10 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     clearUploadedAttachments,
     deleteDraftScratch,
     reviewContext,
+    workspaceId,
+    sessionId,
+    mode,
+    localAttachments.length,
   ]);
 
   // Track previous process count for queue refresh
@@ -604,6 +623,21 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
   // Editor change handler
   const handleEditorChange = useCallback(
     (value: string) => {
+      if (isMobilePerfDiagnosticsEnabled()) {
+        const now = performance.now();
+        if (now - lastComposerDiagnosticAtRef.current > 1000) {
+          lastComposerDiagnosticAtRef.current = now;
+          recordMobilePerfDiagnostic('composer.change', {
+            has_workspace: !!workspaceId,
+            has_session: !!sessionId,
+            mode,
+            value_length: value.length,
+            newline_count: (value.match(/\n/g) ?? []).length,
+            queued: isQueued,
+            has_executor_config: !!executorConfig,
+          });
+        }
+      }
       if (isQueued) cancelQueue();
       if (executorConfig) {
         handleMessageChange(value, executorConfig);
@@ -620,6 +654,9 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
       sendError,
       clearError,
       setLocalMessage,
+      workspaceId,
+      sessionId,
+      mode,
     ]
   );
 
