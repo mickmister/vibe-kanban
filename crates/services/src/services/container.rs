@@ -629,6 +629,93 @@ pub trait ContainerService {
         chained
     }
 
+    async fn stop_running_processes_for_session(
+        &self,
+        session_id: Uuid,
+        include_dev_server: bool,
+    ) -> Result<Vec<Uuid>, ContainerError> {
+        let processes =
+            ExecutionProcess::find_by_session_id(&self.db().pool, session_id, false).await?;
+        let mut stopped_processes = Vec::new();
+
+        for process in processes {
+            // Skip dev server processes unless explicitly included.
+            if !include_dev_server && process.run_reason == ExecutionProcessRunReason::DevServer {
+                continue;
+            }
+            if process.status == ExecutionProcessStatus::Running {
+                let process_id = process.id;
+                self.stop_execution(&process, ExecutionProcessStatus::Killed)
+                    .await
+                    .map_err(|e| {
+                        tracing::debug!(
+                            "Failed to stop execution process {} for session {}: {}",
+                            process_id,
+                            session_id,
+                            e
+                        );
+                        e
+                    })?;
+                stopped_processes.push(process_id);
+            }
+        }
+
+        Ok(stopped_processes)
+    }
+
+    async fn running_non_dev_server_processes_for_other_sessions(
+        &self,
+        workspace_id: Uuid,
+        target_session_id: Uuid,
+    ) -> Result<Vec<ExecutionProcess>, ContainerError> {
+        let sessions = Session::find_by_workspace_id(&self.db().pool, workspace_id).await?;
+        let mut running_processes = Vec::new();
+
+        for session in sessions {
+            if session.id == target_session_id {
+                continue;
+            }
+
+            let processes =
+                ExecutionProcess::find_by_session_id(&self.db().pool, session.id, false).await?;
+            running_processes.extend(processes.into_iter().filter(|process| {
+                process.status == ExecutionProcessStatus::Running
+                    && process.run_reason != ExecutionProcessRunReason::DevServer
+            }));
+        }
+
+        Ok(running_processes)
+    }
+
+    async fn stop_running_processes_for_other_sessions(
+        &self,
+        workspace_id: Uuid,
+        target_session_id: Uuid,
+    ) -> Result<Vec<Uuid>, ContainerError> {
+        let sibling_processes = self
+            .running_non_dev_server_processes_for_other_sessions(workspace_id, target_session_id)
+            .await?;
+        let mut stopped_processes = Vec::new();
+
+        for process in sibling_processes {
+            let process_id = process.id;
+            self.stop_execution(&process, ExecutionProcessStatus::Killed)
+                .await
+                .map_err(|e| {
+                    tracing::debug!(
+                        "Failed to stop sibling execution process {} for workspace {}: {}",
+                        process_id,
+                        workspace_id,
+                        e
+                    );
+                    e
+                })?;
+            stopped_processes.push(process_id);
+        }
+
+        Ok(stopped_processes)
+    }
+
     /// Reset a session to a specific process: restore worktrees, stop processes, drop later processes.
     async fn reset_session_to_process(
         &self,
@@ -636,6 +723,7 @@ pub trait ContainerService {
         target_process_id: Uuid,
         perform_git_reset: bool,
         force_when_dirty: bool,
+        stop_other_sessions_for_git_reset: bool,
     ) -> Result<(), ContainerError> {
         let pool = &self.db().pool;
 
@@ -654,6 +742,23 @@ pub trait ContainerService {
         let workspace = Workspace::find_by_id(pool, session.workspace_id)
             .await?
             .ok_or_else(|| ContainerError::Other(anyhow!("Workspace not found")))?;
+
+        if perform_git_reset {
+            let sibling_running_processes = self
+                .running_non_dev_server_processes_for_other_sessions(workspace.id, session_id)
+                .await?;
+
+            if !sibling_running_processes.is_empty() {
+                if stop_other_sessions_for_git_reset {
+                    self.stop_running_processes_for_other_sessions(workspace.id, session_id)
+                        .await?;
+                } else {
+                    return Err(ContainerError::Other(anyhow!(
+                        "Cannot reset worktree while another session is running. Retry without worktree reset, or choose the option to stop other running sessions before resetting."
+                    )));
+                }
+            }
+        }
 
         let repos = WorkspaceRepo::find_repos_for_workspace(pool, workspace.id).await?;
         let repo_states =
@@ -698,28 +803,8 @@ pub trait ContainerService {
             }
         }
 
-        if let Ok(processes) =
-            ExecutionProcess::find_by_session_id(pool, session_id, false).await
-        {
-            for process in processes {
-                // Skip dev server processes; retries should only cancel work for this session.
-                if process.run_reason == ExecutionProcessRunReason::DevServer {
-                    continue;
-                }
-                if process.status == ExecutionProcessStatus::Running {
-                    self.stop_execution(&process, ExecutionProcessStatus::Killed)
-                        .await
-                        .unwrap_or_else(|e| {
-                            tracing::debug!(
-                                "Failed to stop execution process {} for session {}: {}",
-                                process.id,
-                                session_id,
-                                e
-                            );
-                        });
-                }
-            }
-        }
+        self.stop_running_processes_for_session(session_id, false)
+            .await?;
         ExecutionProcess::drop_at_and_after(pool, session_id, target_process_id).await?;
 
         Ok(())
@@ -733,30 +818,9 @@ pub trait ContainerService {
         };
 
         for session in sessions {
-            if let Ok(processes) =
-                ExecutionProcess::find_by_session_id(&self.db().pool, session.id, false).await
-            {
-                for process in processes {
-                    // Skip dev server processes unless explicitly included
-                    if !include_dev_server
-                        && process.run_reason == ExecutionProcessRunReason::DevServer
-                    {
-                        continue;
-                    }
-                    if process.status == ExecutionProcessStatus::Running {
-                        self.stop_execution(&process, ExecutionProcessStatus::Killed)
-                            .await
-                            .unwrap_or_else(|e| {
-                                tracing::debug!(
-                                    "Failed to stop execution process {} for workspace {}: {}",
-                                    process.id,
-                                    workspace.id,
-                                    e
-                                );
-                            });
-                    }
-                }
-            }
+            let _ = self
+                .stop_running_processes_for_session(session.id, include_dev_server)
+                .await;
         }
     }
 
@@ -1524,17 +1588,15 @@ mod tests {
                 .lock()
                 .await
                 .push(execution_process.id);
-            ExecutionProcess::update_completion(
-                &self.db.pool,
-                execution_process.id,
-                status,
-                None,
-            )
-            .await?;
+            ExecutionProcess::update_completion(&self.db.pool, execution_process.id, status, None)
+                .await?;
             Ok(())
         }
 
-        async fn try_commit_changes(&self, _ctx: &ExecutionContext) -> Result<bool, ContainerError> {
+        async fn try_commit_changes(
+            &self,
+            _ctx: &ExecutionContext,
+        ) -> Result<bool, ContainerError> {
             Ok(false)
         }
 
@@ -1576,10 +1638,7 @@ mod tests {
         Ok((temp_dir, pool))
     }
 
-    async fn insert_workspace(
-        pool: &SqlitePool,
-        container_ref: &str,
-    ) -> Result<Uuid, sqlx::Error> {
+    async fn insert_workspace(pool: &SqlitePool, container_ref: &str) -> Result<Uuid, sqlx::Error> {
         let workspace_id = Uuid::new_v4();
         sqlx::query("INSERT INTO workspaces (id, branch, container_ref) VALUES (?1, ?2, ?3)")
             .bind(workspace_id)
@@ -1617,9 +1676,18 @@ mod tests {
         Ok(process_id)
     }
 
-    #[tokio::test]
-    async fn reset_session_to_process_stops_only_processes_in_target_session(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    struct TwoSessionResetFixture {
+        _temp_dir: tempfile::TempDir,
+        pool: SqlitePool,
+        service: TestContainerService,
+        session_a_id: Uuid,
+        target_process_id: Uuid,
+        session_a_running_process_id: Uuid,
+        session_b_running_process_id: Uuid,
+    }
+
+    async fn two_session_reset_fixture()
+    -> Result<TwoSessionResetFixture, Box<dyn std::error::Error>> {
         let (temp_dir, pool) = test_pool().await?;
         let workspace_id =
             insert_workspace(&pool, temp_dir.path().to_string_lossy().as_ref()).await?;
@@ -1645,7 +1713,7 @@ mod tests {
         .await?;
 
         let now = chrono::Utc::now();
-        let target_process = insert_process(
+        let target_process_id = insert_process(
             &pool,
             session_a.id,
             ExecutionProcessRunReason::CodingAgent,
@@ -1653,7 +1721,7 @@ mod tests {
             now,
         )
         .await?;
-        let session_a_running_process = insert_process(
+        let session_a_running_process_id = insert_process(
             &pool,
             session_a.id,
             ExecutionProcessRunReason::CodingAgent,
@@ -1661,7 +1729,7 @@ mod tests {
             now + chrono::Duration::milliseconds(1),
         )
         .await?;
-        let session_b_running_process = insert_process(
+        let session_b_running_process_id = insert_process(
             &pool,
             session_b.id,
             ExecutionProcessRunReason::CodingAgent,
@@ -1675,25 +1743,134 @@ mod tests {
             temp_dir.path().to_string_lossy().to_string(),
         );
 
-        service
-            .reset_session_to_process(session_a.id, target_process, false, false)
+        Ok(TwoSessionResetFixture {
+            _temp_dir: temp_dir,
+            pool,
+            service,
+            session_a_id: session_a.id,
+            target_process_id,
+            session_a_running_process_id,
+            session_b_running_process_id,
+        })
+    }
+
+    #[tokio::test]
+    async fn reset_session_to_process_stops_only_processes_in_target_session()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let fixture = two_session_reset_fixture().await?;
+
+        fixture
+            .service
+            .reset_session_to_process(
+                fixture.session_a_id,
+                fixture.target_process_id,
+                false,
+                false,
+                false,
+            )
             .await?;
 
         assert_eq!(
-            service.stopped_processes().await,
-            vec![session_a_running_process]
+            fixture.service.stopped_processes().await,
+            vec![fixture.session_a_running_process_id]
         );
 
-        let session_a_process = ExecutionProcess::find_by_id(&pool, session_a_running_process)
-            .await?
-            .expect("session A running process should still exist");
+        let session_a_process =
+            ExecutionProcess::find_by_id(&fixture.pool, fixture.session_a_running_process_id)
+                .await?
+                .expect("session A running process should still exist");
         assert_eq!(session_a_process.status, ExecutionProcessStatus::Killed);
         assert!(session_a_process.dropped);
 
-        let session_b_process = ExecutionProcess::find_by_id(&pool, session_b_running_process)
-            .await?
-            .expect("session B running process should still exist");
+        let session_b_process =
+            ExecutionProcess::find_by_id(&fixture.pool, fixture.session_b_running_process_id)
+                .await?
+                .expect("session B running process should still exist");
         assert_eq!(session_b_process.status, ExecutionProcessStatus::Running);
+        assert!(!session_b_process.dropped);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn reset_session_to_process_rejects_git_reset_while_other_session_runs_without_override()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let fixture = two_session_reset_fixture().await?;
+
+        let err = fixture
+            .service
+            .reset_session_to_process(
+                fixture.session_a_id,
+                fixture.target_process_id,
+                true,
+                false,
+                false,
+            )
+            .await
+            .expect_err("git reset should be rejected while another session is running");
+
+        assert!(
+            err.to_string()
+                .contains("Cannot reset worktree while another session is running")
+        );
+        assert_eq!(
+            fixture.service.stopped_processes().await,
+            Vec::<Uuid>::new()
+        );
+
+        let session_a_process =
+            ExecutionProcess::find_by_id(&fixture.pool, fixture.session_a_running_process_id)
+                .await?
+                .expect("session A running process should still exist");
+        assert_eq!(session_a_process.status, ExecutionProcessStatus::Running);
+        assert!(!session_a_process.dropped);
+
+        let session_b_process =
+            ExecutionProcess::find_by_id(&fixture.pool, fixture.session_b_running_process_id)
+                .await?
+                .expect("session B running process should still exist");
+        assert_eq!(session_b_process.status, ExecutionProcessStatus::Running);
+        assert!(!session_b_process.dropped);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn reset_session_to_process_stops_other_session_when_git_reset_override_is_enabled()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let fixture = two_session_reset_fixture().await?;
+
+        fixture
+            .service
+            .reset_session_to_process(
+                fixture.session_a_id,
+                fixture.target_process_id,
+                true,
+                false,
+                true,
+            )
+            .await?;
+
+        assert_eq!(
+            fixture.service.stopped_processes().await,
+            vec![
+                fixture.session_b_running_process_id,
+                fixture.session_a_running_process_id,
+            ]
+        );
+
+        let session_a_process =
+            ExecutionProcess::find_by_id(&fixture.pool, fixture.session_a_running_process_id)
+                .await?
+                .expect("session A running process should still exist");
+        assert_eq!(session_a_process.status, ExecutionProcessStatus::Killed);
+        assert!(session_a_process.dropped);
+
+        let session_b_process =
+            ExecutionProcess::find_by_id(&fixture.pool, fixture.session_b_running_process_id)
+                .await?
+                .expect("session B running process should still exist");
+        assert_eq!(session_b_process.status, ExecutionProcessStatus::Killed);
         assert!(!session_b_process.dropped);
 
         Ok(())

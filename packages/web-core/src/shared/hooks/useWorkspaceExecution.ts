@@ -4,23 +4,10 @@ import {
   useMutationState,
   useQueries,
 } from '@tanstack/react-query';
-import { executionProcessesApi } from '@/shared/lib/api';
+import { executionProcessesApi, sessionsApi } from '@/shared/lib/api';
 import { useExecutionProcessesContext } from '@/shared/hooks/useExecutionProcessesContext';
 import type { AttemptData } from '@/shared/lib/types';
 import type { ExecutionProcess } from 'shared/types';
-
-export function getStoppableExecutionProcesses(
-  executionProcesses: ExecutionProcess[]
-) {
-  return executionProcesses.filter(
-    (process) =>
-      process.status === 'running' &&
-      (process.run_reason === 'codingagent' ||
-        process.run_reason === 'setupscript' ||
-        process.run_reason === 'cleanupscript' ||
-        process.run_reason === 'archivescript')
-  );
-}
 
 export function getStopExecutionMutationKey(
   workspaceId: string | undefined,
@@ -44,13 +31,9 @@ export function useWorkspaceExecution(workspaceId?: string) {
 
   const stopMutation = useMutation({
     mutationKey: stopMutationKey,
-    mutationFn: async (processesToStop: ExecutionProcess[]) => {
-      if (!workspaceId) return;
-      await Promise.all(
-        getStoppableExecutionProcesses(processesToStop).map((process) =>
-          executionProcessesApi.stopExecutionProcess(process.id)
-        )
-      );
+    mutationFn: async () => {
+      if (!workspaceId || !sessionId) return;
+      await sessionsApi.stopExecution(sessionId);
     },
   });
 
@@ -103,12 +86,12 @@ export function useWorkspaceExecution(workspaceId?: string) {
     if (!workspaceId || isStopping) return;
 
     try {
-      await stopMutation.mutateAsync(executionProcesses);
+      await stopMutation.mutateAsync();
     } catch (error) {
       console.error('Failed to stop executions:', error);
       throw error;
     }
-  }, [workspaceId, isStopping, stopMutation, executionProcesses]);
+  }, [workspaceId, isStopping, stopMutation]);
 
   const isLoading =
     streamLoading || processDetailQueries.some((q) => q.isLoading);
