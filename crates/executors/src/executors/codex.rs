@@ -681,7 +681,7 @@ impl Codex {
     }
 
     /// Common boilerplate for spawning a Codex app server process
-    /// Handles process spawning, stdout/stderr piping, exit signal handling, client initialization, and error logging.
+    /// Handles process spawning, stdout piping, exit signal handling, client initialization, and error logging.
     /// Delegates the actual Codex session logic to the provided `task` closure.
     async fn spawn_app_server<F, Fut>(
         &self,
@@ -707,7 +707,10 @@ impl Codex {
             .kill_on_drop(true)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
+            // Codex app-server speaks JSON-RPC on stdout. Its stderr is not part
+            // of the agent log stream here, and leaving a piped stderr unread can
+            // block the child process if diagnostics/tracing emits enough logs.
+            .stderr(std::process::Stdio::null())
             .current_dir(current_dir)
             .env("NPM_CONFIG_LOGLEVEL", "error")
             .env("NODE_NO_WARNINGS", "1")
