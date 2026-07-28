@@ -8,6 +8,7 @@ import {
   useRef,
   useEffect,
   type ReactNode,
+  type CSSProperties,
 } from 'react';
 import { LexicalComposer } from '@lexical/react/LexicalComposer';
 import { RichTextPlugin } from '@lexical/react/LexicalRichTextPlugin';
@@ -68,6 +69,7 @@ import { type EditorState, type LexicalEditor } from 'lexical';
 import { useLexicalComposerContext } from '@lexical/react/LexicalComposerContext';
 import { useDiffPaths } from '@/shared/stores/useWorkspaceDiffStore';
 import { useSlashCommands } from '@/shared/hooks/useExecutorDiscovery';
+import { useIsMobile } from '@/shared/hooks/useIsMobile';
 import { useUiPreferencesStore } from '@/shared/stores/useUiPreferencesStore';
 import { cn } from '@/shared/lib/utils';
 import { repoApi } from '@/shared/lib/api';
@@ -102,6 +104,7 @@ type WysiwygProps = {
   disabled?: boolean;
   onPasteFiles?: (files: File[]) => void;
   className?: string;
+  constrainMobileComposerHeight?: boolean;
   /** Repo IDs for file search in typeahead */
   repoIds?: string[];
   /** Enables `/` command autocomplete (agent-specific). */
@@ -257,6 +260,7 @@ const WYSIWYGEditor = forwardRef<WYSIWYGEditorRef, WysiwygProps>(
       disabled = false,
       onPasteFiles,
       className,
+      constrainMobileComposerHeight = false,
       repoIds,
       executor = null,
       onCmdEnter,
@@ -298,6 +302,7 @@ const WYSIWYGEditor = forwardRef<WYSIWYGEditorRef, WysiwygProps>(
     // Copy button state
     const [copied, setCopied] = useState(false);
     const diffPaths = useDiffPaths();
+    const isMobile = useIsMobile();
     const preferredRepoId = useUiPreferencesStore(
       (state) => state.fileSearchRepoId
     );
@@ -497,17 +502,36 @@ const WYSIWYGEditor = forwardRef<WYSIWYGEditorRef, WysiwygProps>(
     // Memoized placeholder element
     const placeholderElement = useMemo(
       () => (
-        <div
-          className={cn(
-            'absolute top-0 left-0 text-base text-secondary-foreground text-low pointer-events-none truncate',
-            className
-          )}
-        >
+        <div className="absolute top-0 left-0 text-base text-secondary-foreground text-low pointer-events-none truncate">
           {placeholder}
         </div>
       ),
-      [placeholder, className]
+      [placeholder]
     );
+
+    const shouldConstrainMobileComposerHeight =
+      constrainMobileComposerHeight && isMobile && !disabled;
+
+    const composerWrapperStyle = useMemo<CSSProperties | undefined>(() => {
+      if (!shouldConstrainMobileComposerHeight) {
+        return undefined;
+      }
+      return {
+        minHeight: '1rem',
+        maxHeight: '24dvh',
+        overflowY: 'auto',
+      };
+    }, [shouldConstrainMobileComposerHeight]);
+
+    const editorScrollStyle = useMemo<CSSProperties | undefined>(() => {
+      if (!shouldConstrainMobileComposerHeight) {
+        return undefined;
+      }
+      return {
+        maxHeight: 'none',
+        overflowY: 'visible',
+      };
+    }, [shouldConstrainMobileComposerHeight]);
 
     const editorContent = (
       <div className="wysiwyg text-base relative">
@@ -525,7 +549,7 @@ const WYSIWYGEditor = forwardRef<WYSIWYGEditorRef, WysiwygProps>(
                 />
                 {!disabled && !showStaticToolbar && <ToolbarPlugin />}
 
-                <div className="relative">
+                <div className="relative" style={composerWrapperStyle}>
                   <RichTextPlugin
                     contentEditable={
                       <ContentEditable
@@ -534,6 +558,7 @@ const WYSIWYGEditor = forwardRef<WYSIWYGEditorRef, WysiwygProps>(
                           disabled ? 'Markdown content' : 'Markdown editor'
                         }
                         onPasteCapture={handlePaste}
+                        style={editorScrollStyle}
                       />
                     }
                     placeholder={placeholderElement}

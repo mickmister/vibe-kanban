@@ -1274,7 +1274,12 @@ impl ClaudeLogProcessor {
                             patches.push(add_system_message(status.clone(), entry_index_provider));
                         }
                     }
-                    Some("compact_boundary") => {}
+                    Some("compact_boundary") => {
+                        patches.push(add_system_message(
+                            "Context compacted".to_string(),
+                            entry_index_provider,
+                        ));
+                    }
                     Some("task_started") => {
                         if let Some(tool_use_id) = tool_use_id
                             && !self.tool_map.contains_key(tool_use_id)

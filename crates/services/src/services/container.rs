@@ -700,6 +700,7 @@ pub trait ContainerService {
 
         self.try_stop(&workspace, false).await;
         ExecutionProcess::drop_at_and_after(pool, session_id, target_process_id).await?;
+        Session::recompute_context_reset_boundary(pool, session_id).await?;
 
         Ok(())
     }
@@ -952,6 +953,31 @@ pub trait ContainerService {
                         )
                     }
                 }
+                ExecutorActionType::CodingAgentSessionCommandRequest(request) => {
+                    if request.static_message().is_some() {
+                        executors::actions::session_command::normalize_static_session_command_logs(
+                            temp_store.clone(),
+                        )
+                    } else {
+                        #[cfg(feature = "qa-mode")]
+                        {
+                            let executor = QaMockExecutor;
+                            executor.normalize_logs(
+                                temp_store.clone(),
+                                &request.effective_dir(&current_dir),
+                            )
+                        }
+                        #[cfg(not(feature = "qa-mode"))]
+                        {
+                            let executor = ExecutorConfigs::get_cached()
+                                .get_coding_agent_or_default(&request.executor_config.profile_id());
+                            executor.normalize_logs(
+                                temp_store.clone(),
+                                &request.effective_dir(&current_dir),
+                            )
+                        }
+                    }
+                }
                 #[cfg(feature = "qa-mode")]
                 ExecutorActionType::ReviewRequest(_request) => {
                     let executor = QaMockExecutor;
@@ -1198,6 +1224,9 @@ pub trait ContainerService {
             ExecutorActionType::CodingAgentFollowUpRequest(follow_up_request) => {
                 Some(follow_up_request.prompt.clone())
             }
+            ExecutorActionType::CodingAgentSessionCommandRequest(command_request) => {
+                Some(command_request.prompt())
+            }
             ExecutorActionType::ReviewRequest(review_request) => {
                 Some(review_request.prompt.clone())
             }
@@ -1224,6 +1253,16 @@ pub trait ContainerService {
                 return Err(e.into());
             }
         }
+
+        let is_clear_session_command = matches!(
+            executor_action.typ(),
+            ExecutorActionType::CodingAgentSessionCommandRequest(
+                executors::actions::session_command::CodingAgentSessionCommandRequest {
+                    command: executors::actions::session_command::SessionCommand::Clear,
+                    ..
+                }
+            )
+        );
 
         if let Err(start_error) = self
             .start_execution_inner(workspace, &execution_process, executor_action)
@@ -1295,6 +1334,14 @@ pub trait ContainerService {
             return Err(start_error);
         }
 
+        if is_clear_session_command
+            && let Err(e) =
+                Session::mark_context_cleared(&self.db().pool, session.id, execution_process.id)
+                    .await
+        {
+            return Err(e.into());
+        }
+
         // Start processing normalised logs for executor requests and follow ups
         let workspace_root = self.workspace_to_current_dir(workspace);
         #[cfg_attr(feature = "qa-mode", allow(unused_variables))]
@@ -1307,6 +1354,26 @@ pub trait ContainerService {
                 request.executor_config.profile_id(),
                 request.effective_dir(&workspace_root),
             )),
+            ExecutorActionType::CodingAgentSessionCommandRequest(request) => {
+                if request.static_message().is_some() {
+                    executors::actions::session_command::normalize_static_session_command_logs(
+                        self.get_msg_store_by_id(&execution_process.id)
+                            .await
+                            .ok_or_else(|| {
+                                ContainerError::Other(anyhow!(
+                                    "MsgStore missing for session command execution {}",
+                                    execution_process.id
+                                ))
+                            })?,
+                    );
+                    None
+                } else {
+                    Some((
+                        request.executor_config.profile_id(),
+                        request.effective_dir(&workspace_root),
+                    ))
+                }
+            }
             ExecutorActionType::ReviewRequest(request) => Some((
                 request.executor_config.profile_id(),
                 request.effective_dir(&workspace_root),
@@ -1372,6 +1439,7 @@ pub trait ContainerService {
             (
                 ExecutorActionType::CodingAgentInitialRequest(_)
                 | ExecutorActionType::CodingAgentFollowUpRequest(_)
+                | ExecutorActionType::CodingAgentSessionCommandRequest(_)
                 | ExecutorActionType::ReviewRequest(_),
                 ExecutorActionType::ScriptRequest(_),
             ) => ExecutionProcessRunReason::CleanupScript,
@@ -1379,6 +1447,7 @@ pub trait ContainerService {
                 _,
                 ExecutorActionType::CodingAgentFollowUpRequest(_)
                 | ExecutorActionType::CodingAgentInitialRequest(_)
+                | ExecutorActionType::CodingAgentSessionCommandRequest(_)
                 | ExecutorActionType::ReviewRequest(_),
             ) => ExecutionProcessRunReason::CodingAgent,
         };

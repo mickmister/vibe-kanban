@@ -18,15 +18,30 @@ import {
   getHistoricReplayRetryDelayMs,
   updateHistoricReplayFailures,
 } from './historyReplayState';
+import {
+  hasUnloadedCompletedHistoryProcesses,
+  loadExplicitEarlierHistoryBatch,
+  shouldAutoReplayRemainingHistoryAfterInitialLoad,
+} from './conversationHistoryLoadingPolicy';
 
 // Result type for the new UI's conversation history hook
 export interface UseConversationHistoryResult {
   /** Whether the conversation only has a single coding agent turn (no follow-ups) */
   isFirstTurn: boolean;
-  /** Whether background batches are still loading older history entries */
+  /** Whether a user-requested batch of older history entries is loading */
   isLoadingHistory: boolean;
+  /** Whether there are older completed process logs that have not been loaded */
+  hasMoreHistory: boolean;
+  /** Loads one bounded batch of older history entries on explicit user request */
+  loadEarlierHistory: () => Promise<void>;
   /** Error state when earlier conversation history could not be fully replayed */
   historyError: string | null;
+  /** Whether failed history replay entries can be retried explicitly */
+  canRetryHistory: boolean;
+  /** Whether a manual retry is currently in progress */
+  isRetryingHistory: boolean;
+  /** Retry failed historic conversation history loads */
+  retryHistory: () => void;
 }
 import {
   MIN_INITIAL_ENTRIES,
@@ -68,7 +83,10 @@ export const useConversationHistory = ({
   const historicRetryDueAtRef = useRef<Map<string, number>>(new Map());
   const historicRetryInFlightRef = useRef<Set<string>>(new Set());
   const historicRetryTimerRef = useRef<number | null>(null);
+  const loadEarlierHistoryInFlightRef = useRef(false);
   const [isLoadingHistoryState, setIsLoadingHistory] = useState(false);
+  const [isRetryingHistory, setIsRetryingHistory] = useState(false);
+  const [hasMoreHistory, setHasMoreHistory] = useState(false);
   const scopeGenerationRef = useRef(0);
   const [failedHistoricProcessIds, setFailedHistoricProcessIds] = useState<
     Set<string>
@@ -249,6 +267,21 @@ export const useConversationHistory = ({
       )
       .flatMap((p) => p.entries);
   };
+
+  const hasUnloadedHistoricProcesses = useCallback((): boolean => {
+    return hasUnloadedCompletedHistoryProcesses(
+      executionProcesses.current,
+      displayedExecutionProcesses.current
+    );
+  }, []);
+
+  const updateHasMoreHistoryForGeneration = useCallback(
+    (generation: number) => {
+      if (!isCurrentGeneration(generation)) return;
+      setHasMoreHistory(hasUnloadedHistoricProcesses());
+    },
+    [hasUnloadedHistoricProcesses, isCurrentGeneration]
+  );
 
   const getActiveAgentProcesses = (): ExecutionProcess[] => {
     return (
@@ -466,6 +499,40 @@ export const useConversationHistory = ({
       retryHistoricProcessInBackground,
     ]
   );
+
+  const retryHistory = useCallback(() => {
+    const generation = scopeGenerationRef.current;
+    const failedProcessIds = [...failedHistoricProcessIdsRef.current];
+    if (failedProcessIds.length === 0) return;
+
+    clearHistoricRetryTimer();
+    failedProcessIds.forEach((processId) => {
+      historicRetryAttemptsRef.current.delete(processId);
+      historicRetryDueAtRef.current.delete(processId);
+    });
+
+    setIsRetryingHistory(true);
+
+    void Promise.all(
+      failedProcessIds.map(async (processId) => {
+        historicRetryInFlightRef.current.add(processId);
+        try {
+          await retryHistoricProcessInBackground(processId, generation);
+        } finally {
+          historicRetryInFlightRef.current.delete(processId);
+        }
+      })
+    ).finally(() => {
+      if (!isCurrentGeneration(generation)) return;
+      setIsRetryingHistory(false);
+      scheduleHistoricReplayRetry(generation);
+    });
+  }, [
+    clearHistoricRetryTimer,
+    isCurrentGeneration,
+    retryHistoricProcessInBackground,
+    scheduleHistoricReplayRetry,
+  ]);
 
   useEffect(() => {
     failedHistoricProcessIdsRef.current = failedHistoricProcessIds;
@@ -788,9 +855,12 @@ export const useConversationHistory = ({
     displayedExecutionProcesses.current = {};
     loadedInitialEntries.current = false;
     emittedEmptyInitialRef.current = false;
+    loadEarlierHistoryInFlightRef.current = false;
     streamingProcessIdsRef.current.clear();
     previousStatusMapRef.current.clear();
     setIsLoadingHistory(false);
+    setIsRetryingHistory(false);
+    setHasMoreHistory(false);
     setFailedHistoricProcessIds(new Set());
     emitEntries(displayedExecutionProcesses.current, 'initial', true);
   }, [
@@ -843,25 +913,29 @@ export const useConversationHistory = ({
         false
       );
 
-      setLoadingHistoryForGeneration(generation, true);
-      while (
-        !cancelled &&
-        (await loadRemainingEntriesInBatches(REMAINING_BATCH_SIZE))
-      ) {
-        if (cancelled || !isCurrentGeneration(generation)) {
-          setLoadingHistoryForGeneration(generation, false);
-          return;
+      if (shouldAutoReplayRemainingHistoryAfterInitialLoad()) {
+        setLoadingHistoryForGeneration(generation, true);
+        while (
+          !cancelled &&
+          (await loadRemainingEntriesInBatches(REMAINING_BATCH_SIZE))
+        ) {
+          if (cancelled || !isCurrentGeneration(generation)) {
+            setLoadingHistoryForGeneration(generation, false);
+            return;
+          }
+          emitEntriesForGeneration(
+            generation,
+            displayedExecutionProcesses.current,
+            'historic',
+            false
+          );
         }
-        emitEntriesForGeneration(
-          generation,
-          displayedExecutionProcesses.current,
-          'historic',
-          false
-        );
+        if (!cancelled && isCurrentGeneration(generation)) {
+          setLoadingHistoryForGeneration(generation, false);
+        }
       }
-      if (!cancelled && isCurrentGeneration(generation)) {
-        setLoadingHistoryForGeneration(generation, false);
-      }
+
+      updateHasMoreHistoryForGeneration(generation);
     })();
     return () => {
       cancelled = true;
@@ -876,7 +950,37 @@ export const useConversationHistory = ({
     loadRemainingEntriesInBatches,
     mergeIntoDisplayedForGeneration,
     setLoadingHistoryForGeneration,
+    updateHasMoreHistoryForGeneration,
   ]); // include idListKey so new processes trigger reload
+
+  const loadEarlierHistory = useCallback(async () => {
+    const generation = scopeGenerationRef.current;
+
+    await loadExplicitEarlierHistoryBatch({
+      generation,
+      batchSize: REMAINING_BATCH_SIZE,
+      inFlightRef: loadEarlierHistoryInFlightRef,
+      isCurrentGeneration,
+      hasUnloadedHistory: hasUnloadedHistoricProcesses,
+      updateHasMoreHistoryForGeneration,
+      setLoadingHistoryForGeneration,
+      loadRemainingEntriesInBatches,
+      emitHistoricEntriesForGeneration: (currentGeneration) =>
+        emitEntriesForGeneration(
+          currentGeneration,
+          displayedExecutionProcesses.current,
+          'historic',
+          false
+        ),
+    });
+  }, [
+    emitEntriesForGeneration,
+    hasUnloadedHistoricProcesses,
+    isCurrentGeneration,
+    loadRemainingEntriesInBatches,
+    setLoadingHistoryForGeneration,
+    updateHasMoreHistoryForGeneration,
+  ]);
 
   useEffect(() => {
     const activeProcesses = getActiveAgentProcesses();
@@ -985,6 +1089,7 @@ export const useConversationHistory = ({
           'running',
           false
         );
+        updateHasMoreHistoryForGeneration(generation);
       }
     })();
   }, [
@@ -995,6 +1100,7 @@ export const useConversationHistory = ({
     loadEntriesForHistoricExecutionProcess,
     mergeIntoDisplayedForGeneration,
     setHistoricProcessFailure,
+    updateHasMoreHistoryForGeneration,
   ]);
 
   // If an execution process is removed, remove it from the state
@@ -1022,15 +1128,28 @@ export const useConversationHistory = ({
         });
         return changed ? next : prev;
       });
+      updateHasMoreHistoryForGeneration(scopeGenerationRef.current);
     }
-  }, [clearHistoricRetryTracking, scopeKey, idListKey, executionProcessesRaw]);
+  }, [
+    clearHistoricRetryTracking,
+    scopeKey,
+    idListKey,
+    executionProcessesRaw,
+    updateHasMoreHistoryForGeneration,
+  ]);
 
   const historyError =
     failedHistoricProcessIds.size > 0 ? HISTORIC_REPLAY_ERROR : null;
+  const canRetryHistory = failedHistoricProcessIds.size > 0;
 
   return {
     isFirstTurn,
     isLoadingHistory: isLoadingHistoryState,
+    hasMoreHistory,
+    loadEarlierHistory,
     historyError,
+    canRetryHistory,
+    isRetryingHistory,
+    retryHistory,
   };
 };

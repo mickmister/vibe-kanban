@@ -71,6 +71,7 @@ pub fn router(deployment: DeploymentImpl) -> IntoMakeService<Router> {
         .merge(relay_auth::router())
         .merge(host_relay::router(&deployment))
         .merge(relay_signed_routes)
+        .layer(axum::middleware::from_fn(middleware::log_api_requests))
         .layer(ValidateRequestHeaderLayer::custom(
             middleware::validate_origin,
         ))
