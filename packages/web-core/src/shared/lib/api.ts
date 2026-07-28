@@ -90,6 +90,8 @@ import {
   CreateFromPrError,
   CreateAndStartWorkspaceRequest,
   CreateAndStartWorkspaceResponse,
+  AddWorkspaceRepoRequest,
+  AddWorkspaceRepoResponse,
   RelayPairedClient,
   ListRelayPairedClientsResponse,
   RemoveRelayPairedClientResponse,
@@ -567,6 +569,17 @@ export const workspacesApi = {
   getRepos: async (workspaceId: string): Promise<RepoWithTargetBranch[]> => {
     const response = await makeRequest(`/api/workspaces/${workspaceId}/repos`);
     return handleApiResponse<RepoWithTargetBranch[]>(response);
+  },
+
+  addRepo: async (
+    workspaceId: string,
+    data: AddWorkspaceRepoRequest
+  ): Promise<AddWorkspaceRepoResponse> => {
+    const response = await makeRequest(`/api/workspaces/${workspaceId}/repos`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+    return handleApiResponse<AddWorkspaceRepoResponse>(response);
   },
 
   getFirstUserMessage: async (workspaceId: string): Promise<string | null> => {
