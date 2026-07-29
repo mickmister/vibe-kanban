@@ -242,6 +242,36 @@ impl WorkspaceRepo {
         .await
     }
 
+    pub async fn find_by_workspace_and_repo_name(
+        pool: &SqlitePool,
+        workspace_id: Uuid,
+        repo_name: &str,
+    ) -> Result<Option<Self>, sqlx::Error> {
+        sqlx::query_as!(
+            WorkspaceRepo,
+            r#"SELECT wr.id as "id!: Uuid",
+                      wr.workspace_id as "workspace_id!: Uuid",
+                      wr.repo_id as "repo_id!: Uuid",
+                      wr.target_branch,
+                      wr.created_at as "created_at!: DateTime<Utc>",
+                      wr.updated_at as "updated_at!: DateTime<Utc>"
+               FROM workspace_repos wr
+               JOIN repos r ON r.id = wr.repo_id
+               WHERE wr.workspace_id = $1 AND lower(r.name) = lower($2)"#,
+            workspace_id,
+            repo_name
+        )
+        .fetch_optional(pool)
+        .await
+    }
+
+    pub async fn delete_by_id(pool: &SqlitePool, id: Uuid) -> Result<u64, sqlx::Error> {
+        let result = sqlx::query!("DELETE FROM workspace_repos WHERE id = $1", id)
+            .execute(pool)
+            .await?;
+        Ok(result.rows_affected())
+    }
+
     pub async fn update_target_branch(
         pool: &SqlitePool,
         workspace_id: Uuid,

@@ -6,7 +6,8 @@
   "gitPanel": {
     "advanced": {
       "placeholder": "예: acme Corp"
-    }
+    },
+    "addRepo": "리포지토리 추가"
   },
   "actions": {
     "addTask": "작업 추가"
