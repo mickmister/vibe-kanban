@@ -101,7 +101,7 @@ impl CodingAgentTurn {
                WHERE ep.session_id = ?1
                  AND ep.run_reason = 'codingagent'
                  AND ep.dropped = FALSE
-                 AND ep.status != 'running'"#,
+                 AND ep.status = 'completed'"#,
         );
 
         if after_execution_process_id.is_some() {
@@ -566,6 +566,75 @@ mod tests {
                 .unwrap()
                 .unwrap();
         assert_eq!(next_after_completed_at.execution_process_id, second_id);
+    }
+
+    #[tokio::test]
+    async fn session_response_skips_failed_and_killed_after_cursor() {
+        let pool = test_pool().await;
+        let workspace_id = Uuid::new_v4();
+        let session_id = Uuid::new_v4();
+        let cursor_id = Uuid::new_v4();
+        let failed_id = Uuid::new_v4();
+        let killed_id = Uuid::new_v4();
+        let completed_id = Uuid::new_v4();
+        insert_session(&pool, session_id, workspace_id).await;
+        insert_process(
+            &pool,
+            cursor_id,
+            session_id,
+            "completed",
+            Utc.with_ymd_and_hms(2026, 7, 30, 10, 0, 0).unwrap(),
+            Some(Utc.with_ymd_and_hms(2026, 7, 30, 10, 1, 0).unwrap()),
+        )
+        .await;
+        insert_turn(&pool, cursor_id, Some("cursor")).await;
+        insert_process(
+            &pool,
+            failed_id,
+            session_id,
+            "failed",
+            Utc.with_ymd_and_hms(2026, 7, 30, 10, 2, 0).unwrap(),
+            Some(Utc.with_ymd_and_hms(2026, 7, 30, 10, 3, 0).unwrap()),
+        )
+        .await;
+        insert_turn(&pool, failed_id, Some("failed should not satisfy")).await;
+        insert_process(
+            &pool,
+            killed_id,
+            session_id,
+            "killed",
+            Utc.with_ymd_and_hms(2026, 7, 30, 10, 4, 0).unwrap(),
+            Some(Utc.with_ymd_and_hms(2026, 7, 30, 10, 5, 0).unwrap()),
+        )
+        .await;
+        insert_turn(&pool, killed_id, Some("killed should not satisfy")).await;
+
+        let none_after_cursor =
+            Turn::find_session_response(&pool, session_id, Some(cursor_id), None)
+                .await
+                .unwrap();
+        assert!(
+            none_after_cursor.is_none(),
+            "failed/killed turns should not satisfy next completed response lookup"
+        );
+
+        insert_process(
+            &pool,
+            completed_id,
+            session_id,
+            "completed",
+            Utc.with_ymd_and_hms(2026, 7, 30, 10, 6, 0).unwrap(),
+            Some(Utc.with_ymd_and_hms(2026, 7, 30, 10, 7, 0).unwrap()),
+        )
+        .await;
+        insert_turn(&pool, completed_id, Some("completed")).await;
+
+        let next_after_cursor =
+            Turn::find_session_response(&pool, session_id, Some(cursor_id), None)
+                .await
+                .unwrap()
+                .unwrap();
+        assert_eq!(next_after_cursor.execution_process_id, completed_id);
     }
 
     #[test]
