@@ -18,19 +18,10 @@ use workspace_utils::shell::resolve_executable_path;
 
 use crate::{command::CmdOverrides, env::ExecutionEnv, executors::ExecutorError};
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-#[ts(use_ts_enum)]
-pub enum SandboxBackend {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SandboxBackend {
     Bwrap,
-    #[serde(alias = "sandbox-exec")]
     SandboxExec,
-}
-
-impl Default for SandboxBackend {
-    fn default() -> Self {
-        Self::Bwrap
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS, JsonSchema)]
@@ -59,8 +50,6 @@ pub struct AgentSandboxConfig {
     #[serde(default)]
     pub enabled: bool,
     #[serde(default)]
-    pub backend: SandboxBackend,
-    #[serde(default)]
     pub network: SandboxNetworkMode,
     #[serde(default)]
     pub readonly_paths: Vec<SandboxMount>,
@@ -80,7 +69,6 @@ impl Default for AgentSandboxConfig {
     fn default() -> Self {
         Self {
             enabled: false,
-            backend: SandboxBackend::default(),
             network: SandboxNetworkMode::default(),
             readonly_paths: Vec::new(),
             writable_paths: Vec::new(),
@@ -154,7 +142,8 @@ pub async fn prepare_agent_command(
         });
     };
 
-    validate_backend_available(config).await?;
+    let backend = resolve_sandbox_backend()?;
+    validate_backend_available(backend).await?;
     let workspace_root = env.repo_context.workspace_root.as_path();
     let resolved_cwd = resolve_workspace_subpath(
         workspace_root,
@@ -165,7 +154,7 @@ pub async fn prepare_agent_command(
         .await
         .map_err(ExecutorError::Io)?;
 
-    let (program, args) = match config.backend {
+    let (program, args) = match backend {
         SandboxBackend::Bwrap => {
             let bwrap = resolve_executable_path("bwrap").await.ok_or_else(|| {
                 ExecutorError::SandboxUnavailable("bwrap executable not found".to_string())
@@ -263,8 +252,21 @@ pub fn resolve_workspace_subpath(
     Ok(canonical)
 }
 
-async fn validate_backend_available(config: &AgentSandboxConfig) -> Result<(), ExecutorError> {
-    match config.backend {
+fn resolve_sandbox_backend() -> Result<SandboxBackend, ExecutorError> {
+    if cfg!(target_os = "linux") {
+        Ok(SandboxBackend::Bwrap)
+    } else if cfg!(target_os = "macos") {
+        Ok(SandboxBackend::SandboxExec)
+    } else {
+        Err(ExecutorError::SandboxUnavailable(
+            "agent sandboxing is only available on Linux (bwrap) or macOS (sandbox-exec)"
+                .to_string(),
+        ))
+    }
+}
+
+async fn validate_backend_available(backend: SandboxBackend) -> Result<(), ExecutorError> {
+    match backend {
         SandboxBackend::Bwrap => {
             if !cfg!(target_os = "linux") {
                 return Err(ExecutorError::SandboxUnavailable(
@@ -413,12 +415,6 @@ pub fn build_sandbox_exec_profile(
     program_path: &Path,
     env: &ExecutionEnv,
 ) -> Result<String, ExecutorError> {
-    if !matches!(config.backend, SandboxBackend::SandboxExec) {
-        return Err(ExecutorError::InvalidSandboxConfig(
-            "sandbox-exec profile requested for non-sandbox-exec backend".to_string(),
-        ));
-    }
-
     let workspace_root = workspace_root
         .canonicalize()
         .map_err(|err| ExecutorError::InvalidSandboxConfig(format!("workspace root: {err}")))?;
@@ -534,6 +530,7 @@ pub fn build_sandbox_exec_profile(
             "subpath",
             &src,
         );
+        push_sbpl_rule(&mut profile, "deny", "file-write*", "subpath", &src);
         if src != dest {
             return Err(ExecutorError::InvalidSandboxConfig(
                 "sandbox-exec cannot remap read-only mount paths".to_string(),
@@ -861,7 +858,6 @@ mod tests {
         };
         let cfg = AgentSandboxConfig {
             enabled: true,
-            backend: SandboxBackend::SandboxExec,
             network: SandboxNetworkMode::None,
             ..Default::default()
         };
@@ -907,7 +903,6 @@ mod tests {
         };
         let cfg = AgentSandboxConfig {
             enabled: true,
-            backend: SandboxBackend::SandboxExec,
             network: SandboxNetworkMode::Inherit,
             ..Default::default()
         };
@@ -938,7 +933,6 @@ mod tests {
         };
         let cfg = AgentSandboxConfig {
             enabled: true,
-            backend: SandboxBackend::SandboxExec,
             ..Default::default()
         };
         let args = build_sandbox_exec_args(
@@ -973,7 +967,6 @@ mod tests {
         };
         let cfg = AgentSandboxConfig {
             enabled: true,
-            backend: SandboxBackend::SandboxExec,
             readonly_paths: vec![SandboxMount {
                 host_path: extra.path().to_string_lossy().to_string(),
                 sandbox_path: Some("/different".to_string()),
@@ -992,16 +985,72 @@ mod tests {
         assert!(format!("{err}").contains("cannot remap"));
     }
 
-    #[cfg(not(target_os = "macos"))]
-    #[tokio::test]
-    async fn sandbox_exec_backend_fails_off_macos() {
+    #[test]
+    fn sandbox_exec_write_denies_explicit_readonly_and_auth_mounts() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join("repo/readonly")).unwrap();
+        std::fs::create_dir_all(root.path().join("repo/auth")).unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let readonly = root.path().join("repo/readonly").canonicalize().unwrap();
+        let auth = root.path().join("repo/auth").canonicalize().unwrap();
+        let env = ExecutionEnv {
+            vars: HashMap::new(),
+            repo_context: RepoContext::new(root.path().to_path_buf(), vec!["repo".to_string()]),
+            commit_reminder: false,
+            commit_reminder_prompt: String::new(),
+            sandbox: None,
+        };
         let cfg = AgentSandboxConfig {
             enabled: true,
-            backend: SandboxBackend::SandboxExec,
+            readonly_paths: vec![SandboxMount {
+                host_path: readonly.to_string_lossy().to_string(),
+                sandbox_path: None,
+            }],
+            auth_mounts: vec![SandboxMount {
+                host_path: auth.to_string_lossy().to_string(),
+                sandbox_path: None,
+            }],
             ..Default::default()
         };
-        let err = validate_backend_available(&cfg).await.unwrap_err();
-        assert!(format!("{err}").contains("only available on macOS"));
+        let profile = build_sandbox_exec_profile(
+            &cfg,
+            root.path(),
+            &root.path().join("repo"),
+            home.path(),
+            Path::new("/bin/sh"),
+            &env,
+        )
+        .unwrap();
+        assert!(profile.contains(&format!(
+            "(deny file-write* (subpath {}))",
+            sbpl_quote(&readonly.to_string_lossy())
+        )));
+        assert!(profile.contains(&format!(
+            "(deny file-write* (subpath {}))",
+            sbpl_quote(&auth.to_string_lossy())
+        )));
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    #[test]
+    fn sandbox_backend_fails_on_unsupported_platform() {
+        let err = resolve_sandbox_backend().unwrap_err();
+        assert!(format!("{err}").contains("only available"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn platform_backend_is_bwrap_on_linux() {
+        assert_eq!(resolve_sandbox_backend().unwrap(), SandboxBackend::Bwrap);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn platform_backend_is_sandbox_exec_on_macos() {
+        assert_eq!(
+            resolve_sandbox_backend().unwrap(),
+            SandboxBackend::SandboxExec
+        );
     }
 
     #[cfg(target_os = "macos")]
@@ -1011,7 +1060,6 @@ mod tests {
         std::fs::create_dir_all(root.path().join("repo")).unwrap();
         let cfg = AgentSandboxConfig {
             enabled: true,
-            backend: SandboxBackend::SandboxExec,
             ..Default::default()
         };
         let env = ExecutionEnv {
@@ -1052,7 +1100,6 @@ mod tests {
         };
         let cfg = AgentSandboxConfig {
             enabled: true,
-            backend: SandboxBackend::SandboxExec,
             network: SandboxNetworkMode::None,
             ..Default::default()
         };
@@ -1084,6 +1131,55 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
+    fn sandbox_exec_enforces_explicit_readonly_path_on_macos() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join("repo/readonly")).unwrap();
+        let readonly = root.path().join("repo/readonly").canonicalize().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(home.path().join("tmp")).unwrap();
+        let env = ExecutionEnv {
+            vars: HashMap::new(),
+            repo_context: RepoContext::new(root.path().to_path_buf(), vec!["repo".to_string()]),
+            commit_reminder: false,
+            commit_reminder_prompt: String::new(),
+            sandbox: None,
+        };
+        let cfg = AgentSandboxConfig {
+            enabled: true,
+            readonly_paths: vec![SandboxMount {
+                host_path: readonly.to_string_lossy().to_string(),
+                sandbox_path: None,
+            }],
+            ..Default::default()
+        };
+        let args = build_sandbox_exec_args(
+            &cfg,
+            root.path(),
+            &root.path().join("repo"),
+            home.path(),
+            Path::new("/bin/sh"),
+            &[
+                "-c".to_string(),
+                "set -e; echo ok > allowed.txt; echo denied > readonly/blocked.txt".to_string(),
+            ],
+            &env,
+        )
+        .unwrap();
+        let status = std::process::Command::new("sandbox-exec")
+            .args(&args[1..])
+            .current_dir(root.path().join("repo").canonicalize().unwrap())
+            .env_clear()
+            .env("HOME", home.path())
+            .env("TMPDIR", home.path().join("tmp"))
+            .status()
+            .unwrap();
+        assert!(!status.success());
+        assert!(root.path().join("repo/allowed.txt").exists());
+        assert!(!root.path().join("repo/readonly/blocked.txt").exists());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
     fn sandbox_exec_blocks_home_read_but_allows_workspace_under_home_on_macos() {
         let home_dir = dirs::home_dir().unwrap().canonicalize().unwrap();
         let root = tempfile::tempdir_in(&home_dir).unwrap();
@@ -1101,7 +1197,6 @@ mod tests {
         };
         let cfg = AgentSandboxConfig {
             enabled: true,
-            backend: SandboxBackend::SandboxExec,
             network: SandboxNetworkMode::None,
             ..Default::default()
         };

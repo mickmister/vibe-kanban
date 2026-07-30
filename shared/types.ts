@@ -592,13 +592,11 @@ permission_policy?: PermissionPolicy | null,
  */
 sandbox?: AgentSandboxConfig | null, };
 
-export type SandboxBackend = "bwrap" | "sandbox_exec";
-
 export type SandboxNetworkMode = "inherit" | "none";
 
 export type SandboxMount = { host_path: string, sandbox_path?: string | null, };
 
-export type AgentSandboxConfig = { enabled: boolean, backend: SandboxBackend, network: SandboxNetworkMode, readonly_paths: Array<SandboxMount>, writable_paths: Array<SandboxMount>, readonly_repo_paths: Array<string>, auth_mounts: Array<SandboxMount>, env_allowlist: Array<string>, sandbox_home?: string | null, };
+export type AgentSandboxConfig = { enabled: boolean, network: SandboxNetworkMode, readonly_paths: Array<SandboxMount>, writable_paths: Array<SandboxMount>, readonly_repo_paths: Array<string>, auth_mounts: Array<SandboxMount>, env_allowlist: Array<string>, sandbox_home?: string | null, };
 
 export type ScriptContext = "SetupScript" | "CleanupScript" | "ArchiveScript" | "DevServer" | "ToolInstallScript";
 
