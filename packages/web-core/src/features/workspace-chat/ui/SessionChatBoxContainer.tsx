@@ -48,6 +48,7 @@ import {
   type SessionChatBoxEditorRenderProps,
 } from '@vibe/ui/components/SessionChatBox';
 import { ModelSelectorContainer } from '@/shared/components/ModelSelectorContainer';
+import { AgentSandboxControls } from '@/shared/components/AgentSandboxControls';
 import {
   type ChatViewMode,
   useWorkspacePanelState,
@@ -998,18 +999,25 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
   );
 
   const modelSelectorNode = effectiveExecutor ? (
-    <ModelSelectorContainer
-      agent={effectiveExecutor}
-      workspaceId={workspaceId}
-      sessionId={sessionId}
-      onAdvancedSettings={handleCustomise}
-      presets={variantOptions}
-      selectedPreset={selectedVariant}
-      onPresetSelect={setSelectedVariant}
-      onOverrideChange={setExecutorOverrides}
-      executorConfig={executorConfig}
-      presetOptions={presetOptions}
-    />
+    <>
+      <ModelSelectorContainer
+        agent={effectiveExecutor}
+        workspaceId={workspaceId}
+        sessionId={sessionId}
+        onAdvancedSettings={handleCustomise}
+        presets={variantOptions}
+        selectedPreset={selectedVariant}
+        onPresetSelect={setSelectedVariant}
+        onOverrideChange={setExecutorOverrides}
+        executorConfig={executorConfig}
+        presetOptions={presetOptions}
+      />
+      <AgentSandboxControls
+        value={executorConfig?.sandbox}
+        onChange={(sandbox) => setExecutorOverrides({ sandbox })}
+        disabled={isSending || isQueueLoading}
+      />
+    </>
   ) : undefined;
 
   // In placeholder mode, render a disabled version to maintain visual structure

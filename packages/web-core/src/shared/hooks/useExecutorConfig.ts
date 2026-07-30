@@ -21,6 +21,7 @@ const OVERRIDE_FIELDS = [
   'agent_id',
   'reasoning_id',
   'permission_policy',
+  'sandbox',
 ] as const;
 
 /**
@@ -247,9 +248,11 @@ export function useExecutorConfig({
     prevProfileKeyRef.current = profileKey;
     if (prev !== null && prev !== profileKey) {
       setUserSelections((s) => {
-        const { executor, variant, ...rest } = s;
+        const { executor, variant, sandbox, ...rest } = s;
         if (Object.keys(rest).length === 0) return s;
-        return { executor, variant };
+        return sandbox === undefined
+          ? { executor, variant }
+          : { executor, variant, sandbox };
       });
     }
   }, [profileKey]);
@@ -265,13 +268,20 @@ export function useExecutorConfig({
   // Clears variant + all override fields.
   const setExecutor = useCallback(
     (exec: BaseCodingAgent) => {
-      setUserSelections({ executor: exec });
-      // Persist with auto-resolved variant (no overrides)
+      const sandbox = executorConfig?.sandbox;
+      setUserSelections(
+        sandbox === undefined ? { executor: exec } : { executor: exec, sandbox }
+      );
+      // Persist with auto-resolved variant (no model/profile overrides)
       const newVariants = getVariantOptions(exec, profiles);
       const newVariant = newVariants[0] ?? null;
-      persist({ executor: exec, variant: newVariant });
+      persist(
+        sandbox === undefined
+          ? { executor: exec, variant: newVariant }
+          : { executor: exec, variant: newVariant, sandbox }
+      );
     },
-    [profiles, persist]
+    [executorConfig?.sandbox, profiles, persist]
   );
 
   // Setting variant → keeps executor, sets variant, clears all override fields.
@@ -279,12 +289,21 @@ export function useExecutorConfig({
   // → override fields fall through to preset options for the new variant.
   const setVariant = useCallback(
     (v: string | null) => {
-      setUserSelections((prev) => ({ executor: prev.executor, variant: v }));
+      const sandbox = executorConfig?.sandbox;
+      setUserSelections((prev) =>
+        sandbox === undefined
+          ? { executor: prev.executor, variant: v }
+          : { executor: prev.executor, variant: v, sandbox }
+      );
       if (executor.effective) {
-        persist({ executor: executor.effective, variant: v });
+        persist(
+          sandbox === undefined
+            ? { executor: executor.effective, variant: v }
+            : { executor: executor.effective, variant: v, sandbox }
+        );
       }
     },
-    [executor.effective, persist]
+    [executor.effective, executorConfig?.sandbox, persist]
   );
 
   // Model selector updates individual override fields (merge into existing).

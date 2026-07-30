@@ -25,6 +25,7 @@ import { CreateChatBox } from '@vibe/ui/components/CreateChatBox';
 import { SettingsDialog } from '@/shared/dialogs/settings/SettingsDialog';
 import { CreateModeRepoPickerBar } from './CreateModeRepoPickerBar';
 import { ModelSelectorContainer } from '@/shared/components/ModelSelectorContainer';
+import { AgentSandboxControls } from '@/shared/components/AgentSandboxControls';
 import type { ChatViewMode } from '@/shared/stores/useUiPreferencesStore';
 
 function getRepoDisplayName(repo: Repo) {
@@ -390,17 +391,26 @@ export function CreateChatBoxContainer({
                   repoId={repoId}
                   modelSelector={
                     effectiveExecutor ? (
-                      <ModelSelectorContainer
-                        agent={effectiveExecutor}
-                        workspaceId={undefined}
-                        onAdvancedSettings={handleCustomise}
-                        presets={variantOptions}
-                        selectedPreset={selectedVariant}
-                        onPresetSelect={handlePresetSelect}
-                        onOverrideChange={setExecutorOverrides}
-                        executorConfig={executorConfig}
-                        presetOptions={presetOptions}
-                      />
+                      <>
+                        <ModelSelectorContainer
+                          agent={effectiveExecutor}
+                          workspaceId={undefined}
+                          onAdvancedSettings={handleCustomise}
+                          presets={variantOptions}
+                          selectedPreset={selectedVariant}
+                          onPresetSelect={handlePresetSelect}
+                          onOverrideChange={setExecutorOverrides}
+                          executorConfig={executorConfig}
+                          presetOptions={presetOptions}
+                        />
+                        <AgentSandboxControls
+                          value={executorConfig?.sandbox}
+                          onChange={(sandbox) =>
+                            setExecutorOverrides({ sandbox })
+                          }
+                          disabled={createWorkspace.isPending}
+                        />
+                      </>
                     ) : undefined
                   }
                   onPasteFiles={uploadFiles}
