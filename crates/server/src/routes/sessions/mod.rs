@@ -33,8 +33,10 @@ use utils::response::ApiResponse;
 use uuid::Uuid;
 
 use crate::{
-    DeploymentImpl, error::ApiError, middleware::load_session_middleware,
-    routes::workspaces::execution::RunScriptError,
+    DeploymentImpl,
+    error::ApiError,
+    middleware::load_session_middleware,
+    routes::{execution_processes::AgentResponse, workspaces::execution::RunScriptError},
 };
 
 #[derive(Debug, Deserialize)]
@@ -62,6 +64,31 @@ pub async fn get_session(
     Extension(session): Extension<Session>,
 ) -> Result<ResponseJson<ApiResponse<Session>>, ApiError> {
     Ok(ResponseJson(ApiResponse::success(session)))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct LatestSessionResponseQuery {
+    #[serde(default, alias = "afterExecutionProcessId")]
+    pub after_execution_process_id: Option<Uuid>,
+    #[serde(default, alias = "afterCompletedAt")]
+    pub after_completed_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+pub async fn get_latest_response(
+    Extension(session): Extension<Session>,
+    State(deployment): State<DeploymentImpl>,
+    Query(query): Query<LatestSessionResponseQuery>,
+) -> Result<ResponseJson<ApiResponse<Option<AgentResponse>>>, ApiError> {
+    let record = CodingAgentTurn::find_session_response(
+        &deployment.db().pool,
+        session.id,
+        query.after_execution_process_id,
+        query.after_completed_at,
+    )
+    .await?;
+    Ok(ResponseJson(ApiResponse::success(
+        record.map(AgentResponse::from_record),
+    )))
 }
 
 pub async fn create_session(
@@ -371,6 +398,7 @@ pub async fn run_setup_script(
 pub fn router(deployment: &DeploymentImpl) -> Router<DeploymentImpl> {
     let session_id_router = Router::new()
         .route("/", get(get_session).put(update_session))
+        .route("/latest-response", get(get_latest_response))
         .route("/follow-up", post(follow_up))
         .route("/reset", post(reset_process))
         .route("/setup", post(run_setup_script))

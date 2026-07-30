@@ -11,8 +11,12 @@ use axum::{
     response::{IntoResponse, Json as ResponseJson},
     routing::{get, post},
 };
+use chrono::{DateTime, Utc};
 use db::models::{
-    execution_process::{ExecutionProcess, ExecutionProcessStatus},
+    coding_agent_turn::{
+        CODING_AGENT_RESPONSE_SUMMARY_MAX_CHARS, CodingAgentResponseRecord, CodingAgentTurn,
+    },
+    execution_process::{ExecutionProcess, ExecutionProcessError, ExecutionProcessStatus},
     execution_process_repo_state::ExecutionProcessRepoState,
 };
 use deployment::Deployment;
@@ -21,9 +25,10 @@ use futures_util::{
     future::{BoxFuture, Shared},
     stream::{self, BoxStream},
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use services::services::container::ContainerService;
 use tokio::sync::Mutex;
+use ts_rs::TS;
 use utils::{log_msg::LogMsg, msg_store::MsgStore, response::ApiResponse};
 use uuid::Uuid;
 
@@ -42,6 +47,53 @@ struct SessionExecutionProcessQuery {
     /// If true, include soft-deleted (dropped) processes in results/stream
     #[serde(default)]
     pub show_soft_deleted: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum AgentResponseSourceKind {
+    CodingAgentTurnSummary,
+}
+
+#[derive(Debug, Clone, Serialize, TS)]
+#[ts(export)]
+pub struct AgentResponse {
+    pub execution_process_id: Uuid,
+    pub session_id: Uuid,
+    pub workspace_id: Uuid,
+    pub status: ExecutionProcessStatus,
+    pub completed_at: Option<DateTime<Utc>>,
+    pub coding_agent_turn_id: Option<Uuid>,
+    pub agent_session_id: Option<String>,
+    pub agent_message_id: Option<String>,
+    pub content: Option<String>,
+    pub truncated: bool,
+    pub max_chars: usize,
+    pub source_kind: AgentResponseSourceKind,
+}
+
+impl AgentResponse {
+    pub fn from_record(record: CodingAgentResponseRecord) -> Self {
+        let truncated = record
+            .summary
+            .as_deref()
+            .is_some_and(CodingAgentTurn::summary_is_truncated);
+        AgentResponse {
+            execution_process_id: record.execution_process_id,
+            session_id: record.session_id,
+            workspace_id: record.workspace_id,
+            status: record.status,
+            completed_at: record.completed_at,
+            coding_agent_turn_id: record.coding_agent_turn_id,
+            agent_session_id: record.agent_session_id,
+            agent_message_id: record.agent_message_id,
+            content: record.summary,
+            truncated,
+            max_chars: CODING_AGENT_RESPONSE_SUMMARY_MAX_CHARS,
+            source_kind: AgentResponseSourceKind::CodingAgentTurnSummary,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -69,6 +121,23 @@ async fn get_execution_process_by_id(
     State(_deployment): State<DeploymentImpl>,
 ) -> Result<ResponseJson<ApiResponse<ExecutionProcess>>, ApiError> {
     Ok(ResponseJson(ApiResponse::success(execution_process)))
+}
+
+async fn get_execution_process_final_message(
+    Extension(execution_process): Extension<ExecutionProcess>,
+    State(deployment): State<DeploymentImpl>,
+) -> Result<ResponseJson<ApiResponse<AgentResponse>>, ApiError> {
+    let record = CodingAgentTurn::find_response_by_execution_process_id(
+        &deployment.db().pool,
+        execution_process.id,
+    )
+    .await?
+    .ok_or(ApiError::ExecutionProcess(
+        ExecutionProcessError::ExecutionProcessNotFound,
+    ))?;
+    Ok(ResponseJson(ApiResponse::success(
+        AgentResponse::from_record(record),
+    )))
 }
 
 async fn stream_raw_logs_ws(
@@ -464,6 +533,7 @@ async fn get_execution_process_repo_states(
 pub(super) fn router(deployment: &DeploymentImpl) -> Router<DeploymentImpl> {
     let workspace_id_router = Router::new()
         .route("/", get(get_execution_process_by_id))
+        .route("/final-message", get(get_execution_process_final_message))
         .route("/stop", post(stop_execution_process))
         .route("/repo-states", get(get_execution_process_repo_states))
         .route("/raw-logs/ws", get(stream_raw_logs_ws))
@@ -503,7 +573,7 @@ mod tests {
     use uuid::Uuid;
 
     use super::{
-        NormalizedLogReplayMode, build_live_normalized_logs_stream,
+        AgentResponse, NormalizedLogReplayMode, build_live_normalized_logs_stream,
         get_normalized_log_messages_single_flight,
     };
 
@@ -547,6 +617,33 @@ mod tests {
             .await
             .expect("stream end should not hang");
         assert!(end.is_none());
+    }
+
+    #[test]
+    fn agent_response_reports_summary_truncation_metadata() {
+        use db::models::{
+            coding_agent_turn::{
+                CODING_AGENT_RESPONSE_SUMMARY_MAX_CHARS, CodingAgentResponseRecord,
+            },
+            execution_process::ExecutionProcessStatus,
+        };
+
+        let content = format!("{}...", "x".repeat(CODING_AGENT_RESPONSE_SUMMARY_MAX_CHARS));
+        let response = AgentResponse::from_record(CodingAgentResponseRecord {
+            execution_process_id: uuid::Uuid::new_v4(),
+            session_id: uuid::Uuid::new_v4(),
+            workspace_id: uuid::Uuid::new_v4(),
+            status: ExecutionProcessStatus::Completed,
+            completed_at: None,
+            coding_agent_turn_id: Some(uuid::Uuid::new_v4()),
+            agent_session_id: Some("agent-session".to_string()),
+            agent_message_id: Some("agent-message".to_string()),
+            summary: Some(content.clone()),
+        });
+
+        assert_eq!(response.content.as_deref(), Some(content.as_str()));
+        assert!(response.truncated);
+        assert_eq!(response.max_chars, CODING_AGENT_RESPONSE_SUMMARY_MAX_CHARS);
     }
 
     #[tokio::test]

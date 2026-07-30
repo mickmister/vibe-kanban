@@ -13,7 +13,7 @@ use db::{
     DBService,
     models::{
         agent_message_queue::AgentMessageQueueItem,
-        coding_agent_turn::CodingAgentTurn,
+        coding_agent_turn::{CODING_AGENT_RESPONSE_SUMMARY_MAX_CHARS, CodingAgentTurn},
         execution_process::{
             ExecutionContext, ExecutionProcess, ExecutionProcessRunReason, ExecutionProcessStatus,
         },
@@ -857,9 +857,11 @@ impl LocalContainerService {
                 {
                     let content = entry.content.trim();
                     if !content.is_empty() {
-                        const MAX_SUMMARY_LENGTH: usize = 4096;
-                        if content.len() > MAX_SUMMARY_LENGTH {
-                            let truncated = truncate_to_char_boundary(content, MAX_SUMMARY_LENGTH);
+                        if content.len() > CODING_AGENT_RESPONSE_SUMMARY_MAX_CHARS {
+                            let truncated = truncate_to_char_boundary(
+                                content,
+                                CODING_AGENT_RESPONSE_SUMMARY_MAX_CHARS,
+                            );
                             return Some(format!("{truncated}..."));
                         }
                         return Some(content.to_string());

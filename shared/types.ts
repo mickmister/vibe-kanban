@@ -174,6 +174,10 @@ export enum ExecutionProcessStatus { running = "running", completed = "completed
 
 export type ExecutionProcessRunReason = "setupscript" | "cleanupscript" | "archivescript" | "codingagent" | "devserver";
 
+export type AgentResponse = { execution_process_id: string, session_id: string, workspace_id: string, status: ExecutionProcessStatus, completed_at: string | null, coding_agent_turn_id: string | null, agent_session_id: string | null, agent_message_id: string | null, content: string | null, truncated: boolean, max_chars: number, source_kind: AgentResponseSourceKind, };
+
+export type AgentResponseSourceKind = "coding_agent_turn_summary";
+
 export type ExecutionProcessRepoState = { id: string, execution_process_id: string, repo_id: string, before_head_commit: string | null, after_head_commit: string | null, merge_commit: string | null, created_at: Date, updated_at: Date, };
 
 export type Merge = { "type": "direct" } & DirectMerge | { "type": "pr" } & PrMerge;

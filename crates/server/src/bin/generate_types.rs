@@ -49,6 +49,8 @@ fn generate_types_content() -> String {
         db::models::execution_process::ExecutionProcess::decl(),
         db::models::execution_process::ExecutionProcessStatus::decl(),
         db::models::execution_process::ExecutionProcessRunReason::decl(),
+        server::routes::execution_processes::AgentResponse::decl(),
+        server::routes::execution_processes::AgentResponseSourceKind::decl(),
         db::models::execution_process_repo_state::ExecutionProcessRepoState::decl(),
         db::models::merge::Merge::decl(),
         db::models::merge::DirectMerge::decl(),

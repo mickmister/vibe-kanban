@@ -4,6 +4,10 @@ use sqlx::{FromRow, SqlitePool};
 use ts_rs::TS;
 use uuid::Uuid;
 
+use super::execution_process::ExecutionProcessStatus;
+
+pub const CODING_AGENT_RESPONSE_SUMMARY_MAX_CHARS: usize = 4096;
+
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize, TS)]
 pub struct CodingAgentTurn {
     pub id: Uuid,
@@ -30,7 +34,105 @@ pub struct CodingAgentResumeInfo {
     pub message_id: Option<String>,
 }
 
+#[derive(Debug, Clone, FromRow)]
+pub struct CodingAgentResponseRecord {
+    pub execution_process_id: Uuid,
+    pub session_id: Uuid,
+    pub workspace_id: Uuid,
+    pub status: ExecutionProcessStatus,
+    pub completed_at: Option<DateTime<Utc>>,
+    pub coding_agent_turn_id: Option<Uuid>,
+    pub agent_session_id: Option<String>,
+    pub agent_message_id: Option<String>,
+    pub summary: Option<String>,
+}
+
 impl CodingAgentTurn {
+    pub fn summary_is_truncated(summary: &str) -> bool {
+        summary.len() > CODING_AGENT_RESPONSE_SUMMARY_MAX_CHARS && summary.ends_with("...")
+    }
+
+    pub async fn find_response_by_execution_process_id(
+        pool: &SqlitePool,
+        execution_process_id: Uuid,
+    ) -> Result<Option<CodingAgentResponseRecord>, sqlx::Error> {
+        sqlx::query_as::<_, CodingAgentResponseRecord>(
+            r#"SELECT
+                ep.id as execution_process_id,
+                ep.session_id,
+                s.workspace_id,
+                ep.status,
+                ep.completed_at,
+                cat.id as coding_agent_turn_id,
+                cat.agent_session_id,
+                cat.agent_message_id,
+                cat.summary
+               FROM execution_processes ep
+               JOIN sessions s ON s.id = ep.session_id
+               LEFT JOIN coding_agent_turns cat ON cat.execution_process_id = ep.id
+               WHERE ep.id = ?1"#,
+        )
+        .bind(execution_process_id)
+        .fetch_optional(pool)
+        .await
+    }
+
+    pub async fn find_session_response(
+        pool: &SqlitePool,
+        session_id: Uuid,
+        after_execution_process_id: Option<Uuid>,
+        after_completed_at: Option<DateTime<Utc>>,
+    ) -> Result<Option<CodingAgentResponseRecord>, sqlx::Error> {
+        let has_cursor = after_execution_process_id.is_some() || after_completed_at.is_some();
+        let mut sql = String::from(
+            r#"SELECT
+                ep.id as execution_process_id,
+                ep.session_id,
+                s.workspace_id,
+                ep.status,
+                ep.completed_at,
+                cat.id as coding_agent_turn_id,
+                cat.agent_session_id,
+                cat.agent_message_id,
+                cat.summary
+               FROM execution_processes ep
+               JOIN sessions s ON s.id = ep.session_id
+               LEFT JOIN coding_agent_turns cat ON cat.execution_process_id = ep.id
+               WHERE ep.session_id = ?1
+                 AND ep.run_reason = 'codingagent'
+                 AND ep.dropped = FALSE
+                 AND ep.status != 'running'"#,
+        );
+
+        if after_execution_process_id.is_some() {
+            sql.push_str(
+                " AND ep.rowid > (SELECT cursor.rowid FROM execution_processes cursor WHERE cursor.id = ?2 AND cursor.session_id = ?1)",
+            );
+        }
+        if after_completed_at.is_some() {
+            sql.push_str(if after_execution_process_id.is_some() {
+                " AND ep.completed_at > ?3"
+            } else {
+                " AND ep.completed_at > ?2"
+            });
+        }
+        if has_cursor {
+            sql.push_str(" ORDER BY ep.created_at ASC, ep.id ASC LIMIT 1");
+        } else {
+            sql.push_str(" ORDER BY ep.created_at DESC, ep.id DESC LIMIT 1");
+        }
+
+        let mut query = sqlx::query_as::<_, CodingAgentResponseRecord>(&sql).bind(session_id);
+        if let Some(after_execution_process_id) = after_execution_process_id {
+            query = query.bind(after_execution_process_id);
+        }
+        if let Some(after_completed_at) = after_completed_at {
+            query = query.bind(after_completed_at);
+        }
+
+        query.fetch_optional(pool).await
+    }
+
     /// Find session info from the latest coding agent turn for a session.
     /// Only returns turns that have an agent_session_id set.
     pub async fn find_latest_session_info(
@@ -259,5 +361,217 @@ impl CodingAgentTurn {
         .await?;
 
         Ok(result.into_iter().collect())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use chrono::{TimeZone, Utc};
+    use sqlx::{Executor, SqlitePool, sqlite::SqlitePoolOptions};
+    use uuid::Uuid;
+
+    use super::{
+        CODING_AGENT_RESPONSE_SUMMARY_MAX_CHARS, CodingAgentTurn, CodingAgentTurn as Turn,
+    };
+    use crate::models::execution_process::ExecutionProcessStatus;
+
+    async fn test_pool() -> SqlitePool {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        pool.execute(
+            r#"CREATE TABLE sessions (
+                id BLOB PRIMARY KEY,
+                workspace_id BLOB NOT NULL,
+                executor TEXT,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )"#,
+        )
+        .await
+        .unwrap();
+        pool.execute(
+            r#"CREATE TABLE execution_processes (
+                id BLOB PRIMARY KEY,
+                session_id BLOB NOT NULL,
+                run_reason TEXT NOT NULL,
+                executor_action TEXT NOT NULL DEFAULT '{}',
+                status TEXT NOT NULL,
+                exit_code INTEGER,
+                dropped INTEGER NOT NULL DEFAULT 0,
+                started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                completed_at TEXT,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )"#,
+        )
+        .await
+        .unwrap();
+        pool.execute(
+            r#"CREATE TABLE coding_agent_turns (
+                id BLOB PRIMARY KEY,
+                execution_process_id BLOB NOT NULL,
+                agent_session_id TEXT,
+                agent_message_id TEXT,
+                prompt TEXT,
+                summary TEXT,
+                seen INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )"#,
+        )
+        .await
+        .unwrap();
+        pool
+    }
+
+    async fn insert_session(pool: &SqlitePool, session_id: Uuid, workspace_id: Uuid) {
+        sqlx::query("INSERT INTO sessions (id, workspace_id) VALUES (?1, ?2)")
+            .bind(session_id)
+            .bind(workspace_id)
+            .execute(pool)
+            .await
+            .unwrap();
+    }
+
+    async fn insert_process(
+        pool: &SqlitePool,
+        id: Uuid,
+        session_id: Uuid,
+        status: &str,
+        created_at: chrono::DateTime<Utc>,
+        completed_at: Option<chrono::DateTime<Utc>>,
+    ) {
+        sqlx::query(
+            r#"INSERT INTO execution_processes
+               (id, session_id, run_reason, executor_action, status, dropped, started_at, completed_at, created_at, updated_at)
+               VALUES (?1, ?2, 'codingagent', '{}', ?3, 0, ?4, ?5, ?4, ?4)"#,
+        )
+        .bind(id)
+        .bind(session_id)
+        .bind(status)
+        .bind(created_at)
+        .bind(completed_at)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    async fn insert_turn(pool: &SqlitePool, execution_process_id: Uuid, summary: Option<&str>) {
+        sqlx::query(
+            r#"INSERT INTO coding_agent_turns
+               (id, execution_process_id, agent_session_id, agent_message_id, prompt, summary)
+               VALUES (?1, ?2, 'agent-session', 'agent-message', 'prompt', ?3)"#,
+        )
+        .bind(Uuid::new_v4())
+        .bind(execution_process_id)
+        .bind(summary)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn finds_response_by_execution_process_id_for_completed_and_running_turns() {
+        let pool = test_pool().await;
+        let workspace_id = Uuid::new_v4();
+        let session_id = Uuid::new_v4();
+        let completed_id = Uuid::new_v4();
+        let running_id = Uuid::new_v4();
+        insert_session(&pool, session_id, workspace_id).await;
+        insert_process(
+            &pool,
+            completed_id,
+            session_id,
+            "completed",
+            Utc.with_ymd_and_hms(2026, 7, 30, 10, 0, 0).unwrap(),
+            Some(Utc.with_ymd_and_hms(2026, 7, 30, 10, 1, 0).unwrap()),
+        )
+        .await;
+        insert_turn(&pool, completed_id, Some("final response")).await;
+        insert_process(
+            &pool,
+            running_id,
+            session_id,
+            "running",
+            Utc.with_ymd_and_hms(2026, 7, 30, 10, 2, 0).unwrap(),
+            None,
+        )
+        .await;
+        insert_turn(&pool, running_id, None).await;
+
+        let completed = CodingAgentTurn::find_response_by_execution_process_id(&pool, completed_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(completed.workspace_id, workspace_id);
+        assert_eq!(completed.status, ExecutionProcessStatus::Completed);
+        assert_eq!(completed.summary.as_deref(), Some("final response"));
+
+        let running = CodingAgentTurn::find_response_by_execution_process_id(&pool, running_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(running.status, ExecutionProcessStatus::Running);
+        assert!(running.summary.is_none());
+    }
+
+    #[tokio::test]
+    async fn finds_latest_and_next_session_response_after_cursor() {
+        let pool = test_pool().await;
+        let workspace_id = Uuid::new_v4();
+        let session_id = Uuid::new_v4();
+        let first_id = Uuid::new_v4();
+        let second_id = Uuid::new_v4();
+        insert_session(&pool, session_id, workspace_id).await;
+        insert_process(
+            &pool,
+            first_id,
+            session_id,
+            "completed",
+            Utc.with_ymd_and_hms(2026, 7, 30, 10, 0, 0).unwrap(),
+            Some(Utc.with_ymd_and_hms(2026, 7, 30, 10, 1, 0).unwrap()),
+        )
+        .await;
+        insert_turn(&pool, first_id, Some("first")).await;
+        insert_process(
+            &pool,
+            second_id,
+            session_id,
+            "completed",
+            Utc.with_ymd_and_hms(2026, 7, 30, 10, 2, 0).unwrap(),
+            Some(Utc.with_ymd_and_hms(2026, 7, 30, 10, 3, 0).unwrap()),
+        )
+        .await;
+        insert_turn(&pool, second_id, Some("second")).await;
+
+        let latest = Turn::find_session_response(&pool, session_id, None, None)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(latest.execution_process_id, second_id);
+
+        let next_after_id = Turn::find_session_response(&pool, session_id, Some(first_id), None)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(next_after_id.execution_process_id, second_id);
+
+        let after_completed_at = Utc.with_ymd_and_hms(2026, 7, 30, 10, 1, 0).unwrap();
+        let next_after_completed_at =
+            Turn::find_session_response(&pool, session_id, None, Some(after_completed_at))
+                .await
+                .unwrap()
+                .unwrap();
+        assert_eq!(next_after_completed_at.execution_process_id, second_id);
+    }
+
+    #[test]
+    fn detects_summary_truncation_marker() {
+        let truncated = format!("{}...", "x".repeat(CODING_AGENT_RESPONSE_SUMMARY_MAX_CHARS));
+        assert!(CodingAgentTurn::summary_is_truncated(&truncated));
+        assert!(!CodingAgentTurn::summary_is_truncated("short..."));
     }
 }
