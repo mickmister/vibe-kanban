@@ -7,7 +7,11 @@ import {
   useState,
 } from 'react';
 import type { ReactNode } from 'react';
-import type { ApprovalStatus, ToolStatus } from 'shared/types';
+import type {
+  ApprovalStatus,
+  HostCommandRequest,
+  ToolStatus,
+} from 'shared/types';
 import { Button } from '@vibe/ui/components/Button';
 import {
   Tooltip,
@@ -163,6 +167,39 @@ function DenyReasonForm({
         <Button size="sm" onClick={onSubmit} disabled={isResponding}>
           Deny
         </Button>
+      </div>
+    </div>
+  );
+}
+
+function HostCommandDetails({ request }: { request: HostCommandRequest }) {
+  const envKeys = Object.keys(request.env ?? {});
+
+  return (
+    <div className="mx-4 mb-3 rounded-md border border-amber-200 bg-amber-50 p-3 text-xs text-amber-950 dark:border-amber-900/70 dark:bg-amber-950/30 dark:text-amber-100">
+      <div className="mb-2 font-medium">Host command request</div>
+      <div className="space-y-1">
+        <div>
+          <span className="font-medium">Reason:</span> {request.reason}
+        </div>
+        <div>
+          <span className="font-medium">CWD:</span>{' '}
+          <code className="break-all">{request.cwd}</code>
+        </div>
+        <div>
+          <span className="font-medium">Env:</span>{' '}
+          {envKeys.length > 0 ? envKeys.join(', ') : 'no overrides'}
+        </div>
+        <div>
+          <span className="font-medium">Limits:</span> {request.timeout_secs}s,{' '}
+          {request.output_limit_bytes} bytes output
+        </div>
+      </div>
+      <pre className="mt-2 max-h-32 overflow-auto whitespace-pre-wrap break-words rounded bg-black/5 p-2 font-mono text-[11px] dark:bg-white/10">
+        {request.command}
+      </pre>
+      <div className="mt-2 text-[11px]">
+        Approval runs this exact command on the host, outside the agent sandbox.
       </div>
     </div>
   );
@@ -348,6 +385,10 @@ const PendingApprovalEntry = ({
               >
                 {error}
               </div>
+            )}
+
+            {approvalInfo?.host_command && !isEnteringReason && (
+              <HostCommandDetails request={approvalInfo.host_command} />
             )}
 
             {isEnteringReason && !hasResponded && (

@@ -89,6 +89,12 @@ pub enum ExecutorError {
     SetupHelperNotSupported,
     #[error("Auth required: {0}")]
     AuthRequired(String),
+    #[error("Invalid working directory: {0}")]
+    InvalidWorkingDir(String),
+    #[error("Invalid sandbox configuration: {0}")]
+    InvalidSandboxConfig(String),
+    #[error("Sandbox unavailable: {0}")]
+    SandboxUnavailable(String),
 }
 
 #[enum_dispatch]

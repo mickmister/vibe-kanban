@@ -188,6 +188,7 @@ impl StandardCodingAgentExecutor for QwenCode {
             } else {
                 PermissionPolicy::Supervised
             }),
+            sandbox: None,
         }
     }
 

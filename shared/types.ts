@@ -186,7 +186,11 @@ export type MergeStatus = "open" | "merged" | "closed" | "unknown";
 
 export type PullRequestInfo = { number: bigint, url: string, status: MergeStatus, merged_at: string | null, merge_commit_sha: string | null, };
 
-export type ApprovalInfo = { approval_id: string, tool_name: string, execution_process_id: string, is_question: boolean, created_at: string, timeout_at: string, };
+export type HostCommandRequest = { command: string, cwd: string, reason: string, env: Record<string, string>, timeout_secs: number, output_limit_bytes: number, };
+
+export type HostCommandResult = { exit_code: number | null, timed_out: boolean, stdout: string, stderr: string, truncated: boolean, };
+
+export type ApprovalInfo = { approval_id: string, tool_name: string, execution_process_id: string, is_question: boolean, host_command?: HostCommandRequest, created_at: string, timeout_at: string, };
 
 export type ApprovalStatus = { "status": "pending" } | { "status": "approved" } | { "status": "denied", reason?: string, } | { "status": "timed_out" };
 
@@ -194,7 +198,7 @@ export type QuestionAnswer = { question: string, answer: Array<string>, };
 
 export type QuestionStatus = { "status": "answered", answers: Array<QuestionAnswer>, } | { "status": "timed_out" };
 
-export type ApprovalOutcome = { "status": "approved" } | { "status": "denied", reason?: string, } | { "status": "answered", answers: Array<QuestionAnswer>, } | { "status": "timed_out" };
+export type ApprovalOutcome = { "status": "approved" } | { "status": "denied", reason?: string, } | { "status": "answered", answers: Array<QuestionAnswer>, } | { "status": "host_command_completed", result: HostCommandResult, } | { "status": "timed_out" };
 
 export type ApprovalResponse = { execution_process_id: string, status: ApprovalOutcome, };
 
@@ -582,7 +586,19 @@ reasoning_id?: string | null,
 /**
  * Permission policy override
  */
-permission_policy?: PermissionPolicy | null, };
+permission_policy?: PermissionPolicy | null,
+/**
+ * Optional per-turn agent sandbox configuration. Snapshotted into executor actions.
+ */
+sandbox?: AgentSandboxConfig | null, };
+
+export type SandboxBackend = "bwrap" | "sandbox_exec";
+
+export type SandboxNetworkMode = "inherit" | "none";
+
+export type SandboxMount = { host_path: string, sandbox_path?: string | null, };
+
+export type AgentSandboxConfig = { enabled: boolean, backend: SandboxBackend, network: SandboxNetworkMode, readonly_paths: Array<SandboxMount>, writable_paths: Array<SandboxMount>, readonly_repo_paths: Array<string>, auth_mounts: Array<SandboxMount>, env_allowlist: Array<string>, sandbox_home?: string | null, };
 
 export type ScriptContext = "SetupScript" | "CleanupScript" | "ArchiveScript" | "DevServer" | "ToolInstallScript";
 

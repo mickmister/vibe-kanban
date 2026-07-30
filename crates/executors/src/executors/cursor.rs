@@ -33,6 +33,7 @@ use crate::{
     },
     model_selector::{ModelInfo, ModelSelectorConfig, ReasoningOption},
     profile::ExecutorConfig,
+    sandbox::prepare_agent_command,
 };
 
 mod mcp;
@@ -194,22 +195,21 @@ impl StandardCodingAgentExecutor for CursorAgent {
         let command_parts = self.build_command_builder()?.build_initial()?;
 
         let (executable_path, args) = command_parts.into_resolved().await?;
+        let prepared =
+            prepare_agent_command(executable_path, args, current_dir, env, &self.cmd).await?;
 
         let combined_prompt = self.append_prompt.combine_prompt(prompt);
 
-        let mut command = Command::new(executable_path);
+        let mut command = Command::new(&prepared.program);
+        prepared.apply_env_to_command(&mut command);
         command
             .kill_on_drop(true)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .current_dir(current_dir)
+            .current_dir(&prepared.current_dir)
             .env("NPM_CONFIG_LOGLEVEL", "error")
-            .args(&args);
-
-        env.clone()
-            .with_profile(&self.cmd)
-            .apply_to_command(&mut command);
+            .args(&prepared.args);
 
         let mut child = command.group_spawn_no_window()?;
 
@@ -235,22 +235,21 @@ impl StandardCodingAgentExecutor for CursorAgent {
             .build_command_builder()?
             .build_follow_up(&["--resume".to_string(), session_id.to_string()])?;
         let (executable_path, args) = command_parts.into_resolved().await?;
+        let prepared =
+            prepare_agent_command(executable_path, args, current_dir, env, &self.cmd).await?;
 
         let combined_prompt = self.append_prompt.combine_prompt(prompt);
 
-        let mut command = Command::new(executable_path);
+        let mut command = Command::new(&prepared.program);
+        prepared.apply_env_to_command(&mut command);
         command
             .kill_on_drop(true)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .current_dir(current_dir)
+            .current_dir(&prepared.current_dir)
             .env("NPM_CONFIG_LOGLEVEL", "error")
-            .args(&args);
-
-        env.clone()
-            .with_profile(&self.cmd)
-            .apply_to_command(&mut command);
+            .args(&prepared.args);
 
         let mut child = command.group_spawn_no_window()?;
 
@@ -638,6 +637,7 @@ impl StandardCodingAgentExecutor for CursorAgent {
             agent_id: None,
             reasoning_id: self.reasoning.clone(),
             permission_policy: Some(crate::model_selector::PermissionPolicy::Auto),
+            sandbox: None,
         }
     }
 

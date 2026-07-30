@@ -24,6 +24,7 @@ use crate::{
     logs::utils::patch,
     model_selector::{AgentInfo, ModelInfo, ModelProvider, PermissionPolicy, ReasoningOption},
     profile::ExecutorConfig,
+    sandbox::prepare_agent_command,
     stdout_dup::create_stdout_pipe_writer,
 };
 
@@ -109,26 +110,25 @@ impl Opencode {
     ) -> Result<(AsyncGroupChild, ServerPassword), ExecutorError> {
         let command_parts = self.build_command_builder()?.build_initial()?;
         let (program_path, args) = command_parts.into_resolved().await?;
+        let prepared =
+            prepare_agent_command(program_path, args, current_dir, env, &self.cmd).await?;
 
         let server_password = generate_server_password();
 
-        let mut command = Command::new(program_path);
+        let mut command = Command::new(&prepared.program);
+        prepared.apply_env_to_command(&mut command);
         command
             .kill_on_drop(true)
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
-            .current_dir(current_dir)
+            .current_dir(&prepared.current_dir)
             .env("NPM_CONFIG_LOGLEVEL", "error")
             .env("NODE_NO_WARNINGS", "1")
             .env("NO_COLOR", "1")
             .env("OPENCODE_SERVER_USERNAME", "opencode")
             .env("OPENCODE_SERVER_PASSWORD", &server_password)
-            .args(&args);
-
-        env.clone()
-            .with_profile(&self.cmd)
-            .apply_to_command(&mut command);
+            .args(&prepared.args);
 
         let child = command.group_spawn_no_window()?;
 
@@ -765,6 +765,7 @@ impl StandardCodingAgentExecutor for Opencode {
             } else {
                 PermissionPolicy::Supervised
             }),
+            sandbox: None,
         }
     }
 }

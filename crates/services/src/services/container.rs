@@ -42,6 +42,7 @@ use executors::{
         },
     },
     profile::{ExecutorConfig, ExecutorProfileId},
+    sandbox::resolve_workspace_subpath,
 };
 use futures::{StreamExt, future, stream::BoxStream};
 use git::{GitService, GitServiceError};
@@ -1156,6 +1157,48 @@ pub trait ContainerService {
         Ok(execution_process)
     }
 
+    fn validate_executor_action_working_dirs(
+        workspace_root: &Path,
+        action: &ExecutorAction,
+    ) -> Result<(), ContainerError> {
+        match action.typ() {
+            ExecutorActionType::CodingAgentInitialRequest(request) => {
+                resolve_workspace_subpath(
+                    workspace_root,
+                    request.working_dir.as_deref().map(std::path::Path::new),
+                )?;
+            }
+            ExecutorActionType::CodingAgentFollowUpRequest(request) => {
+                resolve_workspace_subpath(
+                    workspace_root,
+                    request.working_dir.as_deref().map(std::path::Path::new),
+                )?;
+            }
+            ExecutorActionType::CodingAgentSessionCommandRequest(request) => {
+                resolve_workspace_subpath(
+                    workspace_root,
+                    request.working_dir.as_deref().map(std::path::Path::new),
+                )?;
+            }
+            ExecutorActionType::ReviewRequest(request) => {
+                resolve_workspace_subpath(
+                    workspace_root,
+                    request.working_dir.as_deref().map(std::path::Path::new),
+                )?;
+            }
+            ExecutorActionType::ScriptRequest(request) => {
+                resolve_workspace_subpath(
+                    workspace_root,
+                    request.working_dir.as_deref().map(std::path::Path::new),
+                )?;
+            }
+        }
+        if let Some(next) = action.next_action() {
+            Self::validate_executor_action_working_dirs(workspace_root, next)?;
+        }
+        Ok(())
+    }
+
     async fn start_execution(
         &self,
         workspace: &Workspace,
@@ -1178,6 +1221,8 @@ pub trait ContainerService {
             .as_ref()
             .map(std::path::PathBuf::from)
             .ok_or_else(|| ContainerError::Other(anyhow!("Container ref not found")))?;
+
+        Self::validate_executor_action_working_dirs(&workspace_root, executor_action)?;
 
         let mut repo_states = Vec::with_capacity(repositories.len());
         for repo in &repositories {

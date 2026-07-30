@@ -5,7 +5,10 @@ use db::{self, DBService, models::execution_process::ExecutionProcess};
 use executors::approvals::{ExecutorApprovalError, ExecutorApprovalService};
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
-use utils::approvals::{ApprovalOutcome, ApprovalRequest, ApprovalStatus, QuestionStatus};
+use utils::approvals::{
+    ApprovalOutcome, ApprovalRequest, ApprovalStatus, HostCommandRequest, HostCommandResult,
+    QuestionStatus,
+};
 use uuid::Uuid;
 
 use crate::services::{approvals::Approvals, notification::NotificationService};
@@ -153,8 +156,56 @@ impl ExecutorApprovalService for ExecutorApprovalBridge {
             ApprovalOutcome::Approved => Ok(ApprovalStatus::Approved),
             ApprovalOutcome::Denied { reason } => Ok(ApprovalStatus::Denied { reason }),
             ApprovalOutcome::TimedOut => Ok(ApprovalStatus::TimedOut),
-            ApprovalOutcome::Answered { .. } => Err(ExecutorApprovalError::request_failed(
-                "unexpected question response for permission request",
+            ApprovalOutcome::Answered { .. } | ApprovalOutcome::HostCommandCompleted { .. } => {
+                Err(ExecutorApprovalError::request_failed(
+                    "unexpected non-permission response for permission request",
+                ))
+            }
+        }
+    }
+
+    async fn create_host_command_approval(
+        &self,
+        host_command: HostCommandRequest,
+    ) -> Result<String, ExecutorApprovalError> {
+        let mut request =
+            ApprovalRequest::new("host_command".to_string(), self.execution_process_id);
+        request.host_command = Some(host_command);
+        let (request, waiter) = self
+            .approvals
+            .create_with_waiter(request, false)
+            .await
+            .map_err(ExecutorApprovalError::request_failed)?;
+        let approval_id = request.id.clone();
+        self.waiters
+            .lock()
+            .await
+            .insert(approval_id.clone(), waiter);
+        self.notification_service
+            .notify(
+                "Host Command Approval Needed",
+                "A command requests host execution outside the sandbox",
+                None,
+            )
+            .await;
+        Ok(approval_id)
+    }
+
+    async fn wait_host_command_result(
+        &self,
+        approval_id: &str,
+        cancel: CancellationToken,
+    ) -> Result<HostCommandResult, ExecutorApprovalError> {
+        match self.wait_internal(approval_id, cancel).await? {
+            ApprovalOutcome::HostCommandCompleted { result } => Ok(result),
+            ApprovalOutcome::Denied { reason } => Err(ExecutorApprovalError::request_failed(
+                reason.unwrap_or_else(|| "host command denied".to_string()),
+            )),
+            ApprovalOutcome::TimedOut => Err(ExecutorApprovalError::request_failed(
+                "host command approval timed out",
+            )),
+            _ => Err(ExecutorApprovalError::request_failed(
+                "unexpected host command approval outcome",
             )),
         }
     }
@@ -169,9 +220,11 @@ impl ExecutorApprovalService for ExecutorApprovalBridge {
         match outcome {
             ApprovalOutcome::Answered { answers } => Ok(QuestionStatus::Answered { answers }),
             ApprovalOutcome::TimedOut => Ok(QuestionStatus::TimedOut),
-            ApprovalOutcome::Approved | ApprovalOutcome::Denied { .. } => {
+            ApprovalOutcome::Approved
+            | ApprovalOutcome::Denied { .. }
+            | ApprovalOutcome::HostCommandCompleted { .. } => {
                 Err(ExecutorApprovalError::request_failed(
-                    "unexpected permission response for question request",
+                    "unexpected non-question response for question request",
                 ))
             }
         }

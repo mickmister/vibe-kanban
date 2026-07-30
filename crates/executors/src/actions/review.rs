@@ -11,6 +11,7 @@ use crate::{
     env::ExecutionEnv,
     executors::{BaseCodingAgent, ExecutorError, SpawnedChild, StandardCodingAgentExecutor},
     profile::{ExecutorConfig, ExecutorConfigs},
+    sandbox::resolve_workspace_subpath,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
@@ -56,7 +57,10 @@ impl Executable for ReviewRequest {
         approvals: Arc<dyn ExecutorApprovalService>,
         env: &ExecutionEnv,
     ) -> Result<SpawnedChild, ExecutorError> {
-        let effective_dir = self.effective_dir(current_dir);
+        let effective_dir = resolve_workspace_subpath(
+            current_dir,
+            self.working_dir.as_deref().map(std::path::Path::new),
+        )?;
 
         let profile_id = self.executor_config.profile_id();
         let mut agent = ExecutorConfigs::get_cached()
@@ -73,7 +77,8 @@ impl Executable for ReviewRequest {
                 &effective_dir,
                 &self.prompt,
                 self.session_id.as_deref(),
-                env,
+                &env.clone()
+                    .with_sandbox(self.executor_config.sandbox.clone()),
             )
             .await
     }

@@ -19,6 +19,7 @@ use crate::{
         utils::{ConversationPatch, EntryIndexProvider},
     },
     profile::ExecutorConfig,
+    sandbox::resolve_workspace_subpath,
     stdout_dup::spawn_local_output_process,
 };
 
@@ -126,7 +127,10 @@ impl Executable for CodingAgentSessionCommandRequest {
             return spawn_static_session_command_reply(message).await;
         }
 
-        let effective_dir = self.effective_dir(current_dir);
+        let effective_dir = resolve_workspace_subpath(
+            current_dir,
+            self.working_dir.as_deref().map(std::path::Path::new),
+        )?;
         let session_id = self.session_id.as_deref().ok_or_else(|| {
             ExecutorError::Io(std::io::Error::other(
                 "No active session for session command",
@@ -139,7 +143,14 @@ impl Executable for CodingAgentSessionCommandRequest {
             tracing::info!("QA mode: using mock executor for session command");
             let executor = crate::executors::qa_mock::QaMockExecutor;
             return executor
-                .spawn_follow_up(&effective_dir, &prompt, session_id, None, env)
+                .spawn_follow_up(
+                    &effective_dir,
+                    &prompt,
+                    session_id,
+                    None,
+                    &env.clone()
+                        .with_sandbox(self.executor_config.sandbox.clone()),
+                )
                 .await;
         }
 
@@ -156,7 +167,14 @@ impl Executable for CodingAgentSessionCommandRequest {
             agent.use_approvals(approvals);
 
             agent
-                .spawn_follow_up(&effective_dir, &prompt, session_id, None, env)
+                .spawn_follow_up(
+                    &effective_dir,
+                    &prompt,
+                    session_id,
+                    None,
+                    &env.clone()
+                        .with_sandbox(self.executor_config.sandbox.clone()),
+                )
                 .await
         }
     }

@@ -3,7 +3,7 @@ use std::{collections::HashMap, path::PathBuf};
 use git::GitService;
 use tokio::process::Command;
 
-use crate::command::CmdOverrides;
+use crate::{command::CmdOverrides, sandbox::AgentSandboxConfig};
 
 /// Repository context for executor operations
 #[derive(Debug, Clone, Default)]
@@ -81,6 +81,7 @@ pub struct ExecutionEnv {
     pub repo_context: RepoContext,
     pub commit_reminder: bool,
     pub commit_reminder_prompt: String,
+    pub sandbox: Option<AgentSandboxConfig>,
 }
 
 impl ExecutionEnv {
@@ -94,7 +95,13 @@ impl ExecutionEnv {
             repo_context,
             commit_reminder,
             commit_reminder_prompt,
+            sandbox: None,
         }
+    }
+
+    pub fn with_sandbox(mut self, sandbox: Option<AgentSandboxConfig>) -> Self {
+        self.sandbox = sandbox;
+        self
     }
 
     /// Insert an environment variable

@@ -13,6 +13,7 @@ use ts_rs::TS;
 use crate::{
     executors::{AvailabilityInfo, BaseCodingAgent, CodingAgent, StandardCodingAgentExecutor},
     model_selector::PermissionPolicy,
+    sandbox::AgentSandboxConfig,
 };
 
 /// Return the canonical form for variant keys.
@@ -141,6 +142,9 @@ pub struct ExecutorConfig {
     /// Permission policy override
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permission_policy: Option<PermissionPolicy>,
+    /// Optional per-turn agent sandbox configuration. Snapshotted into executor actions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sandbox: Option<AgentSandboxConfig>,
 }
 
 impl ExecutorConfig {
@@ -153,6 +157,7 @@ impl ExecutorConfig {
             agent_id: None,
             reasoning_id: None,
             permission_policy: None,
+            sandbox: None,
         }
     }
 
@@ -182,6 +187,7 @@ impl From<ExecutorProfileId> for ExecutorConfig {
             agent_id: None,
             reasoning_id: None,
             permission_policy: None,
+            sandbox: None,
         }
     }
 }

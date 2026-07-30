@@ -36,7 +36,7 @@ use tokio::{
     sync::Mutex,
 };
 use tokio_util::sync::CancellationToken;
-use workspace_utils::approvals::{ApprovalStatus, QuestionStatus};
+use workspace_utils::approvals::{ApprovalStatus, HostCommandRequest, QuestionStatus};
 
 use super::jsonrpc::{JsonRpcCallbacks, JsonRpcPeer};
 use crate::{
@@ -397,6 +397,36 @@ impl McpStartupTraceState {
     }
 }
 
+fn parse_host_command_line(
+    command: Option<&str>,
+    cwd: Option<String>,
+    reason: Option<&str>,
+    default_cwd: &std::path::Path,
+) -> Option<HostCommandRequest> {
+    let command = command?.trim();
+    let inner = command.strip_prefix("vk-host-command ")?.trim().to_string();
+    if inner.is_empty() {
+        return None;
+    }
+    Some(HostCommandRequest {
+        command: inner,
+        cwd: cwd.unwrap_or_else(|| default_cwd.to_string_lossy().to_string()),
+        reason: reason
+            .unwrap_or("Agent requested host command execution")
+            .to_string(),
+        env: std::collections::HashMap::new(),
+        timeout_secs: 600,
+        output_limit_bytes: 64 * 1024,
+    })
+}
+
+fn host_command_feedback(result: &workspace_utils::approvals::HostCommandResult) -> String {
+    format!(
+        "Host command completed outside the sandbox. exit_code={:?} timed_out={} truncated={}\nstdout:\n{}\nstderr:\n{}",
+        result.exit_code, result.timed_out, result.truncated, result.stdout, result.stderr
+    )
+}
+
 pub struct AppServerClient {
     rpc: OnceLock<JsonRpcPeer>,
     log_writer: LogWriter,
@@ -710,6 +740,36 @@ impl AppServerClient {
                 self.trace_tool_request("command_execution_approval", &request_id)
                     .await;
                 let call_id = params.item_id.clone();
+                if let Some(request) = parse_host_command_line(
+                    params.command.as_deref(),
+                    params
+                        .cwd
+                        .as_ref()
+                        .map(|cwd| cwd.as_path().to_string_lossy().to_string()),
+                    params.reason.as_deref(),
+                    &self.repo_context.workspace_root,
+                ) {
+                    let approval_service = self
+                        .approvals
+                        .as_ref()
+                        .ok_or(ExecutorApprovalError::ServiceUnavailable)?;
+                    let approval_id = approval_service
+                        .create_host_command_approval(request)
+                        .await?;
+                    let result = approval_service
+                        .wait_host_command_result(&approval_id, self.cancel.clone())
+                        .await?;
+                    send_server_response(
+                        peer,
+                        request_id,
+                        CommandExecutionRequestApprovalResponse {
+                            decision: CommandExecutionApprovalDecision::Cancel,
+                        },
+                    )
+                    .await?;
+                    self.enqueue_feedback(host_command_feedback(&result)).await;
+                    return Ok(());
+                }
                 let status = self
                     .request_tool_approval("bash", "codex.exec_command", &call_id)
                     .await

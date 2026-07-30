@@ -4,7 +4,9 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
-use workspace_utils::approvals::{ApprovalStatus, QuestionStatus};
+use workspace_utils::approvals::{
+    ApprovalStatus, HostCommandRequest, HostCommandResult, QuestionStatus,
+};
 
 /// Errors emitted by executor approval services.
 #[derive(Debug, Error)]
@@ -45,6 +47,17 @@ pub trait ExecutorApprovalService: Send + Sync {
         cancel: CancellationToken,
     ) -> Result<ApprovalStatus, ExecutorApprovalError>;
 
+    async fn create_host_command_approval(
+        &self,
+        request: HostCommandRequest,
+    ) -> Result<String, ExecutorApprovalError>;
+
+    async fn wait_host_command_result(
+        &self,
+        approval_id: &str,
+        cancel: CancellationToken,
+    ) -> Result<HostCommandResult, ExecutorApprovalError>;
+
     /// Waits for a question to be answered. Blocks until answered/timed out.
     async fn wait_question_answer(
         &self,
@@ -79,6 +92,21 @@ impl ExecutorApprovalService for NoopExecutorApprovalService {
         _cancel: CancellationToken,
     ) -> Result<ApprovalStatus, ExecutorApprovalError> {
         Ok(ApprovalStatus::Approved)
+    }
+
+    async fn create_host_command_approval(
+        &self,
+        _request: HostCommandRequest,
+    ) -> Result<String, ExecutorApprovalError> {
+        Err(ExecutorApprovalError::ServiceUnavailable)
+    }
+
+    async fn wait_host_command_result(
+        &self,
+        _approval_id: &str,
+        _cancel: CancellationToken,
+    ) -> Result<HostCommandResult, ExecutorApprovalError> {
+        Err(ExecutorApprovalError::ServiceUnavailable)
     }
 
     async fn wait_question_answer(

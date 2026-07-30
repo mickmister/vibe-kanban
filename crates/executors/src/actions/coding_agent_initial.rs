@@ -12,6 +12,7 @@ use crate::{
     env::ExecutionEnv,
     executors::{BaseCodingAgent, ExecutorError, SpawnedChild, StandardCodingAgentExecutor},
     profile::ExecutorConfig,
+    sandbox::resolve_workspace_subpath,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
@@ -48,13 +49,23 @@ impl Executable for CodingAgentInitialRequest {
         approvals: Arc<dyn ExecutorApprovalService>,
         env: &ExecutionEnv,
     ) -> Result<SpawnedChild, ExecutorError> {
-        let effective_dir = self.effective_dir(current_dir);
+        let effective_dir = resolve_workspace_subpath(
+            current_dir,
+            self.working_dir.as_deref().map(std::path::Path::new),
+        )?;
 
         #[cfg(feature = "qa-mode")]
         {
             tracing::info!("QA mode: using mock executor instead of real agent");
             let executor = crate::executors::qa_mock::QaMockExecutor;
-            return executor.spawn(&effective_dir, &self.prompt, env).await;
+            return executor
+                .spawn(
+                    &effective_dir,
+                    &self.prompt,
+                    &env.clone()
+                        .with_sandbox(self.executor_config.sandbox.clone()),
+                )
+                .await;
         }
 
         #[cfg(not(feature = "qa-mode"))]
@@ -69,7 +80,14 @@ impl Executable for CodingAgentInitialRequest {
             }
             agent.use_approvals(approvals.clone());
 
-            agent.spawn(&effective_dir, &self.prompt, env).await
+            agent
+                .spawn(
+                    &effective_dir,
+                    &self.prompt,
+                    &env.clone()
+                        .with_sandbox(self.executor_config.sandbox.clone()),
+                )
+                .await
         }
     }
 }

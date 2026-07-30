@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use tokio_util::sync::CancellationToken;
-use workspace_utils::approvals::{ApprovalStatus, QuestionStatus};
+use workspace_utils::approvals::{ApprovalStatus, HostCommandRequest, QuestionStatus};
 
 use super::types::PermissionMode;
 use crate::{
@@ -37,6 +37,63 @@ pub struct ClaudeAgentClient {
     cancel: CancellationToken,
 }
 
+fn parse_host_command_request(
+    tool_name: &str,
+    input: &serde_json::Value,
+    default_cwd: &std::path::Path,
+) -> Option<HostCommandRequest> {
+    if !matches!(
+        tool_name,
+        "HostCommand" | "host_command" | "request_host_command"
+    ) {
+        return None;
+    }
+    let command = input.get("command")?.as_str()?.trim().to_string();
+    if command.is_empty() {
+        return None;
+    }
+    let cwd = input
+        .get("cwd")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.trim().is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| default_cwd.to_string_lossy().to_string());
+    let reason = input
+        .get("reason")
+        .and_then(|v| v.as_str())
+        .unwrap_or("Agent requested host command execution")
+        .to_string();
+    let timeout_secs = input
+        .get("timeout_secs")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(600)
+        .min(3600);
+    let output_limit_bytes = input
+        .get("output_limit_bytes")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(64 * 1024)
+        .min(1024 * 1024) as usize;
+    let env = input
+        .get("env")
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+        .unwrap_or_default();
+    Some(HostCommandRequest {
+        command,
+        cwd,
+        reason,
+        env,
+        timeout_secs,
+        output_limit_bytes,
+    })
+}
+
+fn host_command_feedback(result: &workspace_utils::approvals::HostCommandResult) -> String {
+    format!(
+        "Host command completed outside the sandbox. exit_code={:?} timed_out={} truncated={}\nstdout:\n{}\nstderr:\n{}",
+        result.exit_code, result.timed_out, result.truncated, result.stdout, result.stderr
+    )
+}
+
 impl ClaudeAgentClient {
     /// Create a new client with optional approval service
     pub fn new(
@@ -67,6 +124,21 @@ impl ClaudeAgentClient {
             .approvals
             .as_ref()
             .ok_or(ExecutorApprovalError::ServiceUnavailable)?;
+
+        if let Some(request) =
+            parse_host_command_request(&tool_name, &tool_input, &self.repo_context.workspace_root)
+        {
+            let approval_id = approval_service
+                .create_host_command_approval(request)
+                .await?;
+            let result = approval_service
+                .wait_host_command_result(&approval_id, self.cancel.clone())
+                .await?;
+            return Ok(PermissionResult::Deny {
+                message: host_command_feedback(&result),
+                interrupt: Some(false),
+            });
+        }
 
         let approval_id = match approval_service.create_tool_approval(&tool_name).await {
             Ok(id) => id,

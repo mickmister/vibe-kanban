@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -12,6 +14,38 @@ pub struct ApprovalRequest {
     pub execution_process_id: Uuid,
     pub created_at: DateTime<Utc>,
     pub timeout_at: DateTime<Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub host_command: Option<HostCommandRequest>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq, Eq)]
+pub struct HostCommandRequest {
+    pub command: String,
+    pub cwd: String,
+    pub reason: String,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub env: HashMap<String, String>,
+    #[serde(default = "default_host_command_timeout_secs")]
+    pub timeout_secs: u64,
+    #[serde(default = "default_host_command_output_limit_bytes")]
+    pub output_limit_bytes: usize,
+}
+
+fn default_host_command_timeout_secs() -> u64 {
+    600
+}
+fn default_host_command_output_limit_bytes() -> usize {
+    64 * 1024
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq, Eq)]
+pub struct HostCommandResult {
+    pub exit_code: Option<i64>,
+    pub timed_out: bool,
+    pub stdout: String,
+    pub stderr: String,
+    pub truncated: bool,
 }
 
 impl ApprovalRequest {
@@ -23,6 +57,7 @@ impl ApprovalRequest {
             execution_process_id,
             created_at: now,
             timeout_at: now + Duration::seconds(APPROVAL_TIMEOUT_SECONDS),
+            host_command: None,
         }
     }
 }
@@ -66,6 +101,9 @@ pub enum ApprovalOutcome {
     },
     Answered {
         answers: Vec<QuestionAnswer>,
+    },
+    HostCommandCompleted {
+        result: HostCommandResult,
     },
     TimedOut,
 }

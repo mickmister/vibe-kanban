@@ -193,6 +193,7 @@ impl StandardCodingAgentExecutor for Gemini {
             } else {
                 PermissionPolicy::Supervised
             }),
+            sandbox: None,
         }
     }
 

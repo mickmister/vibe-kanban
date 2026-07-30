@@ -80,6 +80,7 @@ use crate::{
     logs::utils::patch,
     model_selector::{ModelInfo, ModelSelectorConfig, PermissionPolicy, ReasoningOption},
     profile::ExecutorConfig,
+    sandbox::prepare_agent_command,
     stdout_dup::create_stdout_pipe_writer,
 };
 
@@ -307,6 +308,7 @@ impl StandardCodingAgentExecutor for Codex {
                 .as_ref()
                 .map(|e| e.as_ref().to_string()),
             permission_policy: Some(permission_policy),
+            sandbox: None,
         }
     }
 
@@ -701,8 +703,11 @@ impl Codex {
                 "codex.resolve_command"
             ))
             .await?;
+        let prepared =
+            prepare_agent_command(program_path, args, current_dir, env, &self.cmd).await?;
 
-        let mut process = Command::new(program_path);
+        let mut process = Command::new(&prepared.program);
+        prepared.apply_env_to_command(&mut process);
         process
             .kill_on_drop(true)
             .stdin(std::process::Stdio::piped())
@@ -711,16 +716,12 @@ impl Codex {
             // of the agent log stream here, and leaving a piped stderr unread can
             // block the child process if diagnostics/tracing emits enough logs.
             .stderr(std::process::Stdio::null())
-            .current_dir(current_dir)
+            .current_dir(&prepared.current_dir)
             .env("NPM_CONFIG_LOGLEVEL", "error")
             .env("NODE_NO_WARNINGS", "1")
             .env("NO_COLOR", "1")
             .env("RUST_LOG", "error")
-            .args(&args);
-
-        env.clone()
-            .with_profile(&self.cmd)
-            .apply_to_command(&mut process);
+            .args(&prepared.args);
 
         let mut child = {
             let _span = tracing::debug_span!(

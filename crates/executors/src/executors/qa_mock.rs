@@ -5,7 +5,11 @@
 //! 2. Streams 10 mock log entries over 10 seconds
 //! 3. Outputs logs in ClaudeJson format for compatibility with existing log normalization
 
-use std::{path::Path, process::Stdio, sync::Arc};
+use std::{
+    path::{Path, PathBuf},
+    process::Stdio,
+    sync::Arc,
+};
 
 use async_trait::async_trait;
 use rand::seq::SliceRandom as _;
@@ -16,6 +20,7 @@ use ts_rs::TS;
 use workspace_utils::{command_ext::GroupSpawnNoWindowExt, msg_store::MsgStore};
 
 use crate::{
+    command::CmdOverrides,
     env::ExecutionEnv,
     executors::{
         BaseCodingAgent, ExecutorError, SpawnedChild, StandardCodingAgentExecutor,
@@ -25,6 +30,7 @@ use crate::{
     },
     logs::utils::EntryIndexProvider,
     profile::ExecutorConfig,
+    sandbox::prepare_agent_command,
 };
 
 /// Mock executor for QA testing
@@ -65,10 +71,18 @@ impl StandardCodingAgentExecutor for QaMockExecutor {
             log_file.display()
         );
 
-        let mut cmd = tokio::process::Command::new("sh");
-        cmd.arg("-c")
-            .arg(&script)
-            .current_dir(current_dir)
+        let prepared = prepare_agent_command(
+            PathBuf::from("sh"),
+            vec!["-c".to_string(), script],
+            current_dir,
+            _env,
+            &CmdOverrides::default(),
+        )
+        .await?;
+        let mut cmd = tokio::process::Command::new(&prepared.program);
+        prepared.apply_env_to_command(&mut cmd);
+        cmd.args(&prepared.args)
+            .current_dir(&prepared.current_dir)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
@@ -117,6 +131,7 @@ impl StandardCodingAgentExecutor for QaMockExecutor {
             agent_id: None,
             reasoning_id: None,
             permission_policy: Some(crate::model_selector::PermissionPolicy::Auto),
+            sandbox: None,
         }
     }
 }

@@ -53,6 +53,7 @@ use crate::{
     },
     model_selector::PermissionPolicy,
     profile::ExecutorConfig,
+    sandbox::prepare_agent_command,
     stdout_dup::create_stdout_pipe_writer,
 };
 
@@ -589,6 +590,7 @@ impl StandardCodingAgentExecutor for ClaudeCode {
             agent_id: None,
             reasoning_id: self.effort.as_ref().map(|e| e.as_ref().to_owned()),
             permission_policy: Some(permission_policy),
+            sandbox: None,
         }
     }
 
@@ -625,21 +627,20 @@ impl ClaudeCode {
         env: &ExecutionEnv,
     ) -> Result<SpawnedChild, ExecutorError> {
         let (program_path, args) = command_parts.into_resolved().await?;
+        let prepared =
+            prepare_agent_command(program_path, args, current_dir, env, &self.cmd).await?;
         let combined_prompt = self.append_prompt.combine_prompt(prompt);
 
-        let mut command = Command::new(program_path);
+        let mut command = Command::new(&prepared.program);
+        prepared.apply_env_to_command(&mut command);
         command
             .kill_on_drop(true)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .current_dir(current_dir)
+            .current_dir(&prepared.current_dir)
             .env("NPM_CONFIG_LOGLEVEL", "error")
-            .args(&args);
-
-        env.clone()
-            .with_profile(&self.cmd)
-            .apply_to_command(&mut command);
+            .args(&prepared.args);
 
         // Remove ANTHROPIC_API_KEY if disable_api_key is enabled
         if self.disable_api_key.unwrap_or(false) {

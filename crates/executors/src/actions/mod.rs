@@ -98,3 +98,69 @@ impl Executable for ExecutorAction {
         self.typ.spawn(current_dir, approvals, env).await
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::{ExecutorAction, ExecutorActionType};
+    use crate::sandbox::SandboxNetworkMode;
+
+    #[test]
+    fn sandbox_config_serializes_on_initial_and_queued_follow_up_actions() {
+        let action: ExecutorAction = serde_json::from_value(json!({
+            "typ": {
+                "type": "CodingAgentInitialRequest",
+                "prompt": "start",
+                "executor_config": {
+                    "executor": "CLAUDE_CODE",
+                    "sandbox": {
+                        "enabled": true,
+                        "network": "none",
+                        "readonly_repo_paths": ["node_modules", "target"]
+                    }
+                },
+                "working_dir": "repo"
+            },
+            "next_action": {
+                "typ": {
+                    "type": "CodingAgentFollowUpRequest",
+                    "prompt": "continue",
+                    "session_id": "session-1",
+                    "executor_config": {
+                        "executor": "CODEX",
+                        "sandbox": {
+                            "enabled": true,
+                            "network": "inherit"
+                        }
+                    },
+                    "working_dir": "repo"
+                },
+                "next_action": null
+            }
+        }))
+        .unwrap();
+
+        let ExecutorActionType::CodingAgentInitialRequest(initial) = &action.typ else {
+            panic!("expected initial action");
+        };
+        assert!(initial.executor_config.sandbox.as_ref().unwrap().enabled);
+        assert_eq!(
+            initial.executor_config.sandbox.as_ref().unwrap().network,
+            SandboxNetworkMode::None
+        );
+
+        let ExecutorActionType::CodingAgentFollowUpRequest(follow_up) =
+            &action.next_action.as_ref().unwrap().typ
+        else {
+            panic!("expected follow-up action");
+        };
+        assert!(follow_up.executor_config.sandbox.as_ref().unwrap().enabled);
+
+        let serialized = serde_json::to_value(action).unwrap();
+        assert_eq!(
+            serialized["next_action"]["typ"]["executor_config"]["sandbox"]["enabled"],
+            true
+        );
+    }
+}

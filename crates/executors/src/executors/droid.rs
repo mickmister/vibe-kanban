@@ -19,6 +19,7 @@ use crate::{
     logs::utils::{EntryIndexProvider, patch},
     model_selector::{ModelInfo, ModelSelectorConfig},
     profile::ExecutorConfig,
+    sandbox::prepare_agent_command,
 };
 
 pub mod normalize_logs;
@@ -115,20 +116,19 @@ async fn spawn_droid(
     cmd_overrides: &crate::command::CmdOverrides,
 ) -> Result<SpawnedChild, ExecutorError> {
     let (program_path, args) = command_parts.into_resolved().await?;
+    let prepared =
+        prepare_agent_command(program_path, args, current_dir, env, cmd_overrides).await?;
 
-    let mut command = Command::new(program_path);
+    let mut command = Command::new(&prepared.program);
+    prepared.apply_env_to_command(&mut command);
     command
         .kill_on_drop(true)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .current_dir(current_dir)
+        .current_dir(&prepared.current_dir)
         .env("NPM_CONFIG_LOGLEVEL", "error")
-        .args(args);
-
-    env.clone()
-        .with_profile(cmd_overrides)
-        .apply_to_command(&mut command);
+        .args(&prepared.args);
 
     let mut child = command.group_spawn_no_window()?;
 
@@ -227,6 +227,7 @@ impl StandardCodingAgentExecutor for Droid {
                 .as_ref()
                 .map(|e| e.as_ref().to_string()),
             permission_policy: Some(crate::model_selector::PermissionPolicy::Auto),
+            sandbox: None,
         }
     }
 

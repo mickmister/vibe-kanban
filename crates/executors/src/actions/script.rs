@@ -11,6 +11,7 @@ use crate::{
     approvals::ExecutorApprovalService,
     env::ExecutionEnv,
     executors::{ExecutorError, SpawnedChild},
+    sandbox::resolve_workspace_subpath,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
@@ -46,11 +47,11 @@ impl Executable for ScriptRequest {
         _approvals: Arc<dyn ExecutorApprovalService>,
         env: &ExecutionEnv,
     ) -> Result<SpawnedChild, ExecutorError> {
-        // Use working_dir if specified, otherwise use current_dir
-        let effective_dir = match &self.working_dir {
-            Some(rel_path) => current_dir.join(rel_path),
-            None => current_dir.to_path_buf(),
-        };
+        // Use working_dir if specified, otherwise use current_dir.
+        let effective_dir = resolve_workspace_subpath(
+            current_dir,
+            self.working_dir.as_deref().map(std::path::Path::new),
+        )?;
 
         let (shell_cmd, shell_arg) = get_shell_command();
         let mut command = Command::new(shell_cmd);
