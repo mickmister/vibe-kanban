@@ -453,21 +453,17 @@ pub fn build_sandbox_exec_profile(
         profile.push_str("(deny network*)\n");
     }
 
-    for path in sandbox_exec_system_read_paths() {
-        push_sbpl_rule(
-            &mut profile,
-            "allow",
-            "file-read*",
-            "subpath",
-            Path::new(path),
-        );
-        push_sbpl_rule(
-            &mut profile,
-            "allow",
-            "file-map-executable",
-            "subpath",
-            Path::new(path),
-        );
+    // macOS command-line tools often need runtime reads from locations that are
+    // not stable across OS releases. Allow host reads by default for compatibility,
+    // then explicitly hide the user's HOME and re-allow the workspace, sandbox
+    // HOME, and configured read/auth paths below. sandbox-exec cannot provide
+    // bwrap-style mount namespaces, so this backend primarily enforces write
+    // containment plus HOME read isolation.
+    profile.push_str("(allow file-read*)\n");
+    if let Some(home) = dirs::home_dir() {
+        if let Ok(home) = home.canonicalize() {
+            push_sbpl_rule(&mut profile, "deny", "file-read*", "subpath", &home);
+        }
     }
     for path in ["/dev/null", "/dev/random", "/dev/urandom", "/dev/tty"] {
         push_sbpl_rule(
@@ -550,17 +546,6 @@ pub fn build_sandbox_exec_profile(
     }
 
     Ok(profile)
-}
-
-fn sandbox_exec_system_read_paths() -> &'static [&'static str] {
-    &[
-        "/System",
-        "/usr",
-        "/bin",
-        "/sbin",
-        "/Library",
-        "/private/etc",
-    ]
 }
 
 fn push_sbpl_rule(profile: &mut String, effect: &str, operation: &str, filter: &str, path: &Path) {
@@ -892,6 +877,12 @@ mod tests {
         let root_canonical = root.path().canonicalize().unwrap();
         assert!(profile.contains("(deny default)"));
         assert!(profile.contains("(deny network*)"));
+        if let Some(home_dir) = dirs::home_dir().and_then(|home| home.canonicalize().ok()) {
+            assert!(profile.contains(&format!(
+                "(deny file-read* (subpath {}))",
+                sbpl_quote(&home_dir.to_string_lossy())
+            )));
+        }
         assert!(profile.contains(&format!(
             "(allow file-write* (subpath {}))",
             sbpl_quote(&root_canonical.to_string_lossy())
@@ -1073,7 +1064,7 @@ mod tests {
             Path::new("/bin/sh"),
             &[
                 "-c".to_string(),
-                "echo ok > allowed.txt; echo denied > node_modules/blocked.txt".to_string(),
+                "set -e; echo ok > allowed.txt; echo denied > node_modules/blocked.txt".to_string(),
             ],
             &env,
         )
@@ -1089,6 +1080,64 @@ mod tests {
         assert!(!status.success());
         assert!(root.path().join("repo/allowed.txt").exists());
         assert!(!root.path().join("repo/node_modules/blocked.txt").exists());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn sandbox_exec_blocks_home_read_but_allows_workspace_under_home_on_macos() {
+        let home_dir = dirs::home_dir().unwrap().canonicalize().unwrap();
+        let root = tempfile::tempdir_in(&home_dir).unwrap();
+        std::fs::create_dir_all(root.path().join("repo")).unwrap();
+        let sandbox_home = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(sandbox_home.path().join("tmp")).unwrap();
+        let secret = tempfile::NamedTempFile::new_in(&home_dir).unwrap();
+        std::fs::write(secret.path(), "secret").unwrap();
+        let env = ExecutionEnv {
+            vars: HashMap::new(),
+            repo_context: RepoContext::new(root.path().to_path_buf(), vec!["repo".to_string()]),
+            commit_reminder: false,
+            commit_reminder_prompt: String::new(),
+            sandbox: None,
+        };
+        let cfg = AgentSandboxConfig {
+            enabled: true,
+            backend: SandboxBackend::SandboxExec,
+            network: SandboxNetworkMode::None,
+            ..Default::default()
+        };
+        let args = build_sandbox_exec_args(
+            &cfg,
+            root.path(),
+            &root.path().join("repo"),
+            sandbox_home.path(),
+            Path::new("/bin/sh"),
+            &[
+                "-c".to_string(),
+                format!(
+                    "cat {} > leak.txt 2>/dev/null || true; echo ok > allowed.txt",
+                    shell_single_quote(secret.path())
+                ),
+            ],
+            &env,
+        )
+        .unwrap();
+        let status = std::process::Command::new("sandbox-exec")
+            .args(&args[1..])
+            .current_dir(root.path().join("repo").canonicalize().unwrap())
+            .env_clear()
+            .env("HOME", sandbox_home.path())
+            .env("TMPDIR", sandbox_home.path().join("tmp"))
+            .status()
+            .unwrap();
+        assert!(status.success());
+        assert!(root.path().join("repo/allowed.txt").exists());
+        let leaked = std::fs::read_to_string(root.path().join("repo/leak.txt")).unwrap_or_default();
+        assert!(leaked.is_empty());
+    }
+
+    #[cfg(target_os = "macos")]
+    fn shell_single_quote(path: &Path) -> String {
+        format!("'{}'", path.to_string_lossy().replace('\'', "'\\''"))
     }
 
     #[test]
