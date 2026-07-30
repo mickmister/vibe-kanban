@@ -52,6 +52,7 @@ sha2 = "0.10"
 fst = "0.4"
 moka = { version = "0.12", features = ["future"] }
 mime_guess = "2.0"
+command-group = { version = "5.0", features = ["with-tokio"] }
 
 [dev-dependencies]
 tempfile = "3"

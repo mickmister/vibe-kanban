@@ -12,7 +12,7 @@ use json_patch::Patch;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::{
-    io::AsyncReadExt,
+    io::{AsyncRead, AsyncReadExt},
     process::Command,
     sync::{broadcast, oneshot},
 };
@@ -22,6 +22,8 @@ use utils::{
     approvals::{
         ApprovalOutcome, ApprovalRequest, ApprovalResponse, HostCommandRequest, HostCommandResult,
     },
+    command_ext::GroupSpawnNoWindowExt,
+    process::kill_process_group,
     shell::get_shell_command,
 };
 use uuid::Uuid;
@@ -345,7 +347,7 @@ async fn run_host_command(request: HostCommandRequest) -> HostCommandResult {
         command.env(key, value);
     }
 
-    let mut child = match command.spawn() {
+    let mut child = match command.group_spawn_no_window() {
         Ok(child) => child,
         Err(err) => {
             return HostCommandResult {
@@ -358,18 +360,11 @@ async fn run_host_command(request: HostCommandRequest) -> HostCommandResult {
         }
     };
 
-    let mut stdout = child.stdout.take().unwrap();
-    let mut stderr = child.stderr.take().unwrap();
-    let out_task = tokio::spawn(async move {
-        let mut buf = Vec::new();
-        let _ = stdout.read_to_end(&mut buf).await;
-        buf
-    });
-    let err_task = tokio::spawn(async move {
-        let mut buf = Vec::new();
-        let _ = stderr.read_to_end(&mut buf).await;
-        buf
-    });
+    let stdout = child.inner().stdout.take().unwrap();
+    let stderr = child.inner().stderr.take().unwrap();
+    let output_limit = request.output_limit_bytes;
+    let out_task = tokio::spawn(capture_bounded_stream(stdout, output_limit));
+    let err_task = tokio::spawn(capture_bounded_stream(stderr, output_limit));
 
     let wait = tokio::time::timeout(
         std::time::Duration::from_secs(request.timeout_secs),
@@ -388,40 +383,50 @@ async fn run_host_command(request: HostCommandRequest) -> HostCommandResult {
             };
         }
         Err(_) => {
-            let _ = child.kill().await;
+            let _ = kill_process_group(&mut child).await;
             (None, true)
         }
     };
 
-    let stdout = out_task.await.unwrap_or_default();
-    let stderr = err_task.await.unwrap_or_default();
-    let (stdout, stderr, truncated) = truncate_output(stdout, stderr, request.output_limit_bytes);
+    let (stdout, stdout_truncated) = out_task.await.unwrap_or_default();
+    let (stderr, stderr_truncated) = err_task.await.unwrap_or_default();
     HostCommandResult {
         exit_code,
         timed_out,
-        stdout,
-        stderr,
-        truncated,
+        stdout: String::from_utf8_lossy(&stdout).to_string(),
+        stderr: String::from_utf8_lossy(&stderr).to_string(),
+        truncated: stdout_truncated || stderr_truncated,
     }
 }
 
-fn truncate_output(stdout: Vec<u8>, stderr: Vec<u8>, limit: usize) -> (String, String, bool) {
+async fn capture_bounded_stream<R>(mut reader: R, limit: usize) -> (Vec<u8>, bool)
+where
+    R: AsyncRead + Unpin,
+{
+    let mut captured = Vec::with_capacity(limit.min(8192));
     let mut truncated = false;
-    let mut stdout = stdout;
-    let mut stderr = stderr;
-    if stdout.len() > limit {
-        stdout.truncate(limit);
-        truncated = true;
+    let mut buffer = [0_u8; 8192];
+
+    loop {
+        let read = match reader.read(&mut buffer).await {
+            Ok(0) => break,
+            Ok(read) => read,
+            Err(_) => break,
+        };
+
+        let remaining = limit.saturating_sub(captured.len());
+        if remaining > 0 {
+            let to_keep = remaining.min(read);
+            captured.extend_from_slice(&buffer[..to_keep]);
+            if to_keep < read {
+                truncated = true;
+            }
+        } else {
+            truncated = true;
+        }
     }
-    if stderr.len() > limit {
-        stderr.truncate(limit);
-        truncated = true;
-    }
-    (
-        String::from_utf8_lossy(&stdout).to_string(),
-        String::from_utf8_lossy(&stderr).to_string(),
-        truncated,
-    )
+
+    (captured, truncated)
 }
 
 #[cfg(test)]
@@ -552,5 +557,52 @@ mod tests {
         assert_eq!(result.exit_code, Some(0));
         assert_eq!(result.stdout, "abc");
         assert!(result.truncated);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn noisy_host_command_capture_stays_bounded() {
+        let result = run_host_command(HostCommandRequest {
+            command: "yes".to_string(),
+            cwd: std::env::current_dir()
+                .unwrap()
+                .to_string_lossy()
+                .to_string(),
+            reason: "test".to_string(),
+            env: Default::default(),
+            timeout_secs: 1,
+            output_limit_bytes: 64,
+        })
+        .await;
+        assert!(result.timed_out);
+        assert!(result.truncated);
+        assert!(result.stdout.len() <= 64);
+        assert!(result.stderr.len() <= 64);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn timeout_kills_host_command_process_group() {
+        fn shell_quote(path: &std::path::Path) -> String {
+            format!("'{}'", path.to_string_lossy().replace('\'', "'\\''"))
+        }
+
+        let marker_dir = tempfile::tempdir().unwrap();
+        let marker = marker_dir.path().join("marker");
+        let result = run_host_command(HostCommandRequest {
+            command: format!("(sleep 2; touch {}) & wait", shell_quote(&marker)),
+            cwd: std::env::current_dir()
+                .unwrap()
+                .to_string_lossy()
+                .to_string(),
+            reason: "test".to_string(),
+            env: Default::default(),
+            timeout_secs: 0,
+            output_limit_bytes: 1024,
+        })
+        .await;
+        assert!(result.timed_out);
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+        assert!(!marker.exists());
     }
 }

@@ -11,6 +11,7 @@ use std::{
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use tokio::process::Command;
 use ts_rs::TS;
 use workspace_utils::shell::resolve_executable_path;
@@ -257,8 +258,28 @@ fn sandbox_home_path(
 ) -> Result<PathBuf, ExecutorError> {
     match config.sandbox_home.as_deref() {
         Some(path) => resolve_workspace_subpath(workspace_root, Some(Path::new(path))),
-        None => Ok(workspace_root.join(".vibe").join("sandbox-home")),
+        None => default_sandbox_home_path(workspace_root),
     }
+}
+
+fn default_sandbox_home_path(workspace_root: &Path) -> Result<PathBuf, ExecutorError> {
+    let workspace_root = workspace_root
+        .canonicalize()
+        .map_err(|err| ExecutorError::InvalidWorkingDir(format!("workspace root: {err}")))?;
+    let data_dir = dirs::data_local_dir()
+        .or_else(dirs::data_dir)
+        .ok_or_else(|| {
+            ExecutorError::SandboxUnavailable(
+                "could not determine a local data directory for sandbox HOME".to_string(),
+            )
+        })?;
+    let mut hasher = Sha256::new();
+    hasher.update(workspace_root.to_string_lossy().as_bytes());
+    let hash = format!("{:x}", hasher.finalize());
+    Ok(data_dir
+        .join("vibe-kanban")
+        .join("sandbox-homes")
+        .join(&hash[..16]))
 }
 
 pub fn build_bwrap_args(
@@ -270,6 +291,9 @@ pub fn build_bwrap_args(
     program_args: &[String],
     env: &ExecutionEnv,
 ) -> Result<Vec<String>, ExecutorError> {
+    let workspace_root = workspace_root
+        .canonicalize()
+        .map_err(|err| ExecutorError::InvalidSandboxConfig(format!("workspace root: {err}")))?;
     let mut args = vec!["bwrap".to_string(), "--unshare-all".to_string()];
     if matches!(config.network, SandboxNetworkMode::Inherit) {
         args.push("--share-net".to_string());
@@ -295,7 +319,7 @@ pub fn build_bwrap_args(
         args.push(path.to_string());
     }
 
-    push_bind(&mut args, "--bind", workspace_root, workspace_root);
+    push_bind(&mut args, "--bind", &workspace_root, &workspace_root);
     push_bind(&mut args, "--bind", sandbox_home, sandbox_home);
 
     for mount in &config.writable_paths {
@@ -317,7 +341,20 @@ pub fn build_bwrap_args(
             }
             let path = workspace_root.join(repo_name).join(rel_path);
             if path.exists() {
-                push_bind(&mut args, "--ro-bind", &path, &path);
+                reject_symlink_components(
+                    &workspace_root,
+                    Path::new(repo_name).join(rel_path).as_path(),
+                )?;
+                let canonical = path.canonicalize().map_err(|err| {
+                    ExecutorError::InvalidSandboxConfig(format!("{}: {err}", path.display()))
+                })?;
+                if !canonical.starts_with(&workspace_root) {
+                    return Err(ExecutorError::InvalidSandboxConfig(format!(
+                        "readonly repo path escapes workspace: {}",
+                        path.display()
+                    )));
+                }
+                push_bind(&mut args, "--ro-bind", &canonical, &path);
             }
         }
     }
@@ -340,6 +377,32 @@ pub fn build_bwrap_args(
     args.push(program_path.to_string_lossy().to_string());
     args.extend(program_args.iter().cloned());
     Ok(args)
+}
+
+fn reject_symlink_components(
+    workspace_root: &Path,
+    relative_path: &Path,
+) -> Result<(), ExecutorError> {
+    let mut cursor = workspace_root.to_path_buf();
+    for component in relative_path.components() {
+        let Component::Normal(name) = component else {
+            return Err(ExecutorError::InvalidSandboxConfig(format!(
+                "invalid readonly repo path component: {}",
+                relative_path.display()
+            )));
+        };
+        cursor.push(name);
+        let metadata = std::fs::symlink_metadata(&cursor).map_err(|err| {
+            ExecutorError::InvalidSandboxConfig(format!("{}: {err}", cursor.display()))
+        })?;
+        if metadata.file_type().is_symlink() {
+            return Err(ExecutorError::InvalidSandboxConfig(format!(
+                "readonly repo path may not contain symlinks: {}",
+                cursor.display()
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn push_bind(args: &mut Vec<String>, flag: &str, src: &Path, dest: &Path) {
@@ -451,9 +514,10 @@ mod tests {
             &env,
         )
         .unwrap();
+        let root_canonical = root.path().canonicalize().unwrap();
         let workspace_bind = args
             .windows(3)
-            .position(|w| w[0] == "--bind" && w[1] == root.path().to_string_lossy());
+            .position(|w| w[0] == "--bind" && w[1] == root_canonical.to_string_lossy());
         let nm_bind = args
             .windows(3)
             .position(|w| w[0] == "--ro-bind" && w[1].ends_with("repo/node_modules"));
@@ -492,6 +556,44 @@ mod tests {
         )
         .unwrap();
         assert!(!args.contains(&"--share-net".to_string()));
+    }
+
+    #[test]
+    fn default_sandbox_home_is_outside_workspace() {
+        let root = tempfile::tempdir().unwrap();
+        let home = sandbox_home_path(&AgentSandboxConfig::default(), root.path()).unwrap();
+        assert!(!home.starts_with(root.path()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn readonly_repo_path_rejects_symlink_escape() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join("repo")).unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(outside.path(), root.path().join("repo/node_modules")).unwrap();
+        let env = ExecutionEnv {
+            vars: HashMap::new(),
+            repo_context: RepoContext::new(root.path().to_path_buf(), vec!["repo".to_string()]),
+            commit_reminder: false,
+            commit_reminder_prompt: String::new(),
+            sandbox: None,
+        };
+        let cfg = AgentSandboxConfig {
+            enabled: true,
+            ..Default::default()
+        };
+        let err = build_bwrap_args(
+            &cfg,
+            root.path(),
+            &root.path().join("repo"),
+            &root.path().join(".home"),
+            Path::new("/bin/true"),
+            &[],
+            &env,
+        )
+        .unwrap_err();
+        assert!(format!("{err}").contains("symlinks"));
     }
 
     #[test]

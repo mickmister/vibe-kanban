@@ -9073,6 +9073,7 @@ dependencies = [
  "async-trait",
  "backon",
  "chrono",
+ "command-group",
  "dashmap",
  "db",
  "dirs 5.0.1",
