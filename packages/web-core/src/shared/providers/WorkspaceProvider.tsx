@@ -1,5 +1,5 @@
 import { ReactNode, useMemo, useCallback, useEffect, useRef } from 'react';
-import { useParams } from '@tanstack/react-router';
+import { useLocation, useParams } from '@tanstack/react-router';
 import { useQueryClient } from '@tanstack/react-query';
 import { useWorkspaces } from '@/shared/hooks/useWorkspaces';
 import { workspaceSummaryKeys } from '@/shared/hooks/workspaceSummaryKeys';
@@ -22,6 +22,7 @@ interface WorkspaceProviderProps {
 
 export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
   const { workspaceId } = useParams({ strict: false });
+  const location = useLocation();
   const appNavigation = useAppNavigation();
   const currentDestination = useCurrentAppDestination();
   const queryClient = useQueryClient();
@@ -48,7 +49,10 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
     isLoading: isSessionsLoading,
     isNewSessionMode,
     startNewSession,
-  } = useWorkspaceSessions(workspaceId, { enabled: !isCreateMode });
+  } = useWorkspaceSessions(workspaceId, {
+    enabled: !isCreateMode,
+    selectedSessionId: getLinkedSessionId(location.search),
+  });
 
   const { repos, isLoading: isReposLoading } = useWorkspaceRepo(workspaceId, {
     enabled: !isCreateMode,
@@ -240,4 +244,12 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps) {
       {children}
     </WorkspaceContext.Provider>
   );
+}
+
+function getLinkedSessionId(search: unknown): string | undefined {
+  if (!search || typeof search !== 'object') return undefined;
+  const sessionId = (search as { sessionId?: unknown }).sessionId;
+  return typeof sessionId === 'string' && sessionId.trim()
+    ? sessionId
+    : undefined;
 }

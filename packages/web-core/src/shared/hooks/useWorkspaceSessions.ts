@@ -7,6 +7,7 @@ import type { Session } from 'shared/types';
 
 interface UseWorkspaceSessionsOptions {
   enabled?: boolean;
+  selectedSessionId?: string;
 }
 
 /** Discriminated union for session selection state */
@@ -37,7 +38,7 @@ export function useWorkspaceSessions(
   options: UseWorkspaceSessionsOptions = {}
 ): UseWorkspaceSessionsResult {
   const hostId = useHostId();
-  const { enabled = true } = options;
+  const { enabled = true, selectedSessionId: linkedSessionId } = options;
   const [selection, setSelection] = useState<SessionSelection | undefined>(
     undefined
   );
@@ -49,25 +50,22 @@ export function useWorkspaceSessions(
     enabled: enabled && !!workspaceId,
   });
 
-  // Combined effect: handle workspace changes and auto-select sessions
+  // Combined effect: handle workspace changes, deep-linked sessions, and auto-select sessions
   // This replaces two separate effects that had a race condition where the reset
   // effect would fire after auto-select when sessions were cached, undoing the selection.
   useEffect(() => {
     const workspaceChanged = prevWorkspaceIdRef.current !== workspaceId;
     prevWorkspaceIdRef.current = workspaceId;
 
-    if (sessions.length > 0) {
-      // Sessions are ordered by most recently used, so first is the most recently used
-      // Always select first session when sessions are available for this workspace
-      // Only preserve new session mode within the same workspace
-      setSelection((prev) => {
-        if (prev?.mode === 'new' && !workspaceChanged) return prev;
-        return { mode: 'existing', sessionId: sessions[0].id };
-      });
-    } else {
-      setSelection(undefined);
-    }
-  }, [workspaceId, sessions]);
+    setSelection((prev) =>
+      resolveNextSessionSelection({
+        previous: prev,
+        workspaceChanged,
+        sessions,
+        linkedSessionId,
+      })
+    );
+  }, [workspaceId, sessions, linkedSessionId]);
 
   const isNewSessionMode = selection?.mode === 'new' || sessions.length === 0;
   const selectedSessionId =
@@ -102,4 +100,38 @@ export function useWorkspaceSessions(
     isNewSessionMode,
     startNewSession,
   };
+}
+
+export function resolveNextSessionSelection({
+  previous,
+  workspaceChanged,
+  sessions,
+  linkedSessionId,
+}: {
+  previous: SessionSelection | undefined;
+  workspaceChanged: boolean;
+  sessions: Session[];
+  linkedSessionId?: string;
+}): SessionSelection | undefined {
+  if (sessions.length === 0) return undefined;
+
+  if (
+    linkedSessionId &&
+    sessions.some((session) => session.id === linkedSessionId)
+  ) {
+    return { mode: 'existing', sessionId: linkedSessionId };
+  }
+
+  if (previous?.mode === 'new' && !workspaceChanged) return previous;
+
+  if (
+    previous?.mode === 'existing' &&
+    !workspaceChanged &&
+    sessions.some((session) => session.id === previous.sessionId)
+  ) {
+    return previous;
+  }
+
+  // Sessions are ordered by most recently used, so first is the most recently used.
+  return { mode: 'existing', sessionId: sessions[0].id };
 }

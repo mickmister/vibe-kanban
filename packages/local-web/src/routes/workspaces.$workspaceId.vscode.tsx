@@ -1,6 +1,7 @@
 import { type ReactNode } from 'react';
 import { createFileRoute } from '@tanstack/react-router';
 import { Provider as NiceModalProvider } from '@ebay/nice-modal-react';
+import { workspaceSearchValidator } from '@vibe/web-core/workspace-search';
 import { HostIdProvider } from '@/shared/providers/HostIdProvider';
 import { WorkspaceProvider } from '@/shared/providers/WorkspaceProvider';
 import { ExecutionProcessesProvider } from '@/shared/providers/ExecutionProcessesProvider';
@@ -42,5 +43,6 @@ function VSCodeWorkspaceRouteComponent() {
 }
 
 export const Route = createFileRoute('/workspaces/$workspaceId/vscode')({
+  validateSearch: workspaceSearchValidator,
   component: VSCodeWorkspaceRouteComponent,
 });
