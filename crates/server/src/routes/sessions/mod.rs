@@ -28,6 +28,7 @@ use executors::{
 };
 use serde::Deserialize;
 use services::services::container::ContainerService;
+use tracing::Instrument;
 use ts_rs::TS;
 use utils::response::ApiResponse;
 use uuid::Uuid;
@@ -54,10 +55,31 @@ pub async fn get_sessions(
     Query(query): Query<SessionQuery>,
 ) -> Result<ResponseJson<ApiResponse<Vec<Session>>>, ApiError> {
     let pool = &deployment.db().pool;
-    let sessions = Session::find_by_workspace_id(pool, query.workspace_id).await?;
+    let sessions = async { Session::find_by_workspace_id(pool, query.workspace_id).await }
+        .instrument(tracing::debug_span!(
+            "sessions.find_by_workspace_id",
+            workspace_id = %query.workspace_id,
+        ))
+        .await?;
+
+    tracing::debug!(
+        workspace_id = %query.workspace_id,
+        session_count = sessions.len(),
+        "sessions.list.loaded"
+    );
+
     Ok(ResponseJson(ApiResponse::success(sessions)))
 }
 
+#[tracing::instrument(
+    level = "debug",
+    skip(session),
+    fields(
+        session_id = %session.id,
+        workspace_id = %session.workspace_id,
+        has_name = session.name.is_some(),
+    )
+)]
 pub async fn get_session(
     Extension(session): Extension<Session>,
 ) -> Result<ResponseJson<ApiResponse<Session>>, ApiError> {
@@ -198,7 +220,8 @@ pub async fn follow_up(
             .await?;
     }
 
-    if let Some(proc_id) = payload.retry_process_id {
+    let retry_process_id = payload.retry_process_id;
+    if let Some(proc_id) = retry_process_id {
         let force_when_dirty = payload.force_when_dirty.unwrap_or(false);
         let perform_git_reset = payload.perform_git_reset.unwrap_or(true);
         deployment
@@ -264,6 +287,19 @@ pub async fn follow_up(
     } else {
         cleanup_action
     };
+    let (action_kind, session_command) = match &action_type {
+        ExecutorActionType::CodingAgentSessionCommandRequest(request) => {
+            let command = match &request.command {
+                SessionCommand::Clear => "clear",
+                SessionCommand::Compact { .. } => "compact",
+            };
+            ("session_command", Some(command))
+        }
+        ExecutorActionType::CodingAgentFollowUpRequest(_) => ("follow_up", None),
+        ExecutorActionType::CodingAgentInitialRequest(_) => ("initial_request", None),
+        ExecutorActionType::ReviewRequest(_) => ("review", None),
+        ExecutorActionType::ScriptRequest(_) => ("script", None),
+    };
     let action = ExecutorAction::new(action_type, cleanup_action.map(Box::new));
 
     let execution_process = deployment
@@ -274,6 +310,17 @@ pub async fn follow_up(
             &action,
             &ExecutionProcessRunReason::CodingAgent,
         )
+        .instrument(tracing::debug_span!(
+            target: "perf.agent_startup",
+            "agent.turn",
+            workspace_id = %workspace.id,
+            session_id = %session.id,
+            executor = %executor_profile_id.executor,
+            action_kind,
+            session_command = ?session_command,
+            retry_process_id = ?retry_process_id,
+            execution_process_id = tracing::field::Empty,
+        ))
         .await?;
 
     // Clear the draft follow-up scratch on successful spawn

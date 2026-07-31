@@ -271,6 +271,11 @@ export function GitPanelContainer({
     [pushMutation]
   );
 
+  const handleAddRepo = useCallback(async () => {
+    if (!selectedWorkspace?.id) return;
+    await executeAction(Actions.AddWorkspaceRepo, selectedWorkspace.id);
+  }, [executeAction, selectedWorkspace?.id]);
+
   return (
     <GitPanel
       repos={repoInfosWithPushButton}
@@ -283,7 +288,7 @@ export function GitPanelContainer({
       onRepoActionChange={setRepoAction}
       onPushClick={handlePushClick}
       onMoreClick={handleMoreClick}
-      onAddRepo={() => console.log('Add repo clicked')}
+      onAddRepo={selectedWorkspace?.id ? handleAddRepo : undefined}
     />
   );
 }

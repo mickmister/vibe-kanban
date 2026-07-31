@@ -270,7 +270,7 @@ export type TagSearchParams = { search: string | null, };
 
 export type TokenResponse = { access_token: string, expires_at: string | null, };
 
-export type UserSystemInfo = { version: string, config: Config, machine_id: string, login_status: LoginStatus, remote_auth_degraded: string | null, environment: Environment,
+export type UserSystemInfo = { version: string, commit_hash: string | null, config: Config, machine_id: string, login_status: LoginStatus, remote_auth_degraded: string | null, environment: Environment,
 /**
  * Capabilities supported per executor (e.g., { "CLAUDE_CODE": ["SESSION_FORK"] })
  */
@@ -291,6 +291,24 @@ export type CheckEditorAvailabilityResponse = { available: boolean, };
 export type CheckAgentAvailabilityQuery = { executor: BaseCodingAgent, };
 
 export type AgentPresetOptionsQuery = { executor: BaseCodingAgent, variant: string | null, };
+
+export type ConversationPreviewMessageRole = "user" | "assistant";
+
+export type ConversationPreviewMessage = { role: ConversationPreviewMessageRole, content: string, execution_process_id: string, created_at: string, };
+
+export type ConversationPreviewSource = "cache" | "computed";
+
+export type ConversationPreview = { workspace_id: string, session_id: string | null, messages: Array<ConversationPreviewMessage>, has_running_turn: boolean, source: ConversationPreviewSource, warmed_at: string, };
+
+export type WarmWorkspaceSessionsRequest = { workspace_id: string, session_ids: Array<string>, include_latest_session: boolean, };
+
+export type WarmConversationPreviewRequest = { workspace_ids: Array<string>, session_ids: Array<string>, workspace_sessions: Array<WarmWorkspaceSessionsRequest>, message_limit: number | null, };
+
+export type WarmConversationPreviewItem = { workspace_id: string, session_id: string | null, message_count: number, source: ConversationPreviewSource, };
+
+export type WarmConversationPreviewError = { workspace_id: string | null, session_id: string | null, message: string, };
+
+export type WarmConversationPreviewResponse = { warmed: Array<WarmConversationPreviewItem>, errors: Array<WarmConversationPreviewError>, };
 
 export type CurrentUserResponse = { user_id: string, };
 
