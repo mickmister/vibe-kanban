@@ -1573,7 +1573,8 @@ export const queueApi = {
       method: 'POST',
       body: JSON.stringify(data),
     });
-    const queueResponse = await handleApiResponse<QueueMessageResponse>(response);
+    const queueResponse =
+      await handleApiResponse<QueueMessageResponse>(response);
     return queueResponse.status;
   },
 

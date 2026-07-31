@@ -67,6 +67,9 @@ impl QueuedMessageService {
     pub fn notify(&self) {
         self.notify.notify_waiters();
     }
+    pub fn notifier(&self) -> Arc<Notify> {
+        self.notify.clone()
+    }
     pub fn pump_lock(&self) -> Arc<Mutex<()>> {
         self.pump_lock.clone()
     }

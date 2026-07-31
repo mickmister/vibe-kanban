@@ -174,6 +174,20 @@ export enum ExecutionProcessStatus { running = "running", completed = "completed
 
 export type ExecutionProcessRunReason = "setupscript" | "cleanupscript" | "archivescript" | "codingagent" | "devserver";
 
+export type ActivitySnapshot = { generated_at: string, callback_state_available: boolean, workspaces: Array<ActivityWorkspace>, };
+
+export type ActivityWorkspace = { workspace_id: string, active_turn_count: number, running_turn_count: number, running_dev_server_count: number, queued_count: number, sessions: Array<ActivitySession>, updated_at: string, };
+
+export type ActivitySession = { workspace_id: string, session_id: string, status: ActivitySessionStatus, active_turn_count: number, running_execution_processes: Array<ActivityExecutionProcess>, queue: ActivityQueueSummary, callback: ActivityCallbackSummary, updated_at: string, };
+
+export enum ActivitySessionStatus { idle = "idle", queued = "queued", running = "running", callback_waiting = "callback_waiting" }
+
+export type ActivityExecutionProcess = { execution_process_id: string, run_reason: ExecutionProcessRunReason, status: ExecutionProcessStatus, started_at: string, updated_at: string, };
+
+export type ActivityQueueSummary = { count: number, queued_count: number, leased_count: number, starting_count: number, running_count: number, first_item_id: string | null, updated_at: string | null, };
+
+export type ActivityCallbackSummary = { available: boolean, waiting_count: number, };
+
 export type AgentResponse = { execution_process_id: string, session_id: string, workspace_id: string, status: ExecutionProcessStatus, completed_at: string | null, coding_agent_turn_id: string | null, agent_session_id: string | null, agent_message_id: string | null, content: string | null, truncated: boolean, max_chars: number, source_kind: AgentResponseSourceKind, };
 
 export type AgentResponseSourceKind = "coding_agent_turn_summary";
