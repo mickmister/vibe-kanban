@@ -132,7 +132,7 @@ struct SessionAccumulator {
 }
 
 impl SessionAccumulator {
-    fn new(workspace_id: Uuid, session_id: Uuid, generated_at: DateTime<Utc>) -> Self {
+    fn new(workspace_id: Uuid, session_id: Uuid, updated_at: DateTime<Utc>) -> Self {
         Self {
             workspace_id,
             session_id,
@@ -150,7 +150,7 @@ impl SessionAccumulator {
                 available: false,
                 waiting_count: 0,
             },
-            updated_at: generated_at,
+            updated_at,
         }
     }
 
@@ -307,11 +307,11 @@ async fn build_activity_snapshot_from_pool(
                 .or_insert_with(|| WorkspaceAccumulator {
                     workspace_id: row.workspace_id,
                     sessions: BTreeMap::new(),
-                    updated_at: generated_at,
+                    updated_at: row.updated_at,
                 });
         workspace.updated_at = workspace.updated_at.max(row.updated_at);
         let session = workspace.sessions.entry(row.session_id).or_insert_with(|| {
-            SessionAccumulator::new(row.workspace_id, row.session_id, generated_at)
+            SessionAccumulator::new(row.workspace_id, row.session_id, row.updated_at)
         });
         session.updated_at = session.updated_at.max(row.updated_at);
         session
@@ -332,11 +332,11 @@ async fn build_activity_snapshot_from_pool(
                 .or_insert_with(|| WorkspaceAccumulator {
                     workspace_id: row.workspace_id,
                     sessions: BTreeMap::new(),
-                    updated_at: generated_at,
+                    updated_at: row.updated_at,
                 });
         workspace.updated_at = workspace.updated_at.max(row.updated_at);
         let session = workspace.sessions.entry(row.session_id).or_insert_with(|| {
-            SessionAccumulator::new(row.workspace_id, row.session_id, generated_at)
+            SessionAccumulator::new(row.workspace_id, row.session_id, row.updated_at)
         });
         session.updated_at = session.updated_at.max(row.updated_at);
         session.queue.count += 1;
@@ -536,7 +536,8 @@ mod tests {
         let queued_session_id = Uuid::new_v4();
         let execution_id = Uuid::new_v4();
         let queue_item_id = Uuid::new_v4();
-        let now = Utc.with_ymd_and_hms(2026, 7, 31, 12, 0, 0).unwrap();
+        let running_updated_at = Utc.with_ymd_and_hms(2026, 7, 31, 12, 0, 0).unwrap();
+        let queue_updated_at = Utc.with_ymd_and_hms(2026, 7, 31, 12, 5, 0).unwrap();
 
         sqlx::query("INSERT INTO sessions (id, workspace_id) VALUES (?1, ?2), (?3, ?2)")
             .bind(running_session_id)
@@ -552,7 +553,7 @@ mod tests {
         )
         .bind(execution_id)
         .bind(running_session_id)
-        .bind(now)
+        .bind(running_updated_at)
         .execute(&db.pool)
         .await
         .unwrap();
@@ -564,7 +565,7 @@ mod tests {
         .bind(queue_item_id)
         .bind(queued_session_id)
         .bind(workspace_id)
-        .bind(now)
+        .bind(queue_updated_at)
         .execute(&db.pool)
         .await
         .unwrap();
@@ -579,6 +580,7 @@ mod tests {
         assert_eq!(workspace.running_turn_count, 1);
         assert_eq!(workspace.queued_count, 1);
         assert_eq!(workspace.sessions.len(), 2);
+        assert_eq!(workspace.updated_at, queue_updated_at);
 
         let running_session = workspace
             .sessions
@@ -591,6 +593,7 @@ mod tests {
             running_session.running_execution_processes[0].execution_process_id,
             execution_id
         );
+        assert_eq!(running_session.updated_at, running_updated_at);
 
         let queued_session = workspace
             .sessions
@@ -600,6 +603,7 @@ mod tests {
         assert_eq!(queued_session.status, ActivitySessionStatus::Queued);
         assert_eq!(queued_session.queue.count, 1);
         assert_eq!(queued_session.queue.first_item_id, Some(queue_item_id));
+        assert_eq!(queued_session.updated_at, queue_updated_at);
     }
 
     #[tokio::test]
