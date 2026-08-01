@@ -114,7 +114,7 @@ pub struct WorktreeContainer {
 }
 
 #[cfg(test)]
-mod tests {
+mod direct_branch_tests {
     use chrono::Utc;
     use db::models::repo::Repo;
     use uuid::Uuid;
@@ -897,7 +897,7 @@ impl WorkspaceManager {
 }
 
 #[cfg(test)]
-mod tests {
+mod repository_attachment_tests {
     use std::path::{Path, PathBuf};
 
     use db::{
@@ -963,6 +963,8 @@ mod tests {
                 workspace_id BLOB NOT NULL,
                 repo_id BLOB NOT NULL,
                 target_branch TEXT NOT NULL,
+                create_branch BOOLEAN NOT NULL DEFAULT TRUE,
+                checkout_branch TEXT,
                 created_at TEXT NOT NULL DEFAULT (datetime('now', 'subsec')),
                 updated_at TEXT NOT NULL DEFAULT (datetime('now', 'subsec')),
                 UNIQUE (workspace_id, repo_id)
@@ -1024,6 +1026,8 @@ mod tests {
                 &WorkspaceRepoInput {
                     repo_id: first_repo.id,
                     target_branch: "main".to_string(),
+                    create_branch: true,
+                    checkout_branch: None,
                 },
                 &GitService::new(),
             )
@@ -1035,6 +1039,8 @@ mod tests {
                 &WorkspaceRepoInput {
                     repo_id: second_repo.id,
                     target_branch: "main".to_string(),
+                    create_branch: true,
+                    checkout_branch: None,
                 },
                 &GitService::new(),
             )
@@ -1081,6 +1087,8 @@ mod tests {
                 &WorkspaceRepoInput {
                     repo_id: first_repo.id,
                     target_branch: "main".to_string(),
+                    create_branch: true,
+                    checkout_branch: None,
                 },
                 &GitService::new(),
             )
@@ -1092,6 +1100,8 @@ mod tests {
                 &WorkspaceRepoInput {
                     repo_id: second_repo.id,
                     target_branch: "main".to_string(),
+                    create_branch: true,
+                    checkout_branch: None,
                 },
                 &GitService::new(),
             )
