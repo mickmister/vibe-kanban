@@ -624,8 +624,6 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
   // Editor change handler
   const handleEditorChange = useCallback(
     (value: string) => {
-<<<<<<< HEAD
-=======
       if (isMobilePerfDiagnosticsEnabled()) {
         const now = performance.now();
         if (now - lastComposerDiagnosticAtRef.current > 1000) {
@@ -642,7 +640,6 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
         }
       }
       if (isQueued) cancelQueue();
->>>>>>> origin/vk/05a2-vd-weekly-dev-br
       if (executorConfig) {
         handleMessageChange(value, executorConfig);
       } else {
@@ -659,6 +656,8 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
       workspaceId,
       sessionId,
       mode,
+      isQueued,
+      cancelQueue,
     ]
   );
 

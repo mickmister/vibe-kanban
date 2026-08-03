@@ -41,11 +41,8 @@ pub fn router(deployment: DeploymentImpl, perf_tracing_enabled: bool) -> IntoMak
     let relay_signed_routes = Router::new()
         .route("/health", get(health::health_check))
         .merge(config::router())
-<<<<<<< HEAD
         .merge(activity::router(&deployment))
-=======
         .merge(conversation_preview::router())
->>>>>>> origin/vk/05a2-vd-weekly-dev-br
         .merge(containers::router(&deployment))
         .merge(workspaces::router(&deployment))
         .merge(execution_processes::router(&deployment))

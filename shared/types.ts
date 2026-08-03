@@ -552,23 +552,7 @@ export type SendMessageShortcut = "ModifierEnter" | "Enter";
 
 export type GitBranch = { name: string, is_current: boolean, is_remote: boolean, last_commit_date: Date, };
 
-<<<<<<< HEAD
 export type QueueMessageResponse = { queued_item: AgentMessageQueueItem, status: QueueStatusSummary, };
-=======
-export type QueuedMessage = {
-/**
- * The session this message is queued for
- */
-session_id: string,
-/**
- * The follow-up data (message + variant)
- */
-data: DraftFollowUpData,
-/**
- * Timestamp when the message was queued
- */
-queued_at: string, };
->>>>>>> origin/vk/05a2-vd-weekly-dev-br
 
 export type QueueStatusSummary = { status: QueueStatusKind, count: number, messages: Array<AgentMessageQueueItem>, message: AgentMessageQueueItem | null, };
 

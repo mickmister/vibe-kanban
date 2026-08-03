@@ -28,11 +28,8 @@ use futures_util::{
 use serde::{Deserialize, Serialize};
 use services::services::container::ContainerService;
 use tokio::sync::Mutex;
-<<<<<<< HEAD
-use ts_rs::TS;
-=======
 use tracing::Instrument;
->>>>>>> origin/vk/05a2-vd-weekly-dev-br
+use ts_rs::TS;
 use utils::{log_msg::LogMsg, msg_store::MsgStore, response::ApiResponse};
 use uuid::Uuid;
 

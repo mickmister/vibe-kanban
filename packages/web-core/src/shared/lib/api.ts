@@ -66,13 +66,9 @@ import {
   PushError,
   TokenResponse,
   CurrentUserResponse,
-<<<<<<< HEAD
   QueueMessageResponse,
   QueueStatusSummary,
-=======
   ConversationPreview,
-  QueueStatus,
->>>>>>> origin/vk/05a2-vd-weekly-dev-br
   PrCommentsResponse,
   MergeWorkspaceRequest,
   PushWorkspaceRequest,
