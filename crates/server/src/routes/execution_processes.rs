@@ -28,7 +28,11 @@ use futures_util::{
 use serde::{Deserialize, Serialize};
 use services::services::container::ContainerService;
 use tokio::sync::Mutex;
+<<<<<<< HEAD
 use ts_rs::TS;
+=======
+use tracing::Instrument;
+>>>>>>> origin/vk/05a2-vd-weekly-dev-br
 use utils::{log_msg::LogMsg, msg_store::MsgStore, response::ApiResponse};
 use uuid::Uuid;
 
@@ -240,7 +244,13 @@ async fn stream_normalized_logs_ws(
     Path(exec_id): Path<Uuid>,
 ) -> impl IntoResponse {
     ws.on_upgrade(move |socket| async move {
-        if let Some(store) = deployment.container().get_msg_store_by_id(&exec_id).await {
+        if let Some(store) = async { deployment.container().get_msg_store_by_id(&exec_id).await }
+            .instrument(tracing::debug_span!(
+                "normalized_logs.lookup_live_store",
+                execution_process_id = %exec_id,
+            ))
+            .await
+        {
             let stream = build_live_normalized_logs_stream(exec_id, store).await;
             if let Err(e) = handle_normalized_logs_ws(socket, stream).await {
                 tracing::warn!("normalized logs WS closed: {}", e);
@@ -271,12 +281,19 @@ async fn stream_normalized_logs_ws(
     })
 }
 
+#[tracing::instrument(level = "debug", skip(store), fields(execution_process_id = %exec_id))]
 async fn build_live_normalized_logs_stream(
     exec_id: Uuid,
     store: Arc<MsgStore>,
 ) -> BoxStream<'static, anyhow::Result<Message>> {
     let receiver = store.get_receiver();
     let messages = collect_live_normalized_log_messages(&store);
+    tracing::debug!(
+        execution_process_id = %exec_id,
+        history_message_count = messages.payloads.len(),
+        history_finished = messages.finished,
+        "normalized_logs.live_history_loaded"
+    );
     let history_stream = stream::iter(
         messages
             .payloads
@@ -324,6 +341,7 @@ async fn build_live_normalized_logs_stream(
         .boxed()
 }
 
+#[tracing::instrument(level = "debug", skip(deployment), fields(execution_process_id = %exec_id))]
 async fn get_historic_normalized_log_messages_single_flight(
     deployment: &DeploymentImpl,
     exec_id: Uuid,
@@ -335,6 +353,11 @@ async fn get_historic_normalized_log_messages_single_flight(
     .await
 }
 
+#[tracing::instrument(
+    level = "debug",
+    skip(future),
+    fields(execution_process_id = %exec_id, mode = ?mode)
+)]
 async fn get_normalized_log_messages_single_flight(
     mode: NormalizedLogReplayMode,
     exec_id: Uuid,
@@ -363,10 +386,11 @@ async fn get_normalized_log_messages_single_flight(
     result
 }
 
+#[tracing::instrument(level = "debug", skip(store))]
 fn collect_live_normalized_log_messages(store: &MsgStore) -> LiveNormalizedLogMessages {
     let history = store.get_history();
     let finished = history.iter().any(|msg| matches!(msg, LogMsg::Finished));
-    let payloads = history
+    let payloads: Vec<String> = history
         .into_iter()
         .take_while(|msg| !matches!(msg, LogMsg::Finished))
         .filter_map(|msg| match msg {
@@ -378,9 +402,16 @@ fn collect_live_normalized_log_messages(store: &MsgStore) -> LiveNormalizedLogMe
         })
         .collect();
 
+    tracing::debug!(
+        history_message_count = payloads.len(),
+        history_finished = finished,
+        "normalized_logs.live_history_collected"
+    );
+
     LiveNormalizedLogMessages { payloads, finished }
 }
 
+#[tracing::instrument(level = "debug", skip(deployment), fields(execution_process_id = %exec_id))]
 async fn collect_historic_normalized_log_messages(
     deployment: &DeploymentImpl,
     exec_id: Uuid,
@@ -409,9 +440,16 @@ async fn collect_historic_normalized_log_messages(
         }
     }
 
-    Some(Arc::new(messages))
+    let messages = Arc::new(messages);
+    tracing::debug!(
+        execution_process_id = %exec_id,
+        history_message_count = messages.len(),
+        "normalized_logs.historic_history_collected"
+    );
+    Some(messages)
 }
 
+#[tracing::instrument(level = "debug", skip(socket, stream))]
 async fn handle_normalized_logs_ws(
     mut socket: MaybeSignedWebSocket,
     stream: impl futures_util::Stream<Item = anyhow::Result<Message>> + Unpin + Send + 'static,
@@ -478,6 +516,11 @@ async fn stream_execution_processes_by_session_ws(
     })
 }
 
+#[tracing::instrument(
+    level = "debug",
+    skip(socket, deployment),
+    fields(session_id = %session_id, show_soft_deleted = show_soft_deleted)
+)]
 async fn handle_execution_processes_by_session_ws(
     mut socket: MaybeSignedWebSocket,
     deployment: DeploymentImpl,

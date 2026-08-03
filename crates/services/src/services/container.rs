@@ -1425,6 +1425,8 @@ pub trait ContainerService {
             &repo_states,
         )
         .await?;
+        let execution_process_id = execution_process.id.to_string();
+        tracing::Span::current().record("execution_process_id", execution_process_id.as_str());
         self.msg_stores()
             .write()
             .await
