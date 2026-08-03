@@ -50,6 +50,8 @@ export const PLAIN_URL_TRANSFORMER: TextMatchTransformer = {
     if (!$isLinkNode(node)) return null;
 
     const url = node.getURL();
+    if (node.getTitle()) return null;
+
     const text = exportChildren(node);
 
     return text === url ? url : null;
