@@ -902,21 +902,28 @@ impl LocalContainerService {
             .await
             .ok_or_else(|| ContainerError::Other(anyhow!("MsgStore not found for execution")))?;
         let out = child.inner().stdout.take().expect("no stdout");
-        let err = child.inner().stderr.take().expect("no stderr");
+        let err = child.inner().stderr.take();
 
         // Map stdout bytes -> LogMsg::Stdout
         let out = ReaderStream::new(out)
             .map_ok(|chunk| LogMsg::Stdout(String::from_utf8_lossy(&chunk).into_owned()));
 
-        // Map stderr bytes -> LogMsg::Stderr
-        let err = ReaderStream::new(err)
-            .map_ok(|chunk| LogMsg::Stderr(String::from_utf8_lossy(&chunk).into_owned()));
+        if let Some(err) = err {
+            // Map stderr bytes -> LogMsg::Stderr
+            let err = ReaderStream::new(err)
+                .map_ok(|chunk| LogMsg::Stderr(String::from_utf8_lossy(&chunk).into_owned()));
 
-        // If you have a JSON Patch source, map it to LogMsg::JsonPatch too, then select all three.
+            // If you have a JSON Patch source, map it to LogMsg::JsonPatch too, then select all three.
 
-        // Merge and forward into the store
-        let merged = select(out, err); // Stream<Item = Result<LogMsg, io::Error>>
-        store.clone().spawn_forwarder(merged);
+            // Merge and forward into the store
+            let merged = select(out, err); // Stream<Item = Result<LogMsg, io::Error>>
+            store.clone().spawn_forwarder(merged);
+        } else {
+            // Some executors intentionally discard child stderr to avoid pipe
+            // backpressure or exposing internal diagnostics. Continue forwarding
+            // stdout in those cases.
+            store.clone().spawn_forwarder(out);
+        }
         Ok(())
     }
 
