@@ -114,6 +114,8 @@ pub struct CreateFollowUpAttempt {
     pub retry_process_id: Option<Uuid>,
     pub force_when_dirty: Option<bool>,
     pub perform_git_reset: Option<bool>,
+    #[ts(skip)]
+    pub stop_other_sessions_for_git_reset: Option<bool>,
 }
 
 pub(super) fn parse_session_command(prompt: &str) -> Option<SessionCommand> {
@@ -151,6 +153,8 @@ pub struct ResetProcessRequest {
     pub process_id: Uuid,
     pub force_when_dirty: Option<bool>,
     pub perform_git_reset: Option<bool>,
+    #[ts(skip)]
+    pub stop_other_sessions_for_git_reset: Option<bool>,
 }
 
 pub async fn follow_up(
@@ -201,9 +205,17 @@ pub async fn follow_up(
     if let Some(proc_id) = payload.retry_process_id {
         let force_when_dirty = payload.force_when_dirty.unwrap_or(false);
         let perform_git_reset = payload.perform_git_reset.unwrap_or(true);
+        let stop_other_sessions_for_git_reset =
+            payload.stop_other_sessions_for_git_reset.unwrap_or(false);
         deployment
             .container()
-            .reset_session_to_process(session.id, proc_id, perform_git_reset, force_when_dirty)
+            .reset_session_to_process(
+                session.id,
+                proc_id,
+                perform_git_reset,
+                force_when_dirty,
+                stop_other_sessions_for_git_reset,
+            )
             .await?;
     }
 
@@ -297,6 +309,8 @@ pub async fn reset_process(
 ) -> Result<ResponseJson<ApiResponse<()>>, ApiError> {
     let force_when_dirty = payload.force_when_dirty.unwrap_or(false);
     let perform_git_reset = payload.perform_git_reset.unwrap_or(true);
+    let stop_other_sessions_for_git_reset =
+        payload.stop_other_sessions_for_git_reset.unwrap_or(false);
 
     deployment
         .container()
@@ -305,8 +319,31 @@ pub async fn reset_process(
             payload.process_id,
             perform_git_reset,
             force_when_dirty,
+            stop_other_sessions_for_git_reset,
         )
         .await?;
+
+    Ok(ResponseJson(ApiResponse::success(())))
+}
+
+pub async fn stop_session_execution(
+    Extension(session): Extension<Session>,
+    State(deployment): State<DeploymentImpl>,
+) -> Result<ResponseJson<ApiResponse<()>>, ApiError> {
+    deployment
+        .container()
+        .stop_running_processes_for_session(session.id, false)
+        .await?;
+
+    deployment
+        .track_if_analytics_allowed(
+            "task_attempt_stopped",
+            serde_json::json!({
+                "workspace_id": session.workspace_id.to_string(),
+                "session_id": session.id.to_string(),
+            }),
+        )
+        .await;
 
     Ok(ResponseJson(ApiResponse::success(())))
 }
@@ -373,6 +410,7 @@ pub fn router(deployment: &DeploymentImpl) -> Router<DeploymentImpl> {
         .route("/", get(get_session).put(update_session))
         .route("/follow-up", post(follow_up))
         .route("/reset", post(reset_process))
+        .route("/execution/stop", post(stop_session_execution))
         .route("/setup", post(run_setup_script))
         .route("/review", post(review::start_review))
         .layer(from_fn_with_state(
