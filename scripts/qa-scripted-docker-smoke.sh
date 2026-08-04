@@ -14,8 +14,8 @@ print_plan() {
 Docker scripted QA smoke plan:
 1. docker build --target builder --build-arg VK_CARGO_FEATURES=qa-mode -t ${image} -f ${repo_root}/Dockerfile ${repo_root}
 2. docker run -d --name ${container} --entrypoint sleep ${image} infinity
-3. docker exec ${container} cargo test -p executors qa_mock --features qa-mode
-4. docker exec ${container} cargo check -p server --features qa-mode
+3. docker exec ${container} env CARGO_BUILD_JOBS=1 cargo test -p executors qa_mock --features qa-mode
+4. docker exec ${container} env CARGO_BUILD_JOBS=1 cargo check -p server --features qa-mode
 5. docker rm -f ${container}
 PLAN
 }
@@ -41,5 +41,5 @@ docker build \
 
 docker run -d --name "${container}" --entrypoint sleep "${image}" infinity >/dev/null
 
-docker exec "${container}" cargo test -p executors qa_mock --features qa-mode
-docker exec "${container}" cargo check -p server --features qa-mode
+docker exec "${container}" env CARGO_BUILD_JOBS=1 cargo test -p executors qa_mock --features qa-mode
+docker exec "${container}" env CARGO_BUILD_JOBS=1 cargo check -p server --features qa-mode
