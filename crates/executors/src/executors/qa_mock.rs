@@ -1,8 +1,9 @@
 //! QA Mode: Mock executor for testing
 //!
 //! This module provides a mock executor that:
-//! 1. Performs random file operations (create, delete, modify)
-//! 2. Streams 10 mock log entries over 10 seconds
+//! 1. Preserves the existing random QA smoke behavior by default
+//! 2. Supports deterministic scripted outcomes when `VK_QA_SCRIPTED_OUTCOME` or
+//!    `VK_QA_SCRIPTED_OUTCOME_FILE` is set
 //! 3. Outputs logs in ClaudeJson format for compatibility with existing log normalization
 
 use std::{path::Path, process::Stdio, sync::Arc};
@@ -31,6 +32,145 @@ use crate::{
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, TS, JsonSchema)]
 pub struct QaMockExecutor;
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum QaScriptedOutcomeKind {
+    Completed,
+    Failed,
+    /// Test marker for future scanner work. This currently completes normally
+    /// with a final message that explicitly marks the external wait.
+    WaitCallback,
+    /// Test marker for future scanner work. This currently completes normally
+    /// with a final message that explicitly marks the external wait.
+    WaitCi,
+    /// Emits an explicit human-question marker for future scanner/workflow tests.
+    AskHuman,
+    /// Premature/stalled turn: emits no final assistant response and exits with failure.
+    Stall,
+    /// Completes with the structured command serialized as the final assistant message.
+    StructuredCommand,
+    /// Completes with a deterministic response longer than VK's current response summary cap.
+    LongResponse,
+    /// Executor abstraction cannot directly mark an execution as killed; it exits failure
+    /// with an explicit marker so later scanner tests can distinguish the scenario.
+    Killed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct QaScriptedOutcome {
+    pub outcome: QaScriptedOutcomeKind,
+    #[serde(default)]
+    pub final_message: Option<String>,
+    #[serde(default)]
+    pub structured_command: Option<serde_json::Value>,
+    #[serde(default)]
+    pub wait_ref: Option<String>,
+    #[serde(default)]
+    pub session_id: Option<String>,
+    #[serde(default)]
+    pub message_id: Option<String>,
+    #[serde(default)]
+    pub delay_ms: Option<u64>,
+    #[serde(default)]
+    pub exit_code: Option<i32>,
+}
+
+impl Default for QaScriptedOutcome {
+    fn default() -> Self {
+        Self {
+            outcome: QaScriptedOutcomeKind::Completed,
+            final_message: None,
+            structured_command: None,
+            wait_ref: None,
+            session_id: None,
+            message_id: None,
+            delay_ms: None,
+            exit_code: None,
+        }
+    }
+}
+
+impl QaScriptedOutcome {
+    fn session_id(&self) -> String {
+        self.session_id
+            .clone()
+            .unwrap_or_else(|| "qa-scripted-session".to_string())
+    }
+
+    fn message_id(&self) -> String {
+        self.message_id
+            .clone()
+            .unwrap_or_else(|| "qa-scripted-message".to_string())
+    }
+
+    fn delay_ms(&self) -> u64 {
+        self.delay_ms.unwrap_or(0)
+    }
+
+    fn exit_code(&self) -> i32 {
+        match self.outcome {
+            QaScriptedOutcomeKind::Completed
+            | QaScriptedOutcomeKind::WaitCallback
+            | QaScriptedOutcomeKind::WaitCi
+            | QaScriptedOutcomeKind::AskHuman
+            | QaScriptedOutcomeKind::StructuredCommand
+            | QaScriptedOutcomeKind::LongResponse => self.exit_code.unwrap_or(0),
+            QaScriptedOutcomeKind::Failed
+            | QaScriptedOutcomeKind::Stall
+            | QaScriptedOutcomeKind::Killed => self.exit_code.unwrap_or(1),
+        }
+    }
+
+    fn final_message(&self, prompt: &str) -> Option<String> {
+        if matches!(self.outcome, QaScriptedOutcomeKind::Stall) {
+            return None;
+        }
+        if let Some(message) = &self.final_message {
+            return Some(message.clone());
+        }
+        match self.outcome {
+            QaScriptedOutcomeKind::Completed => Some(format!(
+                "QA scripted execution completed successfully. Original prompt: {prompt}"
+            )),
+            QaScriptedOutcomeKind::Failed => Some(format!(
+                "QA scripted execution failed intentionally. Original prompt: {prompt}"
+            )),
+            QaScriptedOutcomeKind::Killed => Some(format!(
+                "QA scripted execution marked killed scenario; executor exits non-zero because killed status is owned by container stop paths. Original prompt: {prompt}"
+            )),
+            QaScriptedOutcomeKind::WaitCallback => Some(format!(
+                "QA_SCRIPTED_WAIT callback {}. Original prompt: {prompt}",
+                self.wait_ref.as_deref().unwrap_or("callback-ref")
+            )),
+            QaScriptedOutcomeKind::WaitCi => Some(format!(
+                "QA_SCRIPTED_WAIT ci {}. Original prompt: {prompt}",
+                self.wait_ref.as_deref().unwrap_or("ci-ref")
+            )),
+            QaScriptedOutcomeKind::AskHuman => Some(format!(
+                "QA_SCRIPTED_ASK_HUMAN {}. Original prompt: {prompt}",
+                self.wait_ref.as_deref().unwrap_or("human-question-ref")
+            )),
+            QaScriptedOutcomeKind::StructuredCommand => Some(
+                self.structured_command
+                    .clone()
+                    .unwrap_or_else(|| {
+                        serde_json::json!({
+                            "type": "qa_scripted_command",
+                            "action": "continue",
+                            "prompt": prompt,
+                        })
+                    })
+                    .to_string(),
+            ),
+            QaScriptedOutcomeKind::LongResponse => Some(format!(
+                "QA scripted long response start. {} QA scripted long response end. Original prompt: {prompt}",
+                "x".repeat(5000)
+            )),
+            QaScriptedOutcomeKind::Stall => None,
+        }
+    }
+}
+
 #[async_trait]
 impl StandardCodingAgentExecutor for QaMockExecutor {
     fn apply_overrides(&mut self, _executor_config: &ExecutorConfig) {}
@@ -39,41 +179,23 @@ impl StandardCodingAgentExecutor for QaMockExecutor {
         &self,
         current_dir: &Path,
         prompt: &str,
-        _env: &ExecutionEnv,
+        env: &ExecutionEnv,
     ) -> Result<SpawnedChild, ExecutorError> {
+        if let Some(script) = load_scripted_outcome(env).await? {
+            info!(?script.outcome, "QA Mock Executor: spawning scripted execution");
+            let logs = generate_scripted_logs(prompt, &script);
+            return spawn_log_process(current_dir, logs, script.exit_code(), script.delay_ms())
+                .await;
+        }
+
         info!("QA Mock Executor: spawning mock execution");
 
         // 1. Perform file operations before spawning the log output process
         perform_file_operations(current_dir).await;
 
-        // 2. Generate mock logs and write to temp file to avoid shell escaping issues
+        // 2. Generate mock logs and stream them with the historical one-second delay.
         let logs = generate_mock_logs(prompt);
-        let temp_dir = std::env::temp_dir();
-        let log_file = temp_dir.join(format!("qa_mock_logs_{}.jsonl", uuid::Uuid::new_v4()));
-
-        // Write all logs to file, one per line
-        let content = logs.join("\n") + "\n";
-        tokio::fs::write(&log_file, &content)
-            .await
-            .map_err(|e| ExecutorError::Io(std::io::Error::other(e)))?;
-
-        // 3. Create shell script that reads file and outputs with delays
-        // Using IFS= read -r to preserve exact content (no word splitting, no backslash interpretation)
-        let script = format!(
-            r#"while IFS= read -r line; do echo "$line"; sleep 1; done < "{}"; rm -f "{}""#,
-            log_file.display(),
-            log_file.display()
-        );
-
-        let mut cmd = tokio::process::Command::new("sh");
-        cmd.arg("-c")
-            .arg(&script)
-            .current_dir(current_dir)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-
-        let child = cmd.group_spawn_no_window().map_err(ExecutorError::Io)?;
-        Ok(SpawnedChild::from(child))
+        spawn_log_process(current_dir, logs, 0, 1000).await
     }
 
     async fn spawn_follow_up(
@@ -118,6 +240,79 @@ impl StandardCodingAgentExecutor for QaMockExecutor {
             reasoning_id: None,
             permission_policy: Some(crate::model_selector::PermissionPolicy::Auto),
         }
+    }
+}
+
+async fn load_scripted_outcome(
+    env: &ExecutionEnv,
+) -> Result<Option<QaScriptedOutcome>, ExecutorError> {
+    let inline = env
+        .get("VK_QA_SCRIPTED_OUTCOME")
+        .cloned()
+        .or_else(|| std::env::var("VK_QA_SCRIPTED_OUTCOME").ok());
+    if let Some(script) = inline.filter(|value| !value.trim().is_empty()) {
+        return serde_json::from_str(&script)
+            .map(Some)
+            .map_err(ExecutorError::Json);
+    }
+
+    let file = env
+        .get("VK_QA_SCRIPTED_OUTCOME_FILE")
+        .cloned()
+        .or_else(|| std::env::var("VK_QA_SCRIPTED_OUTCOME_FILE").ok());
+    if let Some(file) = file.filter(|value| !value.trim().is_empty()) {
+        let content = tokio::fs::read_to_string(file)
+            .await
+            .map_err(|e| ExecutorError::Io(std::io::Error::other(e)))?;
+        return serde_json::from_str(&content)
+            .map(Some)
+            .map_err(ExecutorError::Json);
+    }
+
+    Ok(None)
+}
+
+async fn spawn_log_process(
+    current_dir: &Path,
+    logs: Vec<String>,
+    exit_code: i32,
+    delay_ms: u64,
+) -> Result<SpawnedChild, ExecutorError> {
+    let temp_dir = std::env::temp_dir();
+    let log_file = temp_dir.join(format!("qa_mock_logs_{}.jsonl", uuid::Uuid::new_v4()));
+
+    // Write all logs to file, one per line
+    let content = logs.join("\n") + "\n";
+    tokio::fs::write(&log_file, &content)
+        .await
+        .map_err(|e| ExecutorError::Io(std::io::Error::other(e)))?;
+
+    // Use shell variables as literal numeric values generated by Rust, and quote
+    // the temp path to preserve spaces. Tests run this only behind qa-mode.
+    let script = format!(
+        r#"while IFS= read -r line; do echo "$line"; if [ {delay_ms} -gt 0 ]; then sleep {sleep_seconds}; fi; done < "{file}"; rm -f "{file}"; exit {exit_code}"#,
+        delay_ms = delay_ms,
+        sleep_seconds = format_millis_as_sleep_seconds(delay_ms),
+        file = log_file.display(),
+        exit_code = exit_code
+    );
+
+    let mut cmd = tokio::process::Command::new("sh");
+    cmd.arg("-c")
+        .arg(&script)
+        .current_dir(current_dir)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    let child = cmd.group_spawn_no_window().map_err(ExecutorError::Io)?;
+    Ok(SpawnedChild::from(child))
+}
+
+fn format_millis_as_sleep_seconds(delay_ms: u64) -> String {
+    if delay_ms == 0 {
+        "0".to_string()
+    } else {
+        format!("{}.{:03}", delay_ms / 1000, delay_ms % 1000)
     }
 }
 
@@ -195,6 +390,129 @@ async fn perform_file_operations(dir: &Path) {
             "QA Mock: not enough files found for remove/modify operations (found {})",
             files.len()
         );
+    }
+}
+
+fn generate_scripted_logs(prompt: &str, script: &QaScriptedOutcome) -> Vec<String> {
+    let session_id = script.session_id();
+    let mut logs = vec![system_init(&session_id, "qa-scripted-executor")];
+
+    logs.push(assistant_text(
+        &session_id,
+        "msg-qa-scripted-thinking",
+        "uuid-qa-scripted-thinking",
+        "QA scripted executor selected deterministic outcome.",
+        None,
+    ));
+
+    if let Some(final_message) = script.final_message(prompt) {
+        logs.push(assistant_text(
+            &session_id,
+            &script.message_id(),
+            "uuid-qa-scripted-final",
+            &final_message,
+            Some("end_turn"),
+        ));
+    } else {
+        logs.push(system_status(
+            &session_id,
+            "QA_SCRIPTED_STALL no final assistant response emitted for scanner tests.",
+        ));
+    }
+
+    logs.push(result_log(
+        &session_id,
+        script.exit_code() == 0,
+        script.delay_ms(),
+    ));
+
+    logs.into_iter()
+        .map(|log| serde_json::to_string(&log).expect("ClaudeJson should serialize"))
+        .collect()
+}
+
+fn system_init(session_id: &str, model: &str) -> ClaudeJson {
+    ClaudeJson::System {
+        subtype: Some("init".to_string()),
+        session_id: Some(session_id.to_string()),
+        cwd: None,
+        tools: None,
+        model: Some(model.to_string()),
+        api_key_source: Some("unknown".to_string()),
+        status: None,
+        slash_commands: vec![],
+        plugins: vec![],
+        agents: vec![],
+        task_id: None,
+        tool_use_id: None,
+        description: None,
+        task_type: None,
+        prompt: None,
+        summary: None,
+        last_tool_name: None,
+    }
+}
+
+fn system_status(session_id: &str, status: &str) -> ClaudeJson {
+    ClaudeJson::System {
+        subtype: Some("status".to_string()),
+        session_id: Some(session_id.to_string()),
+        cwd: None,
+        tools: None,
+        model: Some("qa-scripted-executor".to_string()),
+        api_key_source: Some("unknown".to_string()),
+        status: Some(status.to_string()),
+        slash_commands: vec![],
+        plugins: vec![],
+        agents: vec![],
+        task_id: None,
+        tool_use_id: None,
+        description: None,
+        task_type: None,
+        prompt: None,
+        summary: None,
+        last_tool_name: None,
+    }
+}
+
+fn assistant_text(
+    session_id: &str,
+    message_id: &str,
+    uuid: &str,
+    text: &str,
+    stop_reason: Option<&str>,
+) -> ClaudeJson {
+    ClaudeJson::Assistant {
+        message: ClaudeMessage {
+            id: Some(message_id.to_string()),
+            message_type: Some("message".to_string()),
+            role: "assistant".to_string(),
+            model: Some("qa-scripted".to_string()),
+            content: ClaudeMessageContent::Array(vec![ClaudeContentItem::Text {
+                text: text.to_string(),
+            }]),
+            stop_reason: stop_reason.map(str::to_string),
+        },
+        session_id: Some(session_id.to_string()),
+        uuid: Some(uuid.to_string()),
+    }
+}
+
+fn result_log(session_id: &str, success: bool, delay_ms: u64) -> ClaudeJson {
+    ClaudeJson::Result {
+        subtype: Some(if success { "success" } else { "error" }.to_string()),
+        is_error: Some(!success),
+        duration_ms: Some(delay_ms),
+        result: None,
+        error: if success {
+            None
+        } else {
+            Some("QA scripted executor exited with failure".to_string())
+        },
+        num_turns: Some(1),
+        session_id: Some(session_id.to_string()),
+        model_usage: None,
+        usage: None,
     }
 }
 
@@ -394,6 +712,122 @@ fn generate_mock_logs(prompt: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scripted_logs_are_deterministic_and_deserialize() {
+        let script = QaScriptedOutcome {
+            outcome: QaScriptedOutcomeKind::Completed,
+            final_message: Some("done deterministically".to_string()),
+            session_id: Some("agent-session-1".to_string()),
+            message_id: Some("agent-message-1".to_string()),
+            ..QaScriptedOutcome::default()
+        };
+
+        let first = generate_scripted_logs("same prompt", &script);
+        let second = generate_scripted_logs("same prompt", &script);
+        assert_eq!(first, second);
+        assert_eq!(first.len(), 4);
+
+        for line in &first {
+            serde_json::from_str::<ClaudeJson>(line).expect("scripted log should be ClaudeJson");
+        }
+
+        let parsed: ClaudeJson = serde_json::from_str(&first[2]).unwrap();
+        match parsed {
+            ClaudeJson::Assistant {
+                message,
+                session_id,
+                ..
+            } => {
+                assert_eq!(session_id.as_deref(), Some("agent-session-1"));
+                assert_eq!(message.id.as_deref(), Some("agent-message-1"));
+                assert_eq!(
+                    message.content,
+                    ClaudeMessageContent::Array(vec![ClaudeContentItem::Text {
+                        text: "done deterministically".to_string()
+                    }])
+                );
+                assert_eq!(message.stop_reason.as_deref(), Some("end_turn"));
+            }
+            other => panic!("expected assistant final log, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn scripted_failure_and_wait_markers_are_explicit() {
+        let failure = QaScriptedOutcome {
+            outcome: QaScriptedOutcomeKind::Failed,
+            final_message: None,
+            ..QaScriptedOutcome::default()
+        };
+        assert_eq!(failure.exit_code(), 1);
+        assert!(
+            failure
+                .final_message("fail prompt")
+                .unwrap()
+                .contains("failed")
+        );
+
+        let wait = QaScriptedOutcome {
+            outcome: QaScriptedOutcomeKind::WaitCi,
+            wait_ref: Some("ci-run-123".to_string()),
+            ..QaScriptedOutcome::default()
+        };
+        assert_eq!(wait.exit_code(), 0);
+        assert_eq!(
+            wait.final_message("wait prompt").unwrap(),
+            "QA_SCRIPTED_WAIT ci ci-run-123. Original prompt: wait prompt"
+        );
+    }
+
+    #[test]
+    fn scripted_structured_and_long_responses_are_final_messages() {
+        let structured = QaScriptedOutcome {
+            outcome: QaScriptedOutcomeKind::StructuredCommand,
+            final_message: None,
+            structured_command: Some(
+                serde_json::json!({"command":"fan_in","target":"orchestrator"}),
+            ),
+            wait_ref: None,
+            session_id: None,
+            message_id: None,
+            delay_ms: None,
+            exit_code: None,
+        };
+        assert_eq!(
+            structured.final_message("ignored").unwrap(),
+            r#"{"command":"fan_in","target":"orchestrator"}"#
+        );
+
+        let long = QaScriptedOutcome {
+            outcome: QaScriptedOutcomeKind::LongResponse,
+            final_message: None,
+            ..QaScriptedOutcome::default()
+        };
+        assert!(long.final_message("long").unwrap().len() > 4096);
+    }
+
+    #[test]
+    fn scripted_stall_emits_no_final_end_turn_message() {
+        let stall = QaScriptedOutcome {
+            outcome: QaScriptedOutcomeKind::Stall,
+            session_id: Some("stall-session".to_string()),
+            ..QaScriptedOutcome::default()
+        };
+        assert_eq!(stall.exit_code(), 1);
+        assert!(stall.final_message("stall").is_none());
+        let logs = generate_scripted_logs("stall", &stall);
+        let marker: ClaudeJson = serde_json::from_str(&logs[2]).unwrap();
+        match marker {
+            ClaudeJson::System {
+                subtype, status, ..
+            } => {
+                assert_eq!(subtype.as_deref(), Some("status"));
+                assert!(status.unwrap().contains("QA_SCRIPTED_STALL"));
+            }
+            other => panic!("expected system stall marker, got {other:?}"),
+        }
+    }
 
     #[test]
     fn test_generate_mock_logs_count() {
