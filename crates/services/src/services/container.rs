@@ -1482,7 +1482,7 @@ mod tests {
     use std::str::FromStr;
 
     use sqlx::{
-        SqlitePool,
+        ConnectOptions, SqlitePool,
         sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions},
     };
     use tokio::sync::Mutex;
