@@ -716,7 +716,7 @@ pub trait ContainerService {
         Ok(stopped_processes)
     }
 
-    /// Reset a session to a specific process: restore worktrees, stop processes, drop later processes.
+    /// Reset a session to a specific process: stop running processes, restore worktrees, drop later processes.
     async fn reset_session_to_process(
         &self,
         session_id: Uuid,
@@ -759,6 +759,9 @@ pub trait ContainerService {
                 }
             }
         }
+
+        self.stop_running_processes_for_session(session_id, false)
+            .await?;
 
         let repos = WorkspaceRepo::find_repos_for_workspace(pool, workspace.id).await?;
         let repo_states =
@@ -803,8 +806,6 @@ pub trait ContainerService {
             }
         }
 
-        self.stop_running_processes_for_session(session_id, false)
-            .await?;
         ExecutionProcess::drop_at_and_after(pool, session_id, target_process_id).await?;
 
         Ok(())
@@ -1495,7 +1496,15 @@ mod tests {
         notifications: NotificationService,
         msg_stores: Arc<RwLock<HashMap<Uuid, Arc<MsgStore>>>>,
         stopped_processes: Arc<Mutex<Vec<Uuid>>>,
+        events: Arc<Mutex<Vec<TestContainerEvent>>>,
         container_ref: String,
+    }
+
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    enum TestContainerEvent {
+        EnsureContainerExists,
+        IsContainerClean,
+        StopExecution(Uuid),
     }
 
     impl TestContainerService {
@@ -1506,12 +1515,17 @@ mod tests {
                 notifications: NotificationService::new(Arc::new(RwLock::new(Config::default()))),
                 msg_stores: Arc::new(RwLock::new(HashMap::new())),
                 stopped_processes: Arc::new(Mutex::new(Vec::new())),
+                events: Arc::new(Mutex::new(Vec::new())),
                 container_ref,
             }
         }
 
         async fn stopped_processes(&self) -> Vec<Uuid> {
             self.stopped_processes.lock().await.clone()
+        }
+
+        async fn events(&self) -> Vec<TestContainerEvent> {
+            self.events.lock().await.clone()
         }
     }
 
@@ -1563,10 +1577,18 @@ mod tests {
             &self,
             _workspace: &Workspace,
         ) -> Result<ContainerRef, ContainerError> {
+            self.events
+                .lock()
+                .await
+                .push(TestContainerEvent::EnsureContainerExists);
             Ok(self.container_ref.clone())
         }
 
         async fn is_container_clean(&self, _workspace: &Workspace) -> Result<bool, ContainerError> {
+            self.events
+                .lock()
+                .await
+                .push(TestContainerEvent::IsContainerClean);
             Ok(true)
         }
 
@@ -1584,6 +1606,10 @@ mod tests {
             execution_process: &ExecutionProcess,
             status: ExecutionProcessStatus,
         ) -> Result<(), ContainerError> {
+            self.events
+                .lock()
+                .await
+                .push(TestContainerEvent::StopExecution(execution_process.id));
             self.stopped_processes
                 .lock()
                 .await
@@ -1856,6 +1882,15 @@ mod tests {
             vec![
                 fixture.session_b_running_process_id,
                 fixture.session_a_running_process_id,
+            ]
+        );
+        assert_eq!(
+            fixture.service.events().await,
+            vec![
+                TestContainerEvent::StopExecution(fixture.session_b_running_process_id),
+                TestContainerEvent::StopExecution(fixture.session_a_running_process_id),
+                TestContainerEvent::EnsureContainerExists,
+                TestContainerEvent::IsContainerClean,
             ]
         );
 

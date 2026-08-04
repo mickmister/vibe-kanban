@@ -18,11 +18,11 @@ export function getStopExecutionMutationKey(
 
 export function useWorkspaceExecution(workspaceId?: string) {
   const {
+    sessionId,
     executionProcessesVisible: executionProcesses,
     isAttemptRunningVisible: isAttemptRunning,
     isLoading: streamLoading,
   } = useExecutionProcessesContext();
-  const sessionId = executionProcesses[0]?.session_id;
 
   const stopMutationKey = useMemo(
     () => getStopExecutionMutationKey(workspaceId, sessionId),
