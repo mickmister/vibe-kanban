@@ -322,6 +322,45 @@ export function SettingsInput({
   );
 }
 
+export function SettingsColorInput({
+  value,
+  onChange,
+  disabled,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  disabled?: boolean;
+}) {
+  return (
+    <div
+      className={cn(
+        'flex items-center gap-3 rounded-sm border border-border bg-secondary px-base py-half',
+        disabled && 'opacity-50 cursor-not-allowed'
+      )}
+    >
+      <input
+        type="color"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        disabled={disabled}
+        className="h-8 w-10 shrink-0 cursor-pointer rounded border border-border bg-transparent p-0"
+      />
+      <input
+        type="text"
+        value={value}
+        onChange={(e) => {
+          const next = e.target.value.trim();
+          if (/^#[0-9a-fA-F]{6}$/.test(next)) {
+            onChange(next.toLowerCase());
+          }
+        }}
+        disabled={disabled}
+        className="min-w-0 flex-1 bg-transparent text-sm text-high focus:outline-none"
+      />
+    </div>
+  );
+}
+
 // SettingsTextarea - A multi-line text input
 export function SettingsTextarea({
   value,

@@ -4,6 +4,9 @@ import { configApi } from "@/shared/lib/api";
 import { useAuth } from "@/shared/hooks/auth/useAuth";
 import { useUserSystemController } from "@/shared/hooks/useUserSystemController";
 import { UserSystemContext } from "@/shared/hooks/useUserSystem";
+import { ThemeProvider } from "@/shared/providers/ThemeProvider";
+import { ThemeMode } from "shared/types";
+import type { ConfigWithAppearance } from "@/shared/lib/themeCustomizations";
 
 interface RemoteUserSystemProviderProps {
   children: ReactNode;
@@ -31,6 +34,8 @@ export function RemoteUserSystemProvider({
     save: saveConfig,
   });
 
+  const typedConfig = value.config as ConfigWithAppearance | null;
+
   const contextValue = useMemo(
     () => ({
       ...value,
@@ -41,7 +46,12 @@ export function RemoteUserSystemProvider({
 
   return (
     <UserSystemContext.Provider value={contextValue}>
-      {children}
+      <ThemeProvider
+        initialTheme={typedConfig?.theme || ThemeMode.SYSTEM}
+        appearance={typedConfig?.appearance}
+      >
+        {children}
+      </ThemeProvider>
     </UserSystemContext.Provider>
   );
 }

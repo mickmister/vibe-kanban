@@ -33,6 +33,18 @@ import {
   type MobileFontScale,
   useMobileFontScale,
 } from '@/shared/stores/useUiPreferencesStore';
+import {
+  FONT_FAMILY_LABELS,
+  MONO_FONT_FAMILY_LABELS,
+  THEME_COLOR_DEFAULTS,
+  getThemePaletteValue,
+} from '@/shared/lib/appearance';
+import {
+  type AppFontFamily,
+  type ConfigWithAppearance,
+  type MonospaceFontFamily,
+  type ThemePalette,
+} from '@/shared/lib/themeCustomizations';
 import { cn, playSound } from '@/shared/lib/utils';
 import { PrimaryButton } from '@vibe/ui/components/PrimaryButton';
 import { IconButton } from '@vibe/ui/components/IconButton';
@@ -46,6 +58,7 @@ import {
 import {
   SettingsCard,
   SettingsCheckbox,
+  SettingsColorInput,
   SettingsField,
   SettingsInput,
   SettingsSaveBar,
@@ -53,6 +66,101 @@ import {
   SettingsTextarea,
 } from './SettingsComponents';
 import { useSettingsDirty } from './SettingsDirtyContext';
+
+const themePaletteKeys: Array<keyof ThemePalette> = [
+  'bg_primary',
+  'bg_secondary',
+  'bg_panel',
+  'text_high',
+  'text_normal',
+  'text_low',
+  'brand',
+];
+
+function withAppearanceDefaults(
+  config: ConfigWithAppearance
+): ConfigWithAppearance {
+  return {
+    ...config,
+    appearance: {
+      sans_font: config.appearance?.sans_font ?? 'IBM_PLEX_SANS',
+      mono_font: config.appearance?.mono_font ?? 'IBM_PLEX_MONO',
+      light_palette: { ...(config.appearance?.light_palette ?? {}) },
+      dark_palette: { ...(config.appearance?.dark_palette ?? {}) },
+    },
+  };
+}
+
+function ThemePaletteEditor({
+  title,
+  mode,
+  draft,
+  updateDraft,
+  t,
+}: {
+  title: string;
+  mode: 'light' | 'dark';
+  draft: ConfigWithAppearance;
+  updateDraft: (patch: Partial<ConfigWithAppearance>) => void;
+  t: ReturnType<typeof useTranslation>['t'];
+}) {
+  const paletteKey = mode === 'light' ? 'light_palette' : 'dark_palette';
+  const appearance = (draft.appearance ??
+    withAppearanceDefaults(draft).appearance)!;
+  const palette = appearance[paletteKey];
+
+  return (
+    <div className="space-y-3 rounded-sm border border-border bg-panel/30 p-4">
+      <div className="flex items-center justify-between gap-3">
+        <p className="text-sm font-medium text-high">{title}</p>
+        <button
+          type="button"
+          className="text-xs text-brand hover:text-brand-hover"
+          onClick={() =>
+            updateDraft({
+              appearance: {
+                ...appearance,
+                [paletteKey]: { ...THEME_COLOR_DEFAULTS[mode] },
+              },
+            })
+          }
+        >
+          {t('settings.general.appearance.colors.reset', {
+            defaultValue: 'Reset colors',
+          })}
+        </button>
+      </div>
+      <div className="grid gap-4 md:grid-cols-2">
+        {themePaletteKeys.map((key) => (
+          <SettingsField
+            key={key}
+            label={t(`settings.general.appearance.colors.${key}.label`, {
+              defaultValue: key.replace(/_/g, ' '),
+            })}
+            description={t(`settings.general.appearance.colors.${key}.helper`, {
+              defaultValue: '',
+            })}
+          >
+            <SettingsColorInput
+              value={getThemePaletteValue(mode, palette, key)}
+              onChange={(value) =>
+                updateDraft({
+                  appearance: {
+                    ...appearance,
+                    [paletteKey]: {
+                      ...palette,
+                      [key]: value,
+                    },
+                  },
+                })
+              }
+            />
+          </SettingsField>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 export function GeneralSettingsSection() {
   const { t } = useTranslation(['settings', 'common']);
@@ -67,8 +175,11 @@ export function GeneralSettingsSection() {
     })
   );
   const { config, loading, updateAndSaveConfig, profiles } = useUserSystem();
+  const typedConfig = config as ConfigWithAppearance | null;
 
-  const [draft, setDraft] = useState(() => (config ? cloneDeep(config) : null));
+  const [draft, setDraft] = useState(() =>
+    typedConfig ? cloneDeep(withAppearanceDefaults(typedConfig)) : null
+  );
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -127,16 +238,16 @@ export function GeneralSettingsSection() {
   };
 
   useEffect(() => {
-    if (!config) return;
+    if (!typedConfig) return;
     if (!dirty) {
-      setDraft(cloneDeep(config));
+      setDraft(cloneDeep(withAppearanceDefaults(typedConfig)));
     }
-  }, [config, dirty]);
+  }, [typedConfig, dirty]);
 
   const hasUnsavedChanges = useMemo(() => {
-    if (!draft || !config) return false;
-    return !isEqual(draft, config);
-  }, [draft, config]);
+    if (!draft || !typedConfig) return false;
+    return !isEqual(draft, withAppearanceDefaults(typedConfig));
+  }, [draft, typedConfig]);
 
   // Sync dirty state to context for unsaved changes confirmation
   useEffect(() => {
@@ -145,17 +256,22 @@ export function GeneralSettingsSection() {
   }, [hasUnsavedChanges, setContextDirty]);
 
   const updateDraft = useCallback(
-    (patch: Partial<typeof config>) => {
-      setDraft((prev: typeof config) => {
+    (patch: Partial<ConfigWithAppearance>) => {
+      setDraft((prev: ConfigWithAppearance | null) => {
         if (!prev) return prev;
         const next = merge({}, prev, patch);
-        if (!isEqual(next, config)) {
+        if (
+          !isEqual(
+            next,
+            typedConfig ? withAppearanceDefaults(typedConfig) : typedConfig
+          )
+        ) {
           setDirty(true);
         }
         return next;
       });
     },
-    [config]
+    [typedConfig]
   );
 
   useEffect(() => {
@@ -198,13 +314,13 @@ export function GeneralSettingsSection() {
   };
 
   const handleDiscard = () => {
-    if (!config) return;
-    setDraft(cloneDeep(config));
+    if (!typedConfig) return;
+    setDraft(cloneDeep(withAppearanceDefaults(typedConfig)));
     setDirty(false);
   };
 
   const resetOnboarding = async () => {
-    if (!config) return;
+    if (!typedConfig) return;
     updateAndSaveConfig({
       onboarding_acknowledged: false,
       remote_onboarding_acknowledged: false,
@@ -223,7 +339,7 @@ export function GeneralSettingsSection() {
     );
   }
 
-  if (!config) {
+  if (!typedConfig) {
     return (
       <div className="py-8">
         <div className="bg-error/10 border border-error/50 rounded-sm p-4 text-error">
@@ -246,6 +362,20 @@ export function GeneralSettingsSection() {
   const soundOptions = Object.values(SoundFile).map((sound) => ({
     value: sound,
     label: toPrettyCase(sound),
+  }));
+
+  const appFontOptions = (
+    Object.keys(FONT_FAMILY_LABELS) as AppFontFamily[]
+  ).map((font) => ({
+    value: font,
+    label: FONT_FAMILY_LABELS[font],
+  }));
+
+  const monoFontOptions = (
+    Object.keys(MONO_FONT_FAMILY_LABELS) as MonospaceFontFamily[]
+  ).map((font) => ({
+    value: font,
+    label: MONO_FONT_FAMILY_LABELS[font],
   }));
 
   return (
@@ -311,6 +441,97 @@ export function GeneralSettingsSection() {
             />
           </SettingsField>
         )}
+      </SettingsCard>
+
+      <SettingsCard
+        title={t('settings.general.appearance.typography.title', {
+          defaultValue: 'Typography',
+        })}
+        description={t('settings.general.appearance.typography.description', {
+          defaultValue:
+            'Choose the fonts used for the interface and code-heavy surfaces.',
+        })}
+      >
+        <SettingsField
+          label={t('settings.general.appearance.typography.sansFont.label', {
+            defaultValue: 'Interface font',
+          })}
+          description={t(
+            'settings.general.appearance.typography.sansFont.helper',
+            {
+              defaultValue:
+                'Used for navigation, forms, and most text throughout the app.',
+            }
+          )}
+        >
+          <SettingsSelect
+            value={draft?.appearance?.sans_font ?? 'IBM_PLEX_SANS'}
+            options={appFontOptions}
+            onChange={(value: AppFontFamily) =>
+              updateDraft({
+                appearance: {
+                  ...withAppearanceDefaults(draft!).appearance,
+                  sans_font: value,
+                },
+              })
+            }
+          />
+        </SettingsField>
+
+        <SettingsField
+          label={t('settings.general.appearance.typography.monoFont.label', {
+            defaultValue: 'Code font',
+          })}
+          description={t(
+            'settings.general.appearance.typography.monoFont.helper',
+            {
+              defaultValue:
+                'Used for file paths, logs, diffs, and code snippets.',
+            }
+          )}
+        >
+          <SettingsSelect
+            value={draft?.appearance?.mono_font ?? 'IBM_PLEX_MONO'}
+            options={monoFontOptions}
+            onChange={(value: MonospaceFontFamily) =>
+              updateDraft({
+                appearance: {
+                  ...withAppearanceDefaults(draft!).appearance,
+                  mono_font: value,
+                },
+              })
+            }
+          />
+        </SettingsField>
+      </SettingsCard>
+
+      <SettingsCard
+        title={t('settings.general.appearance.colors.title', {
+          defaultValue: 'Theme colors',
+        })}
+        description={t('settings.general.appearance.colors.description', {
+          defaultValue:
+            'Fine-tune the light and dark palettes used by the app.',
+        })}
+      >
+        <ThemePaletteEditor
+          title={t('settings.general.appearance.colors.lightTitle', {
+            defaultValue: 'Light theme palette',
+          })}
+          mode="light"
+          draft={draft!}
+          updateDraft={updateDraft}
+          t={t}
+        />
+        <ThemePaletteEditor
+          title={t('settings.general.appearance.colors.darkTitle', {
+            defaultValue: 'Dark theme palette',
+          })}
+          mode="dark"
+          draft={draft!}
+          updateDraft={updateDraft}
+          t={t}
+        />
       </SettingsCard>
 
       {/* Editor */}

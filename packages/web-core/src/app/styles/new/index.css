@@ -1,4 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,100..700;1,100..700&family=IBM+Plex+Mono:ital,wght@0,100..700;1,100..700&family=Noto+Emoji:wght@300..700&family=Roboto:wght@500&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Fira+Code:wght@300..700&family=IBM+Plex+Mono:ital,wght@0,100..700;1,100..700&family=IBM+Plex+Sans:ital,wght@0,100..700;1,100..700&family=Inter:wght@100..900&family=JetBrains+Mono:wght@100..800&family=Noto+Emoji:wght@300..700&family=Roboto:wght@500&family=Source+Code+Pro:wght@200..900&family=Space+Grotesk:wght@300..700&display=swap');
 
 @tailwind base;
 @tailwind components;
@@ -14,6 +14,8 @@ html {
   /* Light defaults */
   :root {
     color-scheme: light;
+    --app-font-sans: 'IBM Plex Sans', 'Noto Emoji', sans-serif;
+    --app-font-mono: 'IBM Plex Mono', monospace;
     --_background: 0 0% 95%;
     --_foreground: 0 0% 5%;
     --_primary: 0 0% 5%;
@@ -59,14 +61,14 @@ html {
     --_syntax-deleted: #b31d28;
 
     /* Text (light) */
-    --text-high: 0 0% 5%;
-    --text-normal: 0 0% 20%;
-    --text-low: 0 0% 39%;
+    --text-high: var(--theme-light-text-high, 0 0% 5%);
+    --text-normal: var(--theme-light-text-normal, 0 0% 20%);
+    --text-low: var(--theme-light-text-low, 0 0% 39%);
 
     /* Background (light) - with VS Code overrides */
-    --_bg-primary-default: 0 0% 100%;
-    --_bg-secondary-default: 0 0% 95%;
-    --_bg-panel-default: 0 0% 89%;
+    --_bg-primary-default: var(--theme-light-bg-primary, 0 0% 100%);
+    --_bg-secondary-default: var(--theme-light-bg-secondary, 0 0% 95%);
+    --_bg-panel-default: var(--theme-light-bg-panel, 0 0% 89%);
     --bg-primary: var(--vscode-editor-background, var(--_bg-primary-default));
     --bg-secondary: var(
       --vscode-editorWidget-background,
@@ -75,9 +77,9 @@ html {
     --bg-panel: var(--vscode-input-background, var(--_bg-panel-default));
 
     /* Accent (light) */
-    --brand: 25 82% 54%;
-    --brand-hover: 25 75% 62%;
-    --brand-secondary: 25 82% 37%;
+    --brand: var(--theme-light-brand, 25 82% 54%);
+    --brand-hover: var(--theme-light-brand-hover, 25 75% 62%);
+    --brand-secondary: var(--theme-light-brand-secondary, 25 82% 37%);
     --error: 0 59% 57%;
     --success: 117 38% 50%;
     --merged: 271 81% 46%;
@@ -118,14 +120,14 @@ html {
     --_neutral-foreground: 0 0% 90%;
 
     /* Text (dark) */
-    --text-high: 0 0% 96%;
-    --text-normal: 0 0% 77%;
-    --text-low: 0 0% 56%;
+    --text-high: var(--theme-dark-text-high, 0 0% 96%);
+    --text-normal: var(--theme-dark-text-normal, 0 0% 77%);
+    --text-low: var(--theme-dark-text-low, 0 0% 56%);
 
     /* Background (dark) - with VS Code overrides */
-    --_bg-primary-default: 0 0% 13%;
-    --_bg-secondary-default: 0 0% 11%;
-    --_bg-panel-default: 0 0% 16%;
+    --_bg-primary-default: var(--theme-dark-bg-primary, 0 0% 13%);
+    --_bg-secondary-default: var(--theme-dark-bg-secondary, 0 0% 11%);
+    --_bg-panel-default: var(--theme-dark-bg-panel, 0 0% 16%);
     --bg-primary: var(--vscode-editor-background, var(--_bg-primary-default));
     --bg-secondary: var(
       --vscode-editorWidget-background,
@@ -134,9 +136,9 @@ html {
     --bg-panel: var(--vscode-input-background, var(--_bg-panel-default));
 
     /* Accent (dark) */
-    --brand: 25 82% 54%;
-    --brand-hover: 25 75% 62%;
-    --brand-secondary: 25 82% 37%;
+    --brand: var(--theme-light-brand, 25 82% 54%);
+    --brand-hover: var(--theme-light-brand-hover, 25 75% 62%);
+    --brand-secondary: var(--theme-light-brand-secondary, 25 82% 37%);
     --error: 0 59% 57%;
     --success: 117 38% 50%;
     --merged: 271 81% 66%;
