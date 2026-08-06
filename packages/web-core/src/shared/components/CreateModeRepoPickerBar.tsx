@@ -206,7 +206,8 @@ export function CreateModeRepoPickerBar({
     await runPickerAction(
       'create',
       async () => {
-        await CreateRepoDialog.show({
+        let createdRepo: Repo | null = null;
+        const result = await CreateRepoDialog.show({
           onBrowseForPath: async (currentPath) =>
             FolderPickerDialog.show({
               title: t('git.createRepo.browseDialog.title'),
@@ -219,9 +220,11 @@ export function CreateModeRepoPickerBar({
               folder_name: folderName,
             });
             queryClient.invalidateQueries({ queryKey: ['repos'] });
-            await addRepoWithBranchSelection(repo);
+            createdRepo = repo;
           },
         });
+        if (result?.action !== 'created' || !createdRepo) return;
+        await addRepoWithBranchSelection(createdRepo);
       },
       'Failed to create repository'
     );
