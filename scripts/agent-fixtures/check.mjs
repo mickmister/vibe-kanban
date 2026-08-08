@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { execFileSync, spawnSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 
@@ -17,11 +17,6 @@ const fixtures = [
     cli: 'codex',
     package: '@openai/codex',
     currentVersion: readPackageVersion(sourcePaths.codex, '@openai/codex@'),
-    previousVersion: derivePreviousPackageVersion(
-      sourcePaths.codex,
-      '@openai/codex@',
-      readPackageVersion(sourcePaths.codex, '@openai/codex@')
-    ),
   },
   {
     cli: 'claude',
@@ -30,11 +25,6 @@ const fixtures = [
       sourcePaths.claude,
       '@anthropic-ai/claude-code@'
     ),
-    previousVersion: derivePreviousPackageVersion(
-      sourcePaths.claude,
-      '@anthropic-ai/claude-code@',
-      readPackageVersion(sourcePaths.claude, '@anthropic-ai/claude-code@')
-    ),
   },
 ];
 
@@ -42,8 +32,19 @@ runNormalizeCheck();
 checkCodexProtocolVersions(fixtures[0].currentVersion);
 
 for (const fixture of fixtures) {
-  checkMetadata(fixture, 'current', fixture.currentVersion);
-  checkMetadata(fixture, 'previous', fixture.previousVersion);
+  const current = checkMetadata(fixture, 'current');
+  const previous = checkMetadata(fixture, 'previous');
+  if (current.version !== fixture.currentVersion) {
+    throw new Error(
+      `${fixture.cli} current fixture version must match pinned source version ` +
+        `${fixture.currentVersion}, got ${current.version}`
+    );
+  }
+  if (previous.version === current.version) {
+    throw new Error(
+      `${fixture.cli} previous fixture version must differ from current version ${current.version}`
+    );
+  }
 }
 
 console.log('agent fixture metadata and JSONL checks passed');
@@ -62,28 +63,6 @@ function readPackageVersion(relativePath, packagePrefix, content = readRepoFile(
     .slice(start + marker.length)
     .split(/["\s]/)[0]
     .trim();
-}
-
-function derivePreviousPackageVersion(relativePath, packagePrefix, currentVersion) {
-  const refs = ['origin/main', 'main', 'HEAD^', 'HEAD~2'];
-  for (const ref of refs) {
-    try {
-      const content = execFileSync('git', ['show', `${ref}:${relativePath}`], {
-        cwd: repoRoot,
-        encoding: 'utf8',
-        stdio: ['ignore', 'pipe', 'ignore'],
-      });
-      const version = readPackageVersion(relativePath, packagePrefix, content);
-      if (version && version !== currentVersion) {
-        return version;
-      }
-    } catch {
-      // Best-effort local derivation only; try the next available ref.
-    }
-  }
-  throw new Error(
-    `could not derive previous ${packagePrefix} version from local git history`
-  );
 }
 
 function checkCodexProtocolVersions(codexVersion) {
@@ -126,7 +105,7 @@ function assertLockPackage(lock, packageName, expectedVersion, expectedTag) {
   }
 }
 
-function checkMetadata(fixture, versionRole, expectedVersion) {
+function checkMetadata(fixture, versionRole) {
   const metadataPath = path.join(
     repoRoot,
     'crates',
@@ -143,7 +122,6 @@ function checkMetadata(fixture, versionRole, expectedVersion) {
     cli: fixture.cli,
     package: fixture.package,
     version_role: versionRole,
-    version: expectedVersion,
     captured_from: 'committed_raw_fixture',
     raw_fixture: 'stdout.jsonl',
     compatibility_scope: 'normalization_no_migration',
@@ -158,6 +136,17 @@ function checkMetadata(fixture, versionRole, expectedVersion) {
       );
     }
   }
+
+  if (typeof metadata.version !== 'string' || metadata.version.trim() === '') {
+    throw new Error(
+      `${path.relative(repoRoot, metadataPath)} version must be a non-empty string`
+    );
+  }
+
+  const rawFixturePath = path.join(path.dirname(metadataPath), metadata.raw_fixture);
+  readFileSync(rawFixturePath, 'utf8');
+
+  return metadata;
 }
 
 function runNormalizeCheck() {
