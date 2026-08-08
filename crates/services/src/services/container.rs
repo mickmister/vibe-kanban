@@ -342,7 +342,7 @@ pub trait ContainerService {
             .await
         {
             Ok(process) => {
-                queue.mark_running(item.id).await?;
+                queue.mark_running(item.id, process.id).await?;
                 Ok(Some(process))
             }
             Err(error) => {

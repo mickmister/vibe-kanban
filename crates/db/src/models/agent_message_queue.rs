@@ -311,30 +311,39 @@ impl AgentMessageQueueItem {
     pub async fn mark_starting(
         pool: &SqlitePool,
         id: Uuid,
-        execution_process_id: Uuid,
+        _execution_process_id: Uuid,
     ) -> Result<bool, sqlx::Error> {
         let result = sqlx::query(
             r#"UPDATE agent_message_queue
-               SET status = 'starting', started_execution_process_id = ?2, updated_at = ?3
+               SET status = 'starting', updated_at = ?2
                WHERE id = ?1 AND status = 'leased'"#,
         )
         .bind(id)
-        .bind(execution_process_id)
         .bind(Utc::now())
         .execute(pool)
         .await?;
         Ok(result.rows_affected() == 1)
     }
 
-    pub async fn mark_running(pool: &SqlitePool, id: Uuid) -> Result<(), sqlx::Error> {
-        Self::set_status_from(
-            pool,
-            id,
-            AgentMessageQueueStatus::Running,
-            None,
-            &["starting"],
+    pub async fn mark_running(
+        pool: &SqlitePool,
+        id: Uuid,
+        execution_process_id: Uuid,
+    ) -> Result<(), sqlx::Error> {
+        let result = sqlx::query(
+            r#"UPDATE agent_message_queue
+               SET status = 'running', started_execution_process_id = ?2, updated_at = ?3
+               WHERE id = ?1 AND status = 'starting'"#,
         )
-        .await
+        .bind(id)
+        .bind(execution_process_id)
+        .bind(Utc::now())
+        .execute(pool)
+        .await?;
+        if result.rows_affected() == 0 {
+            return Err(sqlx::Error::RowNotFound);
+        }
+        Ok(())
     }
 
     pub async fn mark_failed(pool: &SqlitePool, id: Uuid, error: &str) -> Result<(), sqlx::Error> {
@@ -875,9 +884,11 @@ mod tests {
         AgentMessageQueueItem::requeue(&pool, item.id)
             .await
             .unwrap();
-        AgentMessageQueueItem::mark_running(&pool, item.id)
-            .await
-            .unwrap();
+        assert!(
+            AgentMessageQueueItem::mark_running(&pool, item.id, Uuid::new_v4())
+                .await
+                .is_err()
+        );
         AgentMessageQueueItem::mark_terminal_for_execution_process(
             &pool,
             Uuid::new_v4(),
@@ -892,6 +903,61 @@ mod tests {
             .unwrap();
         assert_eq!(after_race.status, AgentMessageQueueStatus::Cancelled);
         assert!(after_race.last_error.is_none());
+    }
+
+    #[tokio::test]
+    async fn mark_starting_can_run_before_execution_process_exists() {
+        let pool = test_pool().await;
+        let session_id = Uuid::new_v4();
+        let workspace_id = Uuid::new_v4();
+        insert_session(&pool, session_id, workspace_id).await;
+        let item = create_item(
+            &pool,
+            session_id,
+            workspace_id,
+            AgentMessageSource::Workflow,
+            None,
+            "start before process row",
+        )
+        .await;
+
+        let leased =
+            AgentMessageQueueItem::lease_next_batch(&pool, "test-owner", 1, Duration::seconds(60))
+                .await
+                .unwrap();
+        assert_eq!(leased[0].id, item.id);
+
+        let process_id = Uuid::new_v4();
+        assert!(
+            AgentMessageQueueItem::mark_starting(&pool, item.id, process_id)
+                .await
+                .unwrap()
+        );
+        let starting = AgentMessageQueueItem::find_by_id(&pool, item.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(starting.status, AgentMessageQueueStatus::Starting);
+        assert_eq!(starting.started_execution_process_id, None);
+
+        sqlx::query(
+            "INSERT INTO execution_processes (id, session_id, run_reason, status) VALUES (?1, ?2, 'codingagent', 'running')",
+        )
+        .bind(process_id)
+        .bind(session_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        AgentMessageQueueItem::mark_running(&pool, item.id, process_id)
+            .await
+            .unwrap();
+        let running = AgentMessageQueueItem::find_by_id(&pool, item.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(running.status, AgentMessageQueueStatus::Running);
+        assert_eq!(running.started_execution_process_id, Some(process_id));
     }
 
     #[tokio::test]

@@ -168,8 +168,15 @@ impl QueuedMessageService {
                 .await?,
         )
     }
-    pub async fn mark_running(&self, item_id: Uuid) -> Result<(), QueueError> {
-        Ok(AgentMessageQueueItem::mark_running(&self.db.pool, item_id).await?)
+    pub async fn mark_running(
+        &self,
+        item_id: Uuid,
+        execution_process_id: Uuid,
+    ) -> Result<(), QueueError> {
+        Ok(
+            AgentMessageQueueItem::mark_running(&self.db.pool, item_id, execution_process_id)
+                .await?,
+        )
     }
     pub async fn mark_failed(&self, item_id: Uuid, error: &str) -> Result<(), QueueError> {
         Ok(AgentMessageQueueItem::mark_failed(&self.db.pool, item_id, error).await?)
