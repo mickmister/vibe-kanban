@@ -70,29 +70,65 @@ export function appendPresetModel(
   config: ModelSelectorConfig | null,
   presetModel: string | null | undefined
 ): ModelSelectorConfig | null {
-  if (!config || !presetModel) return config;
+  return appendExplicitModelChoices(config, [presetModel]);
+}
+
+export function appendExplicitModelChoices(
+  config: ModelSelectorConfig | null,
+  modelChoices: Array<string | null | undefined>
+): ModelSelectorConfig | null {
+  if (!config) return config;
   const hasProviders = config.providers.length > 0;
-  const { providerId, modelId } = parseModelId(presetModel, hasProviders);
-  if (!modelId) return config;
+  let nextModels = config.models;
+  let nextProviders = config.providers;
 
-  const exists = config.models.some(
-    (m) =>
-      m.id.toLowerCase() === modelId.toLowerCase() &&
-      (!providerId || m.provider_id?.toLowerCase() === providerId.toLowerCase())
-  );
-  if (exists) return config;
+  for (const modelChoice of modelChoices) {
+    if (!modelChoice) continue;
+    const { providerId, modelId } = parseModelId(modelChoice, hasProviders);
+    if (!modelId) continue;
 
-  return {
-    ...config,
-    models: [
+    if (
+      providerId &&
+      !nextProviders.some(
+        (provider) => provider.id.toLowerCase() === providerId.toLowerCase()
+      )
+    ) {
+      nextProviders = [
+        ...nextProviders,
+        {
+          id: providerId,
+          name: providerId,
+        },
+      ];
+    }
+
+    const exists = nextModels.some(
+      (m) =>
+        m.id.toLowerCase() === modelId.toLowerCase() &&
+        (!providerId ||
+          m.provider_id?.toLowerCase() === providerId.toLowerCase())
+    );
+    if (exists) continue;
+
+    nextModels = [
       {
         id: modelId,
         name: modelId,
         provider_id: providerId,
         reasoning_options: [],
       },
-      ...config.models,
-    ],
+      ...nextModels,
+    ];
+  }
+
+  if (nextModels === config.models && nextProviders === config.providers) {
+    return config;
+  }
+
+  return {
+    ...config,
+    models: nextModels,
+    providers: nextProviders,
   };
 }
 
