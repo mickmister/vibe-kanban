@@ -27,7 +27,10 @@ is_relevant_path() {
     Cargo.lock | Cargo.toml | package.json | pnpm-lock.yaml | rust-toolchain.toml)
       return 0
       ;;
-    crates/executors/Cargo.toml | crates/executors/src/agent_upgrade_contract.rs)
+    crates/executors/Cargo.toml | crates/executors/default_profiles.json)
+      return 0
+      ;;
+    crates/executors/src/agent_upgrade_contract.rs)
       return 0
       ;;
     crates/executors/src/executors/codex.rs | crates/executors/src/executors/codex/*)
