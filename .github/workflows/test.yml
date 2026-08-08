@@ -285,3 +285,29 @@ jobs:
 
       - name: Run Cargo tests
         run: cargo nextest run --workspace --exclude vibe-kanban-tauri
+
+  coding-agent-upgrade-gate:
+    name: Coding-agent upgrade gate
+    runs-on: *runner_label
+    env:
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: "sccache"
+      BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Setup Rust and Node
+        uses: ./.github/actions/cargo-checks-common-setup
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          cache-key: coding-agent-upgrade-gate-${{ runner.os }}-${{ runner.arch }}-${{ env.RUNNER_LABEL }}
+          setup-node: "true"
+
+      - name: Install dependencies
+        run: pnpm install
+
+      - name: Run coding-agent upgrade gate
+        run: pnpm run agent-upgrade-gate
