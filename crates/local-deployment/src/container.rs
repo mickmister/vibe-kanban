@@ -606,14 +606,15 @@ impl LocalContainerService {
                     tracing::warn!("Failed to update queued message terminal state: {}", e);
                 }
 
-                container
-                    .emit_terminal_execution_webhook(&ctx, queue_item_id)
-                    .await;
-
-                // Update executor session summary if available
+                // Update executor session summary before emitting terminal webhooks so
+                // webhook consumers can immediately read the final response summary.
                 if let Err(e) = container.update_executor_session_summary(&exec_id).await {
                     tracing::warn!("Failed to update executor session summary: {}", e);
                 }
+
+                container
+                    .emit_terminal_execution_webhook(&ctx, queue_item_id)
+                    .await;
 
                 let success = matches!(
                     ctx.execution_process.status,

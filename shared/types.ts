@@ -550,7 +550,7 @@ export type ShowcaseState = { seen_features: Array<string>, };
 
 export type SendMessageShortcut = "ModifierEnter" | "Enter";
 
-export type WebhookSubscription = { id: string, name: string, upsert_key?: string | null, url: string, enabled: boolean, event_filters: Array<string>, signing_secret: string, created_at: string, updated_at: string, };
+export type WebhookSubscription = { id: string, name: string, upsert_key?: string | null, url: string, enabled: boolean, event_filters: Array<string>, created_at: string, updated_at: string, };
 
 export type WebhookSubscriptionPublic = { id: string, name: string, upsert_key: string | null, url: string, enabled: boolean, event_filters: Array<string>, signing_secret_set: boolean, created_at: string, updated_at: string, };
 

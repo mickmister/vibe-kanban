@@ -91,6 +91,8 @@ pub struct WebhookSubscription {
     pub enabled: bool,
     #[serde(default)]
     pub event_filters: Vec<String>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    #[ts(skip)]
     pub signing_secret: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,

@@ -153,6 +153,8 @@ pub enum WebhookSubscriptionError {
         "Webhook URL host is not allowed by default policy: {host}. Use explicit external URL opt-in to allow it."
     )]
     UnsafeExternalUrl { host: String },
+    #[error("Webhook subscription upsert key already exists: {0}")]
+    DuplicateUpsertKey(String),
     #[error("Webhook subscription not found")]
     NotFound,
 }
@@ -204,24 +206,33 @@ impl WebhookNotificationService {
         let event_filters = normalize_event_filters(input.event_filters)?;
         let now = Utc::now();
         let mut config = self.config.write().await;
-        let existing_index = input
-            .id
-            .and_then(|id| {
-                config
-                    .webhook_subscriptions
-                    .iter()
-                    .position(|subscription| subscription.id == id)
-            })
-            .or_else(|| {
-                input.upsert_key.as_ref().and_then(|key| {
-                    config
-                        .webhook_subscriptions
-                        .iter()
-                        .position(|subscription| {
-                            subscription.upsert_key.as_deref() == Some(key.as_str())
-                        })
-                })
-            });
+        let id_index = input.id.and_then(|id| {
+            config
+                .webhook_subscriptions
+                .iter()
+                .position(|subscription| subscription.id == id)
+        });
+        let key_index = input.upsert_key.as_ref().and_then(|key| {
+            config
+                .webhook_subscriptions
+                .iter()
+                .position(|subscription| subscription.upsert_key.as_deref() == Some(key.as_str()))
+        });
+        let existing_index = match (id_index, key_index) {
+            (Some(id_index), Some(key_index)) if id_index != key_index => {
+                return Err(WebhookSubscriptionError::DuplicateUpsertKey(
+                    input.upsert_key.clone().unwrap_or_default(),
+                ));
+            }
+            (Some(id_index), _) => Some(id_index),
+            (None, Some(key_index)) if input.id.is_none() => Some(key_index),
+            (None, Some(_)) => {
+                return Err(WebhookSubscriptionError::DuplicateUpsertKey(
+                    input.upsert_key.clone().unwrap_or_default(),
+                ));
+            }
+            (None, None) => None,
+        };
 
         let (subscription, created) = if let Some(index) = existing_index {
             let existing = &mut config.webhook_subscriptions[index];
@@ -262,11 +273,25 @@ impl WebhookNotificationService {
         input: UpdateWebhookSubscription,
     ) -> Result<WebhookSubscriptionPublic, WebhookSubscriptionError> {
         let mut config = self.config.write().await;
-        let subscription = config
+        let index = config
             .webhook_subscriptions
-            .iter_mut()
-            .find(|subscription| subscription.id == id)
+            .iter()
+            .position(|subscription| subscription.id == id)
             .ok_or(WebhookSubscriptionError::NotFound)?;
+
+        if let Some(upsert_key) = input.upsert_key.as_ref()
+            && let Some(key) = upsert_key.as_deref()
+            && config
+                .webhook_subscriptions
+                .iter()
+                .any(|existing| existing.id != id && existing.upsert_key.as_deref() == Some(key))
+        {
+            return Err(WebhookSubscriptionError::DuplicateUpsertKey(
+                key.to_string(),
+            ));
+        }
+
+        let subscription = &mut config.webhook_subscriptions[index];
 
         if let Some(name) = input.name {
             validate_name(&name)?;
@@ -828,6 +853,90 @@ mod tests {
         assert_eq!(config.read().await.webhook_subscriptions.len(), 1);
         assert_eq!(updated.subscription.name, "vd repaired");
         assert!(!updated.subscription.enabled);
+    }
+
+    #[tokio::test]
+    async fn create_or_upsert_rejects_duplicate_upsert_key_for_different_id() {
+        let config = Arc::new(RwLock::new(Config::default()));
+        let service = WebhookNotificationService::new(config);
+        let first_id = Uuid::parse_str("11111111-1111-1111-1111-111111111111").unwrap();
+        let second_id = Uuid::parse_str("22222222-2222-2222-2222-222222222222").unwrap();
+        service
+            .create_or_upsert_subscription(CreateWebhookSubscription {
+                id: Some(first_id),
+                name: "first".to_string(),
+                upsert_key: Some("shared".to_string()),
+                url: "http://localhost:1234/first".to_string(),
+                enabled: true,
+                event_filters: vec![],
+                signing_secret: "secret".to_string(),
+                allow_external_url: false,
+            })
+            .await
+            .unwrap();
+
+        let error = service
+            .create_or_upsert_subscription(CreateWebhookSubscription {
+                id: Some(second_id),
+                name: "second".to_string(),
+                upsert_key: Some("shared".to_string()),
+                url: "http://localhost:1234/second".to_string(),
+                enabled: true,
+                event_filters: vec![],
+                signing_secret: "secret".to_string(),
+                allow_external_url: false,
+            })
+            .await
+            .unwrap_err();
+
+        assert_eq!(
+            error,
+            WebhookSubscriptionError::DuplicateUpsertKey("shared".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn update_rejects_duplicate_upsert_key() {
+        let config = Arc::new(RwLock::new(Config::default()));
+        let service = WebhookNotificationService::new(config);
+        let first_id = Uuid::parse_str("11111111-1111-1111-1111-111111111111").unwrap();
+        let second_id = Uuid::parse_str("22222222-2222-2222-2222-222222222222").unwrap();
+        for (id, key) in [(first_id, "first"), (second_id, "second")] {
+            service
+                .create_or_upsert_subscription(CreateWebhookSubscription {
+                    id: Some(id),
+                    name: key.to_string(),
+                    upsert_key: Some(key.to_string()),
+                    url: format!("http://localhost:1234/{key}"),
+                    enabled: true,
+                    event_filters: vec![],
+                    signing_secret: "secret".to_string(),
+                    allow_external_url: false,
+                })
+                .await
+                .unwrap();
+        }
+
+        let error = service
+            .update_subscription(
+                second_id,
+                UpdateWebhookSubscription {
+                    name: None,
+                    upsert_key: Some(Some("first".to_string())),
+                    url: None,
+                    enabled: None,
+                    event_filters: None,
+                    signing_secret: None,
+                    allow_external_url: false,
+                },
+            )
+            .await
+            .unwrap_err();
+
+        assert_eq!(
+            error,
+            WebhookSubscriptionError::DuplicateUpsertKey("first".to_string())
+        );
     }
 
     fn sample_event(status: TerminalExecutionStatus) -> TerminalExecutionWebhookEvent {
