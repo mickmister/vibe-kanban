@@ -582,6 +582,20 @@ impl LocalContainerService {
             }
 
             if let Ok(ctx) = ExecutionProcess::load_context(&db.pool, exec_id).await {
+                let queue_item_id =
+                    match AgentMessageQueueItem::find_by_execution_process_id(&db.pool, exec_id)
+                        .await
+                    {
+                        Ok(item) => item.map(|item| item.id),
+                        Err(e) => {
+                            tracing::warn!(
+                                "Failed to find queued message for terminal webhook: {}",
+                                e
+                            );
+                            None
+                        }
+                    };
+
                 if let Err(e) = AgentMessageQueueItem::mark_terminal_for_execution_process(
                     &db.pool,
                     exec_id,
@@ -591,6 +605,10 @@ impl LocalContainerService {
                 {
                     tracing::warn!("Failed to update queued message terminal state: {}", e);
                 }
+
+                container
+                    .emit_terminal_execution_webhook(&ctx, queue_item_id)
+                    .await;
 
                 // Update executor session summary if available
                 if let Err(e) = container.update_executor_session_summary(&exec_id).await {

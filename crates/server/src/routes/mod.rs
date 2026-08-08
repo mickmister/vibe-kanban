@@ -34,6 +34,7 @@ pub mod sessions;
 pub mod ssh_session;
 pub mod tags;
 pub mod terminal;
+pub mod webhook_subscriptions;
 pub mod webrtc;
 pub mod workspaces;
 
@@ -62,6 +63,7 @@ pub fn router(deployment: DeploymentImpl, perf_tracing_enabled: bool) -> IntoMak
         .route("/ssh-session", get(ssh_session::ssh_session_ws))
         .nest("/remote", remote::router())
         .merge(webrtc::router())
+        .merge(webhook_subscriptions::router())
         .nest("/attachments", attachments::routes())
         .layer(axum::middleware::from_fn_with_state(
             deployment.clone(),

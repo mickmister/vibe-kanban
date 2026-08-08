@@ -528,7 +528,7 @@ export type DirectoryListResponse = { entries: Array<DirectoryEntry>, current_pa
 
 export type SearchMode = "taskform" | "settings";
 
-export type Config = { config_version: string, theme: ThemeMode, executor_profile: ExecutorProfileId, disclaimer_acknowledged: boolean, onboarding_acknowledged: boolean, remote_onboarding_acknowledged: boolean, notifications: NotificationConfig, editor: EditorConfig, github: GitHubConfig, analytics_enabled: boolean, workspace_dir: string | null, last_app_version: string | null, show_release_notes: boolean, language: UiLanguage, git_branch_prefix: string, showcases: ShowcaseState, pr_auto_description_enabled: boolean, pr_auto_description_prompt: string | null, commit_reminder_enabled: boolean, commit_reminder_prompt: string | null, send_message_shortcut: SendMessageShortcut, relay_enabled: boolean, host_nickname: string | null, agent_queue_concurrency: number, };
+export type Config = { config_version: string, theme: ThemeMode, executor_profile: ExecutorProfileId, disclaimer_acknowledged: boolean, onboarding_acknowledged: boolean, remote_onboarding_acknowledged: boolean, notifications: NotificationConfig, editor: EditorConfig, github: GitHubConfig, analytics_enabled: boolean, workspace_dir: string | null, last_app_version: string | null, show_release_notes: boolean, language: UiLanguage, git_branch_prefix: string, showcases: ShowcaseState, pr_auto_description_enabled: boolean, pr_auto_description_prompt: string | null, commit_reminder_enabled: boolean, commit_reminder_prompt: string | null, send_message_shortcut: SendMessageShortcut, relay_enabled: boolean, host_nickname: string | null, agent_queue_concurrency: number, webhook_subscriptions: Array<WebhookSubscription>, };
 
 export type NotificationConfig = { sound_enabled: boolean, push_enabled: boolean, sound_file: SoundFile, };
 
@@ -549,6 +549,18 @@ export type UiLanguage = "BROWSER" | "EN" | "FR" | "JA" | "ES" | "KO" | "ZH_HANS
 export type ShowcaseState = { seen_features: Array<string>, };
 
 export type SendMessageShortcut = "ModifierEnter" | "Enter";
+
+export type WebhookSubscription = { id: string, name: string, upsert_key?: string | null, url: string, enabled: boolean, event_filters: Array<string>, signing_secret: string, created_at: string, updated_at: string, };
+
+export type WebhookSubscriptionPublic = { id: string, name: string, upsert_key: string | null, url: string, enabled: boolean, event_filters: Array<string>, signing_secret_set: boolean, created_at: string, updated_at: string, };
+
+export type CreateWebhookSubscription = { id: string | null, name: string, upsert_key: string | null, url: string, enabled: boolean, event_filters: Array<string>, signing_secret: string, allow_external_url: boolean, };
+
+export type UpdateWebhookSubscription = { name: string | null, upsert_key: string | null | null, url: string | null, enabled: boolean | null, event_filters: Array<string> | null, signing_secret: string | null, allow_external_url: boolean, };
+
+export type UpsertWebhookSubscriptionResponse = { subscription: WebhookSubscriptionPublic, created: boolean, };
+
+export type TerminalExecutionWebhookPayload = { event_type: string, delivery_id: string, timestamp: string, workspace_id: string, session_id: string, execution_id: string, execution_process_id: string, status: string, completed_at: string | null, queue_item_id: string | null, exit_code: bigint | null, };
 
 export type GitBranch = { name: string, is_current: boolean, is_remote: boolean, last_commit_date: Date, };
 

@@ -1,7 +1,9 @@
 use anyhow::Error;
+use chrono::{DateTime, Utc};
 use executors::{executors::BaseCodingAgent, profile::ExecutorProfileId};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
+use uuid::Uuid;
 pub use v7::{
     EditorConfig, EditorType, GitHubConfig, NotificationConfig, ShowcaseState, SoundFile,
     ThemeMode, UiLanguage,
@@ -74,6 +76,24 @@ pub struct Config {
     pub host_nickname: Option<String>,
     #[serde(default = "default_agent_queue_concurrency")]
     pub agent_queue_concurrency: usize,
+    #[serde(default)]
+    pub webhook_subscriptions: Vec<WebhookSubscription>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq, Eq)]
+#[ts(export)]
+pub struct WebhookSubscription {
+    pub id: Uuid,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upsert_key: Option<String>,
+    pub url: String,
+    pub enabled: bool,
+    #[serde(default)]
+    pub event_filters: Vec<String>,
+    pub signing_secret: String,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
 }
 
 impl Config {
@@ -106,6 +126,7 @@ impl Config {
             relay_enabled: true,
             host_nickname: None,
             agent_queue_concurrency: default_agent_queue_concurrency(),
+            webhook_subscriptions: Vec::new(),
         }
     }
 
@@ -163,6 +184,7 @@ impl Default for Config {
             relay_enabled: true,
             host_nickname: None,
             agent_queue_concurrency: default_agent_queue_concurrency(),
+            webhook_subscriptions: Vec::new(),
         }
     }
 }

@@ -162,6 +162,17 @@ impl AgentMessageQueueItem {
             .await
     }
 
+    pub async fn find_by_execution_process_id(
+        pool: &SqlitePool,
+        execution_process_id: Uuid,
+    ) -> Result<Option<Self>, sqlx::Error> {
+        let sql = Self::select_sql("WHERE started_execution_process_id = ?1");
+        sqlx::query_as::<_, Self>(&sql)
+            .bind(execution_process_id)
+            .fetch_optional(pool)
+            .await
+    }
+
     pub async fn list_pending_for_session(
         pool: &SqlitePool,
         session_id: Uuid,

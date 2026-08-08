@@ -66,6 +66,9 @@ use crate::services::{
     execution_process,
     notification::NotificationService,
     queued_message::{QueueError, QueuedMessageService},
+    webhook_notification::{
+        TerminalExecutionStatus, TerminalExecutionWebhookEvent, WebhookNotificationService,
+    },
 };
 pub type ContainerRef = String;
 
@@ -453,6 +456,41 @@ pub trait ContainerService {
         };
         self.notification_service()
             .notify(&title, &message, Some(ctx.workspace.id))
+            .await;
+    }
+
+    /// Emits generic refs-only workflow webhooks for terminal coding-agent executions.
+    ///
+    /// These webhooks are best-effort wakeups for external orchestrators. VK keeps no
+    /// durable outbound outbox here; downstream systems must use VK response-read APIs
+    /// and their own polling/idempotence as the source of truth.
+    async fn emit_terminal_execution_webhook(
+        &self,
+        ctx: &ExecutionContext,
+        queue_item_id: Option<Uuid>,
+    ) {
+        if !matches!(
+            ctx.execution_process.run_reason,
+            ExecutionProcessRunReason::CodingAgent
+        ) {
+            return;
+        }
+        let status = match ctx.execution_process.status {
+            ExecutionProcessStatus::Completed => TerminalExecutionStatus::Completed,
+            ExecutionProcessStatus::Failed => TerminalExecutionStatus::Failed,
+            ExecutionProcessStatus::Killed => TerminalExecutionStatus::Killed,
+            ExecutionProcessStatus::Running => return,
+        };
+        WebhookNotificationService::new(self.config().clone())
+            .emit_terminal_execution_event(TerminalExecutionWebhookEvent {
+                workspace_id: ctx.workspace.id,
+                session_id: ctx.session.id,
+                execution_process_id: ctx.execution_process.id,
+                status,
+                completed_at: ctx.execution_process.completed_at,
+                queue_item_id,
+                exit_code: ctx.execution_process.exit_code,
+            })
             .await;
     }
 
