@@ -1555,7 +1555,7 @@ pub fn normalize_logs(
                 continue;
             }
 
-            if let Ok(server_notification) = serde_json::from_str::<ServerNotification>(&line) {
+            if let Some(server_notification) = parse_server_notification_compat(&line) {
                 if handle_direct_notification(
                     server_notification,
                     &mut state,
@@ -1575,7 +1575,7 @@ pub fn normalize_logs(
                 continue;
             }
 
-            if let Ok(request) = serde_json::from_str::<JSONRPCRequest>(&line)
+            if let Some(request) = parse_jsonrpc_request_compat(&line)
                 && let Ok(server_request) = ServerRequest::try_from(request)
                 && handle_direct_request(server_request, &mut state, &msg_store, &entry_index)
             {
@@ -2422,6 +2422,42 @@ pub fn normalize_logs(
     });
 
     vec![h1, h2]
+}
+
+fn parse_jsonrpc_request_compat(line: &str) -> Option<JSONRPCRequest> {
+    serde_json::from_str(line)
+        .ok()
+        .or_else(|| serde_json::from_value(apply_app_server_timestamp_defaults(line)?).ok())
+}
+
+fn parse_server_notification_compat(line: &str) -> Option<ServerNotification> {
+    serde_json::from_str(line)
+        .ok()
+        .or_else(|| serde_json::from_value(apply_app_server_timestamp_defaults(line)?).ok())
+}
+
+fn apply_app_server_timestamp_defaults(line: &str) -> Option<Value> {
+    let mut value = serde_json::from_str::<Value>(line).ok()?;
+    let method = value.get("method")?.as_str()?;
+    match method {
+        "item/commandExecution/requestApproval" | "item/started" => {
+            ensure_params_number(&mut value, "startedAtMs", 0);
+        }
+        "item/completed" => {
+            ensure_params_number(&mut value, "completedAtMs", 0);
+        }
+        _ => {}
+    }
+    Some(value)
+}
+
+fn ensure_params_number(value: &mut Value, field: &str, default: u64) {
+    let Some(params) = value.get_mut("params").and_then(Value::as_object_mut) else {
+        return;
+    };
+    params
+        .entry(field)
+        .or_insert_with(|| Value::Number(default.into()));
 }
 
 fn handle_jsonrpc_response(
