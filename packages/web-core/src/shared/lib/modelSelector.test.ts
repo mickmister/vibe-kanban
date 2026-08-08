@@ -70,6 +70,39 @@ describe('modelSelector explicit model support', () => {
     ).toHaveLength(1);
   });
 
+  it('canonicalizes explicit model provider casing to an existing provider', () => {
+    const discoveredOpenRouterConfig: ModelSelectorConfig = {
+      ...baseConfig(),
+      providers: [
+        ...baseConfig().providers,
+        { id: 'openrouter', name: 'OpenRouter' },
+      ],
+    };
+
+    const config = appendExplicitModelChoices(discoveredOpenRouterConfig, [
+      'OpenRouter/anthropic/claude-future',
+    ]);
+
+    expect(
+      getSelectedModel(
+        config?.models ?? [],
+        'openrouter',
+        'anthropic/claude-future'
+      )
+    ).toMatchObject({
+      id: 'anthropic/claude-future',
+      provider_id: 'openrouter',
+    });
+    expect(config?.providers).toContainEqual({
+      id: 'openrouter',
+      name: 'OpenRouter',
+    });
+    expect(config?.providers).not.toContainEqual({
+      id: 'OpenRouter',
+      name: 'OpenRouter',
+    });
+  });
+
   it('uses curated defaults only when no explicit model choice exists', () => {
     const config = appendExplicitModelChoices(baseConfig(), [
       'openrouter/anthropic/claude-future',

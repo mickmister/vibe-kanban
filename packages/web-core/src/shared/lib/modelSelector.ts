@@ -87,17 +87,19 @@ export function appendExplicitModelChoices(
     const { providerId, modelId } = parseModelId(modelChoice, hasProviders);
     if (!modelId) continue;
 
-    if (
-      providerId &&
-      !nextProviders.some(
-        (provider) => provider.id.toLowerCase() === providerId.toLowerCase()
-      )
-    ) {
+    const existingProvider = providerId
+      ? nextProviders.find(
+          (provider) => provider.id.toLowerCase() === providerId.toLowerCase()
+        )
+      : null;
+    const canonicalProviderId = existingProvider?.id ?? providerId;
+
+    if (canonicalProviderId && !existingProvider) {
       nextProviders = [
         ...nextProviders,
         {
-          id: providerId,
-          name: providerId,
+          id: canonicalProviderId,
+          name: canonicalProviderId,
         },
       ];
     }
@@ -105,8 +107,8 @@ export function appendExplicitModelChoices(
     const exists = nextModels.some(
       (m) =>
         m.id.toLowerCase() === modelId.toLowerCase() &&
-        (!providerId ||
-          m.provider_id?.toLowerCase() === providerId.toLowerCase())
+        (!canonicalProviderId ||
+          m.provider_id?.toLowerCase() === canonicalProviderId.toLowerCase())
     );
     if (exists) continue;
 
@@ -114,7 +116,7 @@ export function appendExplicitModelChoices(
       {
         id: modelId,
         name: modelId,
-        provider_id: providerId,
+        provider_id: canonicalProviderId,
         reasoning_options: [],
       },
       ...nextModels,

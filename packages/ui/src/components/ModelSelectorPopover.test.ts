@@ -52,4 +52,23 @@ describe('model selector filtering', () => {
     expect(state.visibleProviderIds).toEqual(['openrouter']);
     expect(state.activeProviderId).toBe('openrouter');
   });
+
+  it('keeps canonical provider ids visible for explicit OpenRouter models', () => {
+    const state = getProviderFilterState(
+      {
+        providers: [{ id: 'openrouter', name: 'OpenRouter' }],
+        models: [
+          {
+            ...openRouterModel,
+            provider_id: 'openrouter',
+          },
+        ],
+      },
+      'openrouter/anthropic/claude',
+      ''
+    );
+
+    expect(state.visibleProviderIds).toEqual(['openrouter']);
+    expect(state.activeProviderId).toBe('openrouter');
+  });
 });
