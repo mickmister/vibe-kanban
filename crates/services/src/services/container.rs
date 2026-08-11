@@ -919,7 +919,7 @@ pub trait ContainerService {
                 ExecutorActionType::CodingAgentInitialRequest(request) => {
                     #[cfg(feature = "qa-mode")]
                     {
-                        let executor = QaMockExecutor;
+                        let executor = QaMockExecutor::default();
                         executor.normalize_logs(
                             temp_store.clone(),
                             &request.effective_dir(&current_dir),
@@ -938,7 +938,7 @@ pub trait ContainerService {
                 ExecutorActionType::CodingAgentFollowUpRequest(request) => {
                     #[cfg(feature = "qa-mode")]
                     {
-                        let executor = QaMockExecutor;
+                        let executor = QaMockExecutor::default();
                         executor.normalize_logs(
                             temp_store.clone(),
                             &request.effective_dir(&current_dir),
@@ -962,7 +962,7 @@ pub trait ContainerService {
                     } else {
                         #[cfg(feature = "qa-mode")]
                         {
-                            let executor = QaMockExecutor;
+                            let executor = QaMockExecutor::default();
                             executor.normalize_logs(
                                 temp_store.clone(),
                                 &request.effective_dir(&current_dir),
@@ -981,7 +981,7 @@ pub trait ContainerService {
                 }
                 #[cfg(feature = "qa-mode")]
                 ExecutorActionType::ReviewRequest(_request) => {
-                    let executor = QaMockExecutor;
+                    let executor = QaMockExecutor::default();
                     executor.normalize_logs(temp_store.clone(), &current_dir)
                 }
                 #[cfg(not(feature = "qa-mode"))]
@@ -1442,7 +1442,7 @@ pub trait ContainerService {
             };
             #[cfg(feature = "qa-mode")]
             {
-                let executor = QaMockExecutor;
+                let executor = QaMockExecutor::default();
                 let _ = executor.normalize_logs(msg_store, &working_dir);
             }
             #[cfg(not(feature = "qa-mode"))]

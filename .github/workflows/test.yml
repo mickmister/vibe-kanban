@@ -324,3 +324,9 @@ jobs:
 
       - name: Run Cargo tests
         run: cargo nextest run --workspace --exclude vibe-kanban-tauri
+
+      - name: Run qa-mode sandbox runtime probe tests
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap
+          cargo test -p executors --features qa-mode qa_sandbox_probe_runs_inside_prepared_sandbox -- --nocapture

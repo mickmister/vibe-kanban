@@ -57,7 +57,8 @@ impl Executable for CodingAgentInitialRequest {
         #[cfg(feature = "qa-mode")]
         {
             tracing::info!("QA mode: using mock executor instead of real agent");
-            let executor = crate::executors::qa_mock::QaMockExecutor;
+            let mut executor = crate::executors::qa_mock::QaMockExecutor::default();
+            executor.use_approvals(approvals.clone());
             return executor
                 .spawn(
                     &effective_dir,

@@ -60,7 +60,8 @@ impl Executable for CodingAgentFollowUpRequest {
         #[cfg(feature = "qa-mode")]
         {
             tracing::info!("QA mode: using mock executor for follow-up instead of real agent");
-            let executor = crate::executors::qa_mock::QaMockExecutor;
+            let mut executor = crate::executors::qa_mock::QaMockExecutor::default();
+            executor.use_approvals(approvals.clone());
             return executor
                 .spawn_follow_up(
                     &effective_dir,

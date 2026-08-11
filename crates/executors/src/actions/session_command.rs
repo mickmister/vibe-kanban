@@ -141,7 +141,8 @@ impl Executable for CodingAgentSessionCommandRequest {
         #[cfg(feature = "qa-mode")]
         {
             tracing::info!("QA mode: using mock executor for session command");
-            let executor = crate::executors::qa_mock::QaMockExecutor;
+            let mut executor = crate::executors::qa_mock::QaMockExecutor::default();
+            executor.use_approvals(approvals.clone());
             return executor
                 .spawn_follow_up(
                     &effective_dir,

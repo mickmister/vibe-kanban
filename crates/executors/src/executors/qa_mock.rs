@@ -6,6 +6,8 @@
 //! 3. Outputs logs in ClaudeJson format for compatibility with existing log normalization
 
 use std::{
+    collections::HashMap,
+    fmt,
     path::{Path, PathBuf},
     process::Stdio,
     sync::Arc,
@@ -15,11 +17,15 @@ use async_trait::async_trait;
 use rand::seq::SliceRandom as _;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 use ts_rs::TS;
-use workspace_utils::{command_ext::GroupSpawnNoWindowExt, msg_store::MsgStore};
+use workspace_utils::{
+    approvals::HostCommandRequest, command_ext::GroupSpawnNoWindowExt, msg_store::MsgStore,
+};
 
 use crate::{
+    approvals::ExecutorApprovalService,
     command::CmdOverrides,
     env::ExecutionEnv,
     executors::{
@@ -34,12 +40,35 @@ use crate::{
 };
 
 /// Mock executor for QA testing
-#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, TS, JsonSchema)]
-pub struct QaMockExecutor;
+#[derive(Clone, Serialize, Deserialize, Default, TS, JsonSchema)]
+pub struct QaMockExecutor {
+    #[serde(skip)]
+    #[schemars(skip)]
+    #[ts(skip)]
+    approvals: Option<Arc<dyn ExecutorApprovalService>>,
+}
+
+impl fmt::Debug for QaMockExecutor {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("QaMockExecutor")
+            .field("approvals", &self.approvals.is_some())
+            .finish()
+    }
+}
+
+impl PartialEq for QaMockExecutor {
+    fn eq(&self, _other: &Self) -> bool {
+        true
+    }
+}
 
 #[async_trait]
 impl StandardCodingAgentExecutor for QaMockExecutor {
     fn apply_overrides(&mut self, _executor_config: &ExecutorConfig) {}
+
+    fn use_approvals(&mut self, approvals: Arc<dyn ExecutorApprovalService>) {
+        self.approvals = Some(approvals);
+    }
 
     async fn spawn(
         &self,
@@ -49,30 +78,68 @@ impl StandardCodingAgentExecutor for QaMockExecutor {
     ) -> Result<SpawnedChild, ExecutorError> {
         info!("QA Mock Executor: spawning mock execution");
 
-        // 1. Perform file operations before spawning the log output process
+        // 1. Perform legacy mock file operations before spawning the log output process.
+        // These operations are intentionally not used as sandbox proof; sandbox probes
+        // below run inside the prepared child process.
         perform_file_operations(current_dir).await;
 
-        // 2. Generate mock logs and write to temp file to avoid shell escaping issues
-        let logs = generate_mock_logs(prompt);
-        let temp_dir = std::env::temp_dir();
-        let log_file = temp_dir.join(format!("qa_mock_logs_{}.jsonl", uuid::Uuid::new_v4()));
+        // 2. Generate mock logs and write them under the workspace so sandboxed
+        // child processes can read them even when /tmp is private.
+        let run_id = uuid::Uuid::new_v4();
+        let qa_dir = current_dir
+            .join(".vibe")
+            .join("qa-mock")
+            .join(run_id.to_string());
+        tokio::fs::create_dir_all(&qa_dir)
+            .await
+            .map_err(|e| ExecutorError::Io(std::io::Error::other(e)))?;
+        let log_file = qa_dir.join("logs.jsonl");
+        let done_file = qa_dir.join("host-command.done");
+        let host_result_file = qa_dir.join("host-command-result.txt");
 
-        // Write all logs to file, one per line
+        let logs = generate_mock_logs(prompt);
         let content = logs.join("\n") + "\n";
         tokio::fs::write(&log_file, &content)
             .await
             .map_err(|e| ExecutorError::Io(std::io::Error::other(e)))?;
 
-        // 3. Create shell script that reads file and outputs with delays
-        // Using IFS= read -r to preserve exact content (no word splitting, no backslash interpretation)
-        let script = format!(
-            r#"while IFS= read -r line; do echo "$line"; sleep 1; done < "{}"; rm -f "{}""#,
-            log_file.display(),
-            log_file.display()
+        let wants_sandbox_probe = prompt.contains("VK_QA_SANDBOX_PROBE");
+        let wants_host_command = prompt.contains("VK_QA_HOST_COMMAND");
+        let cancel = CancellationToken::new();
+        if wants_host_command {
+            if let Some(approvals) = self.approvals.clone() {
+                spawn_host_command_trigger(
+                    approvals,
+                    current_dir.to_path_buf(),
+                    done_file.clone(),
+                    host_result_file.clone(),
+                    cancel.clone(),
+                );
+            } else {
+                tokio::fs::write(
+                    &host_result_file,
+                    "QA host-command trigger failed: approval service unavailable\n",
+                )
+                .await
+                .map_err(|e| ExecutorError::Io(std::io::Error::other(e)))?;
+                tokio::fs::write(&done_file, "done\n")
+                    .await
+                    .map_err(|e| ExecutorError::Io(std::io::Error::other(e)))?;
+            }
+        }
+
+        // 3. Create shell script that performs requested probes inside the
+        // sandboxed execution path, then streams Claude-compatible mock logs.
+        let script = qa_runner_script(
+            &log_file,
+            wants_sandbox_probe,
+            wants_host_command,
+            &done_file,
+            &host_result_file,
         );
 
         let prepared = prepare_agent_command(
-            PathBuf::from("sh"),
+            PathBuf::from("/bin/sh"),
             vec!["-c".to_string(), script],
             current_dir,
             _env,
@@ -87,7 +154,11 @@ impl StandardCodingAgentExecutor for QaMockExecutor {
             .stderr(Stdio::piped());
 
         let child = cmd.group_spawn_no_window().map_err(ExecutorError::Io)?;
-        Ok(SpawnedChild::from(child))
+        let mut spawned = SpawnedChild::from(child);
+        if wants_host_command {
+            spawned.cancel = Some(cancel);
+        }
+        Ok(spawned)
     }
 
     async fn spawn_follow_up(
@@ -134,6 +205,143 @@ impl StandardCodingAgentExecutor for QaMockExecutor {
             sandbox: None,
         }
     }
+}
+
+fn qa_runner_script(
+    log_file: &Path,
+    wants_sandbox_probe: bool,
+    wants_host_command: bool,
+    done_file: &Path,
+    host_result_file: &Path,
+) -> String {
+    let mut script = String::from("set +e\n");
+    if wants_sandbox_probe {
+        script.push_str(QA_SANDBOX_PROBE_SCRIPT);
+    }
+    if wants_host_command {
+        script.push_str(&format!(
+            r#"echo 'QA host-command approval requested; waiting for user response...'
+i=0
+while [ ! -f {done_file} ] && [ "$i" -lt 3000 ]; do
+  i=$((i + 1))
+  sleep 0.2
+done
+if [ -f {result_file} ]; then
+  cat {result_file}
+else
+  echo 'QA host-command approval did not complete before timeout.'
+fi
+"#,
+            done_file = shell_single_quote(done_file),
+            result_file = shell_single_quote(host_result_file),
+        ));
+    }
+    script.push_str(&format!(
+        r#"while IFS= read -r line; do
+  echo "$line"
+  sleep "${{VK_QA_MOCK_LOG_DELAY_SECS:-1}}"
+done < {log_file}
+"#,
+        log_file = shell_single_quote(log_file),
+    ));
+    script
+}
+
+const QA_SANDBOX_PROBE_SCRIPT: &str = r#"probe_file="qa_sandbox_probe_result.json"
+workspace_file="qa_sandbox_probe_workspace_write.txt"
+readonly_file="node_modules/qa_sandbox_probe_readonly_write.txt"
+
+if printf 'workspace-write-ok\n' > "$workspace_file" 2>/dev/null; then
+  workspace_write="allowed"
+else
+  workspace_write="denied"
+fi
+
+readonly_present="false"
+if [ -d "node_modules" ]; then
+  readonly_present="true"
+  if printf 'readonly-write-should-fail\n' > "$readonly_file" 2>/dev/null; then
+    readonly_write="allowed"
+    rm -f "$readonly_file" 2>/dev/null
+  else
+    readonly_write="denied"
+  fi
+else
+  readonly_write="skipped_missing_path"
+fi
+
+if command -v curl >/dev/null 2>&1; then
+  if curl -fsS --max-time 3 https://example.com >/dev/null 2>&1; then
+    network="allowed"
+  else
+    network="denied_or_unreachable"
+  fi
+elif command -v python3 >/dev/null 2>&1; then
+  if python3 -c 'import socket; socket.create_connection(("example.com", 443), timeout=3).close()' >/dev/null 2>&1; then
+    network="allowed"
+  else
+    network="denied_or_unreachable"
+  fi
+else
+  network="probe_tool_unavailable"
+fi
+
+cat > "$probe_file" <<EOF
+{
+  "probe": "VK_QA_SANDBOX_PROBE",
+  "workspace_write": "$workspace_write",
+  "readonly_path": "node_modules",
+  "readonly_path_present": $readonly_present,
+  "readonly_write": "$readonly_write",
+  "network": "$network"
+}
+EOF
+cat "$probe_file"
+"#;
+
+fn spawn_host_command_trigger(
+    approvals: Arc<dyn ExecutorApprovalService>,
+    cwd: PathBuf,
+    done_file: PathBuf,
+    result_file: PathBuf,
+    cancel: CancellationToken,
+) {
+    tokio::spawn(async move {
+        let request = HostCommandRequest {
+            command: "printf 'VK_QA_HOST_COMMAND_OK\\n' > qa_host_command_approved.txt && printf 'VK_QA_HOST_COMMAND_STDOUT\\n'".to_string(),
+            cwd: cwd.to_string_lossy().to_string(),
+            reason: "QA mode deterministic host-command approval trigger".to_string(),
+            env: HashMap::new(),
+            timeout_secs: 30,
+            output_limit_bytes: 4096,
+        };
+        let text = match approvals.create_host_command_approval(request).await {
+            Ok(approval_id) => match approvals
+                .wait_host_command_result(&approval_id, cancel)
+                .await
+            {
+                Ok(result) => format!(
+                    "QA host-command completed: exit_code={:?} timed_out={} truncated={} stdout={} stderr={}\n",
+                    result.exit_code,
+                    result.timed_out,
+                    result.truncated,
+                    result.stdout.replace('\n', "\\n"),
+                    result.stderr.replace('\n', "\\n")
+                ),
+                Err(err) => format!("QA host-command denied or failed: {err}\n"),
+            },
+            Err(err) => format!("QA host-command approval request failed: {err}\n"),
+        };
+        if let Some(parent) = result_file.parent() {
+            let _ = tokio::fs::create_dir_all(parent).await;
+        }
+        let _ = tokio::fs::write(&result_file, text).await;
+        let _ = tokio::fs::write(&done_file, "done\n").await;
+    });
+}
+
+fn shell_single_quote(path: &Path) -> String {
+    format!("'{}'", path.to_string_lossy().replace('\'', "'\\''"))
 }
 
 /// Perform random file operations in the worktree
@@ -408,6 +616,8 @@ fn generate_mock_logs(prompt: &str) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    use workspace_utils::approvals::{ApprovalStatus, HostCommandResult, QuestionStatus};
+
     use super::*;
 
     #[test]
@@ -443,6 +653,234 @@ mod tests {
                 parsed.err()
             );
         }
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[tokio::test]
+    async fn qa_sandbox_probe_runs_inside_prepared_sandbox() {
+        use tokio::io::AsyncReadExt as _;
+
+        use crate::{
+            env::RepoContext,
+            sandbox::{AgentSandboxConfig, SandboxNetworkMode},
+        };
+
+        let backend_executable = if cfg!(target_os = "linux") {
+            "bwrap"
+        } else {
+            "sandbox-exec"
+        };
+        if workspace_utils::shell::resolve_executable_path(backend_executable)
+            .await
+            .is_none()
+        {
+            eprintln!("skipping qa sandbox runtime probe: {backend_executable} is unavailable");
+            return;
+        }
+
+        let root = tempfile::tempdir().unwrap();
+        let repo = root.path().join("repo");
+        std::fs::create_dir_all(repo.join("node_modules")).unwrap();
+        std::fs::write(
+            repo.join("README.md"),
+            "qa repo
+",
+        )
+        .unwrap();
+
+        let mut env = ExecutionEnv::new(
+            RepoContext::new(root.path().to_path_buf(), vec!["repo".to_string()]),
+            false,
+            String::new(),
+        )
+        .with_sandbox(Some(AgentSandboxConfig {
+            enabled: true,
+            network: SandboxNetworkMode::None,
+            readonly_repo_paths: vec!["node_modules".to_string()],
+            ..Default::default()
+        }));
+        env.insert("VK_QA_MOCK_LOG_DELAY_SECS", "0");
+
+        let mut spawned = QaMockExecutor::default()
+            .spawn(&repo, "VK_QA_SANDBOX_PROBE", &env)
+            .await
+            .unwrap();
+        let mut stdout = spawned.child.inner().stdout.take().unwrap();
+        let mut output = String::new();
+        stdout.read_to_string(&mut output).await.unwrap();
+        let status = tokio::time::timeout(std::time::Duration::from_secs(20), spawned.child.wait())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            status.success(),
+            "probe process failed: {status:?}
+{output}"
+        );
+
+        let result_path = repo.join("qa_sandbox_probe_result.json");
+        let result = std::fs::read_to_string(&result_path).unwrap();
+        assert!(
+            result.contains(r#""workspace_write": "allowed""#),
+            "{result}"
+        );
+        assert!(
+            result.contains(r#""readonly_path_present": true"#),
+            "{result}"
+        );
+        assert!(result.contains(r#""readonly_write": "denied""#), "{result}");
+        assert!(
+            !repo
+                .join("node_modules/qa_sandbox_probe_readonly_write.txt")
+                .exists()
+        );
+        assert!(repo.join("qa_sandbox_probe_workspace_write.txt").exists());
+        assert!(
+            result.contains(r#""network": "denied_or_unreachable""#)
+                || result.contains(r#""network": "probe_tool_unavailable""#),
+            "network should not be allowed when sandbox network mode is none: {result}"
+        );
+    }
+
+    #[test]
+    fn sandbox_probe_script_is_opt_in_and_records_expected_checks() {
+        let script = qa_runner_script(
+            Path::new("/workspace/repo/.vibe/qa-mock/run/logs.jsonl"),
+            true,
+            false,
+            Path::new("/workspace/repo/.vibe/qa-mock/run/host-command.done"),
+            Path::new("/workspace/repo/.vibe/qa-mock/run/host-command-result.txt"),
+        );
+        assert!(script.contains("qa_sandbox_probe_result.json"));
+        assert!(script.contains("qa_sandbox_probe_workspace_write.txt"));
+        assert!(script.contains("node_modules/qa_sandbox_probe_readonly_write.txt"));
+        assert!(script.contains("https://example.com"));
+        assert!(script.contains("logs.jsonl"));
+    }
+
+    #[test]
+    fn host_command_trigger_script_waits_for_approval_result() {
+        let script = qa_runner_script(
+            Path::new("/workspace/repo/.vibe/qa-mock/run/logs.jsonl"),
+            false,
+            true,
+            Path::new("/workspace/repo/.vibe/qa-mock/run/host-command.done"),
+            Path::new("/workspace/repo/.vibe/qa-mock/run/host-command-result.txt"),
+        );
+        assert!(script.contains("QA host-command approval requested"));
+        assert!(script.contains("host-command.done"));
+        assert!(script.contains("host-command-result.txt"));
+        assert!(!script.contains("qa_sandbox_probe_result.json"));
+    }
+
+    #[derive(Debug)]
+    struct FakeHostCommandApprovals {
+        request: tokio::sync::Mutex<Option<HostCommandRequest>>,
+        result: HostCommandResult,
+    }
+
+    #[async_trait]
+    impl ExecutorApprovalService for FakeHostCommandApprovals {
+        async fn create_tool_approval(
+            &self,
+            _tool_name: &str,
+        ) -> Result<String, crate::approvals::ExecutorApprovalError> {
+            unreachable!("qa host-command trigger should not request tool approvals")
+        }
+
+        async fn create_question_approval(
+            &self,
+            _tool_name: &str,
+            _question_count: usize,
+        ) -> Result<String, crate::approvals::ExecutorApprovalError> {
+            unreachable!("qa host-command trigger should not request question approvals")
+        }
+
+        async fn wait_tool_approval(
+            &self,
+            _approval_id: &str,
+            _cancel: CancellationToken,
+        ) -> Result<ApprovalStatus, crate::approvals::ExecutorApprovalError> {
+            unreachable!("qa host-command trigger should not wait for tool approvals")
+        }
+
+        async fn create_host_command_approval(
+            &self,
+            request: HostCommandRequest,
+        ) -> Result<String, crate::approvals::ExecutorApprovalError> {
+            *self.request.lock().await = Some(request);
+            Ok("qa-host-command-approval".to_string())
+        }
+
+        async fn wait_host_command_result(
+            &self,
+            approval_id: &str,
+            _cancel: CancellationToken,
+        ) -> Result<HostCommandResult, crate::approvals::ExecutorApprovalError> {
+            assert_eq!(approval_id, "qa-host-command-approval");
+            Ok(self.result.clone())
+        }
+
+        async fn wait_question_answer(
+            &self,
+            _approval_id: &str,
+            _cancel: CancellationToken,
+        ) -> Result<QuestionStatus, crate::approvals::ExecutorApprovalError> {
+            unreachable!("qa host-command trigger should not wait for question approvals")
+        }
+    }
+
+    #[tokio::test]
+    async fn host_command_trigger_requests_first_class_approval_and_records_result() {
+        let root = tempfile::tempdir().unwrap();
+        let cwd = root.path().join("repo");
+        std::fs::create_dir(&cwd).unwrap();
+        let done_file = cwd.join(".vibe/qa-mock/run/host-command.done");
+        let result_file = cwd.join(".vibe/qa-mock/run/host-command-result.txt");
+        let approvals = Arc::new(FakeHostCommandApprovals {
+            request: tokio::sync::Mutex::new(None),
+            result: HostCommandResult {
+                exit_code: Some(0),
+                timed_out: false,
+                stdout: "VK_QA_HOST_COMMAND_STDOUT\n".to_string(),
+                stderr: String::new(),
+                truncated: false,
+            },
+        });
+
+        spawn_host_command_trigger(
+            approvals.clone(),
+            cwd.clone(),
+            done_file.clone(),
+            result_file.clone(),
+            CancellationToken::new(),
+        );
+
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while !done_file.exists() {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("host-command trigger should write completion marker");
+
+        let request = approvals.request.lock().await.clone().unwrap();
+        assert_eq!(
+            request.command,
+            "printf 'VK_QA_HOST_COMMAND_OK\\n' > qa_host_command_approved.txt && printf 'VK_QA_HOST_COMMAND_STDOUT\\n'"
+        );
+        assert_eq!(request.cwd, cwd.to_string_lossy());
+        assert_eq!(
+            request.reason,
+            "QA mode deterministic host-command approval trigger"
+        );
+        assert!(request.env.is_empty());
+        assert_eq!(request.timeout_secs, 30);
+        assert_eq!(request.output_limit_bytes, 4096);
+
+        let result = std::fs::read_to_string(result_file).unwrap();
+        assert!(result.contains("QA host-command completed"));
+        assert!(result.contains("VK_QA_HOST_COMMAND_STDOUT\\n"));
     }
 
     #[test]

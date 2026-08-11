@@ -1431,6 +1431,13 @@ impl ContainerService for LocalContainerService {
 
         let approvals_service: Arc<dyn ExecutorApprovalService> =
             match executor_action.base_executor() {
+                #[cfg(feature = "qa-mode")]
+                Some(BaseCodingAgent::QaMock) => ExecutorApprovalBridge::new(
+                    self.approvals.clone(),
+                    self.db.clone(),
+                    self.notification_service.clone(),
+                    execution_process.id,
+                ),
                 Some(
                     BaseCodingAgent::Codex
                     | BaseCodingAgent::ClaudeCode
