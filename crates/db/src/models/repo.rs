@@ -177,10 +177,7 @@ impl Repo {
         }
     }
 
-    async fn with_scripts(
-        pool: &SqlitePool,
-        rows: Vec<RepoRow>,
-    ) -> Result<Vec<Self>, sqlx::Error> {
+    async fn with_scripts(pool: &SqlitePool, rows: Vec<RepoRow>) -> Result<Vec<Self>, sqlx::Error> {
         let ids: Vec<Uuid> = rows.iter().map(|row| row.id).collect();
         let scripts_by_repo = RepoDevServerScript::find_by_repo_ids(pool, &ids).await?;
 
@@ -591,7 +588,7 @@ impl Repo {
         .bind(default_target_branch)
         .bind(default_working_dir)
         .bind(id)
-        .fetch_one(&mut **tx)
+        .fetch_one(&mut *tx)
         .await?;
 
         if let Some(scripts) = &payload.dev_server_scripts {
@@ -606,7 +603,7 @@ impl Repo {
             )
             .bind(default_script)
             .bind(id)
-            .execute(&mut **tx)
+            .execute(&mut *tx)
             .await?;
 
             Self::replace_dev_server_scripts(&mut tx, id, &normalized).await?;

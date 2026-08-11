@@ -14,6 +14,32 @@ export type RepoDevServerScript = { id: string, repo_id: string, name: string, s
 
 export type UpdateRepoDevServerScript = { id?: string, name: string, script: string, working_dir: string | null, is_default: boolean, };
 
+export type RunConfig = { id: string, repo_id: string, slug: string, name: string, command: string, working_dir: string | null, kind: RunConfigKind, enabled: boolean, created_at: Date, updated_at: Date, };
+
+export enum RunConfigKind { long_running = "long_running", one_shot = "one_shot", test = "test" }
+
+export type UpsertRunConfig = { id?: string, repo_id: string, slug: string, name: string, command: string, working_dir: string | null, kind: RunConfigKind, enabled: boolean, };
+
+export type PreviewSlot = { id: string, repo_id: string, run_config_id: string, slot_slug: string, title: string, enabled: boolean, created_at: Date, updated_at: Date, };
+
+export type UpsertPreviewSlot = { id?: string, repo_id: string, run_config_id: string, slot_slug: string, title: string, enabled: boolean, };
+
+export type PreviewProcessLink = { id: string, workspace_id: string, repo_id: string, run_config_id: string, preview_slot_id: string | null, execution_process_id: string, assigned_port: bigint, status_snapshot: PreviewProcessStatusSnapshot, started_at: Date, updated_at: Date, ended_at: Date | null, };
+
+export enum PreviewProcessStatusSnapshot { starting = "starting", ready = "ready", failed = "failed", stopped = "stopped" }
+
+export type RunConfigStartResponse = { execution_process: ExecutionProcess, preview_process_link: PreviewProcessLink, upstream: string, };
+
+export type WorkspaceRunConfigsResponse = { run_configs: Array<RunConfig>, preview_slots: Array<PreviewSlot>, preview_url_parts: Array<PreviewSlotUrlParts>, };
+
+export type PreviewSlotUrlParts = { previewSlotId: string, workspaceToken: string, repoSlug: string, slotSlug: string, };
+
+export type PreviewSlotUrlResponse = { previewSlotId: string, workspaceToken: string, repoSlug: string, slotSlug: string, customerSlug: string, host: string, url: string, };
+
+export type NamedPreviewResolveRequest = { host: string, workspaceToken: string, repoSlug: string, slotSlug: string, customerSlug: string, ensure: boolean, method: string, path: string, };
+
+export type NamedPreviewResolveResponse = { status: string, upstream: string | null, message: string | null, executionProcessId: string | null, };
+
 export type SearchResult = { path: string, is_file: boolean, match_type: SearchMatchType,
 /**
  * Ranking score based on git history (higher = more recently/frequently edited)
@@ -597,7 +623,11 @@ export type ScriptRequest = { script: string, language: ScriptRequestLanguage, c
  * Optional relative path to execute the script in (relative to container_ref).
  * If None, uses the container_ref directory directly.
  */
-working_dir: string | null, };
+working_dir: string | null,
+/**
+ * Optional environment overrides for this script invocation.
+ */
+env: { [key in string]?: string }, };
 
 export type SessionCommand = { "type": "clear" } | { "type": "compact", instructions: string | null, };
 
