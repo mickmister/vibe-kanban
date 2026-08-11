@@ -67,6 +67,7 @@ import {
   PushError,
   TokenResponse,
   CurrentUserResponse,
+  ConversationPreview,
   QueueStatus,
   PrCommentsResponse,
   MergeWorkspaceRequest,
@@ -89,6 +90,8 @@ import {
   CreateFromPrError,
   CreateAndStartWorkspaceRequest,
   CreateAndStartWorkspaceResponse,
+  AddWorkspaceRepoRequest,
+  AddWorkspaceRepoResponse,
   RelayPairedClient,
   ListRelayPairedClientsResponse,
   RemoveRelayPairedClientResponse,
@@ -328,6 +331,20 @@ export const sessionsApi = {
     return handleApiResponse<Session>(response);
   },
 
+  getConversationPreview: async (
+    sessionId: string,
+    limit?: number,
+    hostId?: string | null
+  ): Promise<ConversationPreview> => {
+    const params = new URLSearchParams();
+    if (limit != null) params.set('limit', String(limit));
+    const response = await makeHostAwareRequest(
+      `/api/sessions/${sessionId}/conversation-preview${params.toString() ? `?${params.toString()}` : ''}`,
+      hostId
+    );
+    return handleApiResponse<ConversationPreview>(response);
+  },
+
   create: async (data: {
     workspace_id: string;
     executor?: string;
@@ -422,6 +439,20 @@ export const workspacesApi = {
   get: async (workspaceId: string): Promise<Workspace> => {
     const response = await makeRequest(`/api/workspaces/${workspaceId}`);
     return handleApiResponse<Workspace>(response);
+  },
+
+  getConversationPreview: async (
+    workspaceId: string,
+    limit?: number,
+    hostId?: string | null
+  ): Promise<ConversationPreview> => {
+    const params = new URLSearchParams();
+    if (limit != null) params.set('limit', String(limit));
+    const response = await makeHostAwareRequest(
+      `/api/workspaces/${workspaceId}/conversation-preview${params.toString() ? `?${params.toString()}` : ''}`,
+      hostId
+    );
+    return handleApiResponse<ConversationPreview>(response);
   },
 
   update: async (
@@ -538,6 +569,17 @@ export const workspacesApi = {
   getRepos: async (workspaceId: string): Promise<RepoWithTargetBranch[]> => {
     const response = await makeRequest(`/api/workspaces/${workspaceId}/repos`);
     return handleApiResponse<RepoWithTargetBranch[]>(response);
+  },
+
+  addRepo: async (
+    workspaceId: string,
+    data: AddWorkspaceRepoRequest
+  ): Promise<AddWorkspaceRepoResponse> => {
+    const response = await makeRequest(`/api/workspaces/${workspaceId}/repos`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+    return handleApiResponse<AddWorkspaceRepoResponse>(response);
   },
 
   getFirstUserMessage: async (workspaceId: string): Promise<string | null> => {

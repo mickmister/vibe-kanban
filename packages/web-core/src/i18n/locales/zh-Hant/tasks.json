@@ -6,7 +6,8 @@
   "gitPanel": {
     "advanced": {
       "placeholder": "例如：acme Corp"
-    }
+    },
+    "addRepo": "新增儲存庫"
   },
   "loading": "載入任務中...",
   "actions": {

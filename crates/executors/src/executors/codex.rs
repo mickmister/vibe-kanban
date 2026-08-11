@@ -59,6 +59,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use strum_macros::{AsRefStr, EnumString};
 use tokio::process::Command;
+use tracing::Instrument;
 use ts_rs::TS;
 use workspace_utils::{command_ext::GroupSpawnNoWindowExt, msg_store::MsgStore};
 
@@ -640,7 +641,14 @@ impl Codex {
         combined_prompt: String,
         client: Arc<AppServerClient>,
     ) -> Result<(), ExecutorError> {
-        let account = client.get_account().await?;
+        let resume = resume_session.is_some();
+        let account = client
+            .get_account()
+            .instrument(tracing::debug_span!(
+                target: "perf.agent_startup",
+                "codex.get_account"
+            ))
+            .await?;
         if account.requires_openai_auth && account.account.is_none() {
             return Err(ExecutorError::AuthRequired(
                 "Codex authentication required".to_string(),
@@ -649,21 +657,46 @@ impl Codex {
 
         let (thread_id, resolved_model) = match resume_session {
             None => {
-                let response = client.thread_start(thread_start_params).await?;
+                let response = client
+                    .thread_start(thread_start_params)
+                    .instrument(tracing::debug_span!(
+                        target: "perf.agent_startup",
+                        "codex.thread_start"
+                    ))
+                    .await?;
                 (response.thread.id, response.model)
             }
             Some(session_id) => {
                 let response = client
                     .thread_fork(fork_params_from(session_id, thread_start_params))
+                    .instrument(tracing::debug_span!(
+                        target: "perf.agent_startup",
+                        "codex.thread_fork"
+                    ))
                     .await?;
                 tracing::debug!("forked thread, new thread_id={}", response.thread.id);
                 (response.thread.id, response.model)
             }
         };
 
+        tracing::debug!(
+            target: "perf.agent_startup",
+            thread_id = %thread_id,
+            model = %resolved_model,
+            resume,
+            "codex.thread_ready"
+        );
         client.set_resolved_model(resolved_model);
-        client.register_session(&thread_id).await?;
+        client
+            .register_session(&thread_id)
+            .instrument(tracing::debug_span!(
+                target: "perf.agent_startup",
+                "codex.register_session",
+                thread_id = %thread_id,
+            ))
+            .await?;
         let collaboration_mode = client.initial_collaboration_mode()?;
+        let turn_start_thread_id = thread_id.clone();
         client
             .turn_start_with_mode(
                 thread_id,
@@ -673,13 +706,18 @@ impl Codex {
                 }],
                 Some(collaboration_mode),
             )
+            .instrument(tracing::debug_span!(
+                target: "perf.agent_startup",
+                "codex.turn_start",
+                thread_id = %turn_start_thread_id,
+            ))
             .await?;
 
         Ok(())
     }
 
     /// Common boilerplate for spawning a Codex app server process
-    /// Handles process spawning, stdout/stderr piping, exit signal handling, client initialization, and error logging.
+    /// Handles process spawning, stdout piping, exit signal handling, client initialization, and error logging.
     /// Delegates the actual Codex session logic to the provided `task` closure.
     async fn spawn_app_server<F, Fut>(
         &self,
@@ -692,14 +730,23 @@ impl Codex {
         F: FnOnce(Arc<AppServerClient>, ExitSignalSender) -> Fut + Send + 'static,
         Fut: std::future::Future<Output = Result<(), ExecutorError>> + Send + 'static,
     {
-        let (program_path, args) = command_parts.into_resolved().await?;
+        let (program_path, args) = command_parts
+            .into_resolved()
+            .instrument(tracing::debug_span!(
+                target: "perf.agent_startup",
+                "codex.resolve_command"
+            ))
+            .await?;
 
         let mut process = Command::new(program_path);
         process
             .kill_on_drop(true)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
+            // Codex app-server speaks JSON-RPC on stdout. Its stderr is not part
+            // of the agent log stream here, and leaving a piped stderr unread can
+            // block the child process if diagnostics/tracing emits enough logs.
+            .stderr(std::process::Stdio::null())
             .current_dir(current_dir)
             .env("NPM_CONFIG_LOGLEVEL", "error")
             .env("NODE_NO_WARNINGS", "1")
@@ -710,8 +757,21 @@ impl Codex {
         env.clone()
             .with_profile(&self.cmd)
             .apply_to_command(&mut process);
+        // VK runs short-lived Codex app-server children and relies on OTEL/stderr
+        // for diagnostics. SQLite-backed Codex logs are non-critical and can
+        // contend heavily on hosts with many sessions, so force them off for
+        // VK-spawned Codex processes even if profile env overrides are present.
+        process.env("CODEX_SQLITE_LOGS", "off");
 
-        let mut child = process.group_spawn_no_window()?;
+        let mut child = {
+            let _span = tracing::debug_span!(
+                target: "perf.agent_startup",
+                "codex.process_spawn",
+                cwd = %current_dir.display(),
+            )
+            .entered();
+            process.group_spawn_no_window()?
+        };
 
         let child_stdout = child.inner().stdout.take().ok_or_else(|| {
             ExecutorError::Io(std::io::Error::other("Codex app server missing stdout"))
@@ -735,67 +795,81 @@ impl Codex {
         let commit_reminder_prompt = env.commit_reminder_prompt.clone();
         let cancel_for_task = cancel.clone();
 
-        tokio::spawn(async move {
-            let exit_signal_tx = ExitSignalSender::new(exit_signal_tx);
-            let log_writer = LogWriter::new(new_stdout);
+        let app_server_span = tracing::debug_span!(
+            target: "perf.agent_startup",
+            "codex.spawn_app_server",
+            cwd = %current_dir.display(),
+        );
+        tokio::spawn(
+            async move {
+                let exit_signal_tx = ExitSignalSender::new(exit_signal_tx);
+                let log_writer = LogWriter::new(new_stdout);
 
-            // Initialize the AppServerClient
-            let client = AppServerClient::new(
-                log_writer.clone(),
-                approvals,
-                auto_approve,
-                plan_mode,
-                repo_context,
-                commit_reminder,
-                commit_reminder_prompt,
-                cancel_for_task.clone(),
-            );
-            let rpc_peer = JsonRpcPeer::spawn(
-                child_stdin,
-                child_stdout,
-                client.clone(),
-                exit_signal_tx.clone(),
-                cancel_for_task,
-            );
-            client.connect(rpc_peer);
+                // Initialize the AppServerClient
+                let client = AppServerClient::new(
+                    log_writer.clone(),
+                    approvals,
+                    auto_approve,
+                    plan_mode,
+                    repo_context,
+                    commit_reminder,
+                    commit_reminder_prompt,
+                    cancel_for_task.clone(),
+                );
+                let rpc_peer = JsonRpcPeer::spawn(
+                    child_stdin,
+                    child_stdout,
+                    client.clone(),
+                    exit_signal_tx.clone(),
+                    cancel_for_task,
+                );
+                client.connect(rpc_peer);
 
-            let result = async {
-                client.initialize().await?;
-                task(client, exit_signal_tx.clone()).await
-            }
-            .await;
-
-            if let Err(err) = result {
-                match &err {
-                    ExecutorError::Io(io_err)
-                        if io_err.kind() == std::io::ErrorKind::BrokenPipe =>
-                    {
-                        // Broken pipe likely means the parent process exited, so we can ignore it
-                        return;
-                    }
-                    ExecutorError::AuthRequired(message) => {
-                        log_writer
-                            .log_raw(&Error::auth_required(message.clone()).raw())
-                            .await
-                            .ok();
-                        exit_signal_tx
-                            .send_exit_signal(ExecutorExitResult::Failure)
-                            .await;
-                        return;
-                    }
-                    _ => {
-                        tracing::error!("Codex spawn error: {}", err);
-                        log_writer
-                            .log_raw(&Error::launch_error(err.to_string()).raw())
-                            .await
-                            .ok();
-                    }
+                let result = async {
+                    client
+                        .initialize()
+                        .instrument(tracing::debug_span!(
+                            target: "perf.agent_startup",
+                            "codex.rpc.initialize"
+                        ))
+                        .await?;
+                    task(client, exit_signal_tx.clone()).await
                 }
-                exit_signal_tx
-                    .send_exit_signal(ExecutorExitResult::Failure)
-                    .await;
+                .await;
+
+                if let Err(err) = result {
+                    match &err {
+                        ExecutorError::Io(io_err)
+                            if io_err.kind() == std::io::ErrorKind::BrokenPipe =>
+                        {
+                            // Broken pipe likely means the parent process exited, so we can ignore it
+                            return;
+                        }
+                        ExecutorError::AuthRequired(message) => {
+                            log_writer
+                                .log_raw(&Error::auth_required(message.clone()).raw())
+                                .await
+                                .ok();
+                            exit_signal_tx
+                                .send_exit_signal(ExecutorExitResult::Failure)
+                                .await;
+                            return;
+                        }
+                        _ => {
+                            tracing::error!("Codex spawn error: {}", err);
+                            log_writer
+                                .log_raw(&Error::launch_error(err.to_string()).raw())
+                                .await
+                                .ok();
+                        }
+                    }
+                    exit_signal_tx
+                        .send_exit_signal(ExecutorExitResult::Failure)
+                        .await;
+                }
             }
-        });
+            .instrument(app_server_span),
+        );
 
         Ok(SpawnedChild {
             child,
