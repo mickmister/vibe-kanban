@@ -670,6 +670,9 @@ fn dynamic_tool_markdown_from_app_items(items: &[AppDynamicToolCallOutputContent
             AppDynamicToolCallOutputContentItem::InputImage { image_url } => {
                 format!("Image: {image_url}")
             }
+            AppDynamicToolCallOutputContentItem::InputAudio { audio_url } => {
+                format!("Audio: {audio_url}")
+            }
         })
         .collect::<Vec<_>>()
         .join("\n")
@@ -682,6 +685,9 @@ fn dynamic_tool_markdown_from_core_items(items: &[CoreDynamicToolCallOutputConte
             CoreDynamicToolCallOutputContentItem::InputText { text } => text.clone(),
             CoreDynamicToolCallOutputContentItem::InputImage { image_url } => {
                 format!("Image: {image_url}")
+            }
+            CoreDynamicToolCallOutputContentItem::InputAudio { audio_url } => {
+                format!("Audio: {audio_url}")
             }
         })
         .collect::<Vec<_>>()
@@ -2416,7 +2422,10 @@ pub fn normalize_logs(
                 | EventMsg::SafetyBuffering(..)
                 | EventMsg::ThreadSettingsApplied(..)
                 | EventMsg::ThreadGoalUpdated(..)
-                | EventMsg::SubAgentActivity(..) => {}
+                | EventMsg::SubAgentActivity(..)
+                | EventMsg::EnvironmentConnected(..)
+                | EventMsg::EnvironmentDisconnected(..)
+                | EventMsg::RawResponseCompleted(..) => {}
             }
         }
     });

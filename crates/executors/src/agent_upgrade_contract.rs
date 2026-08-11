@@ -45,7 +45,7 @@ struct FixtureMetadata {
 #[test]
 fn codex_pinned_versions_are_in_lockstep() {
     let npm_version = extract_package_version(CODEX_SOURCE, "@openai/codex@");
-    assert_eq!(npm_version, "0.144.1");
+    assert_eq!(npm_version, "0.147.0");
 
     let expected_tag = format!("rust-v{npm_version}");
     assert_dependency_tag(EXECUTORS_CARGO_TOML, "codex-protocol", &expected_tag);
@@ -73,7 +73,7 @@ fn codex_pinned_versions_are_in_lockstep() {
     assert_eq!(previous.cli, "codex");
     assert_eq!(previous.package, "@openai/codex");
     assert_eq!(previous.version_role, "previous");
-    assert_eq!(previous.version, "0.124.0");
+    assert_eq!(previous.version, "0.144.1");
     assert_ne!(previous.version, current.version);
     assert_eq!(previous.compatibility_scope, current.compatibility_scope);
 }
@@ -81,7 +81,7 @@ fn codex_pinned_versions_are_in_lockstep() {
 #[test]
 fn claude_pinned_version_matches_fixtures_without_router_coupling() {
     let anthropic_version = extract_package_version(CLAUDE_SOURCE, "@anthropic-ai/claude-code@");
-    assert_eq!(anthropic_version, "2.1.207");
+    assert_eq!(anthropic_version, "2.1.227");
     assert!(
         CLAUDE_SOURCE.contains("@musistudio/claude-code-router@"),
         "router command should remain visible as a separate integration surface"
@@ -98,7 +98,7 @@ fn claude_pinned_version_matches_fixtures_without_router_coupling() {
     assert_eq!(previous.cli, "claude");
     assert_eq!(previous.package, "@anthropic-ai/claude-code");
     assert_eq!(previous.version_role, "previous");
-    assert_eq!(previous.version, "2.1.119");
+    assert_eq!(previous.version, "2.1.207");
     assert_ne!(previous.version, current.version);
     assert_eq!(previous.compatibility_scope, current.compatibility_scope);
 }

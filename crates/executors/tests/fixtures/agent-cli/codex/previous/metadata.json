@@ -2,9 +2,9 @@
   "cli": "codex",
   "package": "@openai/codex",
   "version_role": "previous",
-  "version": "0.124.0",
+  "version": "0.144.1",
   "captured_from": "committed_raw_fixture",
   "raw_fixture": "stdout.jsonl",
   "compatibility_scope": "normalization_no_migration",
-  "notes": "Previous supported Codex app-server JSON-RPC event shape from before the 0.144.1 upgrade. Missing timestamp fields are accepted at the normalization boundary only."
+  "notes": "Previous supported Codex app-server JSON-RPC event shape from before the 0.147.0 upgrade."
 }

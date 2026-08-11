@@ -681,6 +681,7 @@ fn format_mcp_status(servers: &[codex_app_server_protocol::McpServerStatus]) -> 
 
 fn format_mcp_auth_status(status: &codex_app_server_protocol::McpAuthStatus) -> &'static str {
     match status {
+        codex_app_server_protocol::McpAuthStatus::Unknown => "unknown",
         codex_app_server_protocol::McpAuthStatus::Unsupported => "unsupported",
         codex_app_server_protocol::McpAuthStatus::NotLoggedIn => "not logged in",
         codex_app_server_protocol::McpAuthStatus::BearerToken => "bearer token",
