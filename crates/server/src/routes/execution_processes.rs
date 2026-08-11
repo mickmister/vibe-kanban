@@ -14,7 +14,8 @@ use axum::{
 use chrono::{DateTime, Utc};
 use db::models::{
     coding_agent_turn::{
-        CODING_AGENT_RESPONSE_SUMMARY_MAX_CHARS, CodingAgentResponseRecord, CodingAgentTurn,
+        CODING_AGENT_PROMPT_PREVIEW_MAX_CHARS, CODING_AGENT_RESPONSE_SUMMARY_MAX_CHARS,
+        CodingAgentResponseRecord, CodingAgentTurn,
     },
     execution_process::{ExecutionProcess, ExecutionProcessError, ExecutionProcessStatus},
     execution_process_repo_state::ExecutionProcessRepoState,
@@ -58,6 +59,13 @@ pub enum AgentResponseSourceKind {
 }
 
 #[derive(Debug, Clone, Serialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum AgentPromptSourceKind {
+    CodingAgentTurnPrompt,
+}
+
+#[derive(Debug, Clone, Serialize, TS)]
 #[ts(export)]
 pub struct AgentResponse {
     pub execution_process_id: Uuid,
@@ -72,6 +80,10 @@ pub struct AgentResponse {
     pub truncated: bool,
     pub max_chars: usize,
     pub source_kind: AgentResponseSourceKind,
+    pub prompt_preview: Option<String>,
+    pub prompt_truncated: bool,
+    pub prompt_max_chars: usize,
+    pub prompt_source_kind: AgentPromptSourceKind,
 }
 
 impl AgentResponse {
@@ -80,6 +92,12 @@ impl AgentResponse {
             .summary
             .as_deref()
             .is_some_and(CodingAgentTurn::summary_is_truncated);
+        let (prompt_preview, prompt_truncated) = record
+            .prompt
+            .as_deref()
+            .map(truncate_prompt_preview)
+            .unwrap_or((None, false));
+
         AgentResponse {
             execution_process_id: record.execution_process_id,
             session_id: record.session_id,
@@ -93,7 +111,23 @@ impl AgentResponse {
             truncated,
             max_chars: CODING_AGENT_RESPONSE_SUMMARY_MAX_CHARS,
             source_kind: AgentResponseSourceKind::CodingAgentTurnSummary,
+            prompt_preview,
+            prompt_truncated,
+            prompt_max_chars: CODING_AGENT_PROMPT_PREVIEW_MAX_CHARS,
+            prompt_source_kind: AgentPromptSourceKind::CodingAgentTurnPrompt,
         }
+    }
+}
+
+fn truncate_prompt_preview(prompt: &str) -> (Option<String>, bool) {
+    if prompt.chars().count() > CODING_AGENT_PROMPT_PREVIEW_MAX_CHARS {
+        let preview = prompt
+            .chars()
+            .take(CODING_AGENT_PROMPT_PREVIEW_MAX_CHARS)
+            .collect::<String>();
+        (Some(format!("{preview}...")), true)
+    } else {
+        (Some(prompt.to_string()), false)
     }
 }
 
@@ -663,7 +697,8 @@ mod tests {
     fn agent_response_reports_summary_truncation_metadata() {
         use db::models::{
             coding_agent_turn::{
-                CODING_AGENT_RESPONSE_SUMMARY_MAX_CHARS, CodingAgentResponseRecord,
+                CODING_AGENT_PROMPT_PREVIEW_MAX_CHARS, CODING_AGENT_RESPONSE_SUMMARY_MAX_CHARS,
+                CodingAgentResponseRecord,
             },
             execution_process::ExecutionProcessStatus,
         };
@@ -679,11 +714,57 @@ mod tests {
             agent_session_id: Some("agent-session".to_string()),
             agent_message_id: Some("agent-message".to_string()),
             summary: Some(content.clone()),
+            prompt: Some("initial prompt".to_string()),
         });
 
         assert_eq!(response.content.as_deref(), Some(content.as_str()));
         assert!(response.truncated);
         assert_eq!(response.max_chars, CODING_AGENT_RESPONSE_SUMMARY_MAX_CHARS);
+        assert_eq!(response.prompt_preview.as_deref(), Some("initial prompt"));
+        assert!(!response.prompt_truncated);
+        assert_eq!(
+            response.prompt_max_chars,
+            CODING_AGENT_PROMPT_PREVIEW_MAX_CHARS
+        );
+    }
+
+    #[test]
+    fn agent_response_bounds_prompt_preview_without_exposing_full_prompt() {
+        use db::models::{
+            coding_agent_turn::{CODING_AGENT_PROMPT_PREVIEW_MAX_CHARS, CodingAgentResponseRecord},
+            execution_process::ExecutionProcessStatus,
+        };
+
+        let prompt = format!(
+            "{}SECRET_AFTER_BOUNDARY",
+            "p".repeat(CODING_AGENT_PROMPT_PREVIEW_MAX_CHARS)
+        );
+        let response = AgentResponse::from_record(CodingAgentResponseRecord {
+            execution_process_id: uuid::Uuid::new_v4(),
+            session_id: uuid::Uuid::new_v4(),
+            workspace_id: uuid::Uuid::new_v4(),
+            status: ExecutionProcessStatus::Completed,
+            completed_at: None,
+            coding_agent_turn_id: Some(uuid::Uuid::new_v4()),
+            agent_session_id: Some("agent-session".to_string()),
+            agent_message_id: Some("agent-message".to_string()),
+            summary: Some("done".to_string()),
+            prompt: Some(prompt),
+        });
+
+        let preview = response.prompt_preview.as_deref().expect("prompt preview");
+        assert!(response.prompt_truncated);
+        assert_eq!(
+            response.prompt_max_chars,
+            CODING_AGENT_PROMPT_PREVIEW_MAX_CHARS
+        );
+        assert!(preview.ends_with("..."));
+        assert!(!preview.contains("SECRET_AFTER_BOUNDARY"));
+
+        let serialized = serde_json::to_value(&response).expect("serializes response");
+        assert!(serialized.get("prompt").is_none());
+        assert_eq!(serialized["prompt_preview"], preview);
+        assert_eq!(serialized["prompt_truncated"], true);
     }
 
     #[tokio::test]

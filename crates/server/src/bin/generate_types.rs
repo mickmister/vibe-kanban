@@ -58,6 +58,7 @@ fn generate_types_content() -> String {
         server::routes::activity::ActivityCallbackSummary::decl(),
         server::routes::execution_processes::AgentResponse::decl(),
         server::routes::execution_processes::AgentResponseSourceKind::decl(),
+        server::routes::execution_processes::AgentPromptSourceKind::decl(),
         db::models::execution_process_repo_state::ExecutionProcessRepoState::decl(),
         db::models::merge::Merge::decl(),
         db::models::merge::DirectMerge::decl(),

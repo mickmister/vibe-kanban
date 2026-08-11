@@ -188,9 +188,11 @@ export type ActivityQueueSummary = { count: number, queued_count: number, leased
 
 export type ActivityCallbackSummary = { available: boolean, waiting_count: number, };
 
-export type AgentResponse = { execution_process_id: string, session_id: string, workspace_id: string, status: ExecutionProcessStatus, completed_at: string | null, coding_agent_turn_id: string | null, agent_session_id: string | null, agent_message_id: string | null, content: string | null, truncated: boolean, max_chars: number, source_kind: AgentResponseSourceKind, };
+export type AgentResponse = { execution_process_id: string, session_id: string, workspace_id: string, status: ExecutionProcessStatus, completed_at: string | null, coding_agent_turn_id: string | null, agent_session_id: string | null, agent_message_id: string | null, content: string | null, truncated: boolean, max_chars: number, source_kind: AgentResponseSourceKind, prompt_preview: string | null, prompt_truncated: boolean, prompt_max_chars: number, prompt_source_kind: AgentPromptSourceKind, };
 
 export type AgentResponseSourceKind = "coding_agent_turn_summary";
+
+export type AgentPromptSourceKind = "coding_agent_turn_prompt";
 
 export type ExecutionProcessRepoState = { id: string, execution_process_id: string, repo_id: string, before_head_commit: string | null, after_head_commit: string | null, merge_commit: string | null, created_at: Date, updated_at: Date, };
 

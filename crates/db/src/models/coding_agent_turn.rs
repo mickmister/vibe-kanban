@@ -7,6 +7,7 @@ use uuid::Uuid;
 use super::execution_process::ExecutionProcessStatus;
 
 pub const CODING_AGENT_RESPONSE_SUMMARY_MAX_CHARS: usize = 4096;
+pub const CODING_AGENT_PROMPT_PREVIEW_MAX_CHARS: usize = 4096;
 
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize, TS)]
 pub struct CodingAgentTurn {
@@ -45,6 +46,7 @@ pub struct CodingAgentResponseRecord {
     pub agent_session_id: Option<String>,
     pub agent_message_id: Option<String>,
     pub summary: Option<String>,
+    pub prompt: Option<String>,
 }
 
 impl CodingAgentTurn {
@@ -66,7 +68,8 @@ impl CodingAgentTurn {
                 cat.id as coding_agent_turn_id,
                 cat.agent_session_id,
                 cat.agent_message_id,
-                cat.summary
+                cat.summary,
+                cat.prompt
                FROM execution_processes ep
                JOIN sessions s ON s.id = ep.session_id
                LEFT JOIN coding_agent_turns cat ON cat.execution_process_id = ep.id
@@ -94,7 +97,8 @@ impl CodingAgentTurn {
                 cat.id as coding_agent_turn_id,
                 cat.agent_session_id,
                 cat.agent_message_id,
-                cat.summary
+                cat.summary,
+                cat.prompt
                FROM execution_processes ep
                JOIN sessions s ON s.id = ep.session_id
                LEFT JOIN coding_agent_turns cat ON cat.execution_process_id = ep.id
@@ -463,10 +467,11 @@ mod tests {
         sqlx::query(
             r#"INSERT INTO coding_agent_turns
                (id, execution_process_id, agent_session_id, agent_message_id, prompt, summary)
-               VALUES (?1, ?2, 'agent-session', 'agent-message', 'prompt', ?3)"#,
+               VALUES (?1, ?2, 'agent-session', 'agent-message', ?3, ?4)"#,
         )
         .bind(Uuid::new_v4())
         .bind(execution_process_id)
+        .bind("prompt")
         .bind(summary)
         .execute(pool)
         .await
@@ -509,6 +514,7 @@ mod tests {
         assert_eq!(completed.workspace_id, workspace_id);
         assert_eq!(completed.status, ExecutionProcessStatus::Completed);
         assert_eq!(completed.summary.as_deref(), Some("final response"));
+        assert_eq!(completed.prompt.as_deref(), Some("prompt"));
 
         let running = CodingAgentTurn::find_response_by_execution_process_id(&pool, running_id)
             .await
