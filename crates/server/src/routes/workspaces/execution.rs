@@ -92,6 +92,20 @@ pub struct PreviewSlotUrlQuery {
     pub base_domain: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct RunConfigRoutePath {
+    #[serde(rename = "id")]
+    workspace_id: Uuid,
+    run_config_id: Uuid,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PreviewSlotRoutePath {
+    #[serde(rename = "id")]
+    workspace_id: Uuid,
+    preview_slot_id: Uuid,
+}
+
 fn repo_has_dev_server(repo: &db::models::repo::Repo) -> bool {
     if !repo.dev_server_scripts.is_empty() {
         return true;
@@ -305,12 +319,13 @@ pub async fn upsert_preview_slot(
 pub async fn preview_slot_url(
     Extension(workspace): Extension<Workspace>,
     State(deployment): State<DeploymentImpl>,
-    AxumPath(preview_slot_id): AxumPath<Uuid>,
+    AxumPath(path): AxumPath<PreviewSlotRoutePath>,
     Query(query): Query<PreviewSlotUrlQuery>,
 ) -> Result<ResponseJson<ApiResponse<PreviewSlotUrlResponse>>, ApiError> {
+    debug_assert_eq!(path.workspace_id, workspace.id);
     validate_slug("customer slug", &query.customer_slug, 16)?;
     let pool = &deployment.db().pool;
-    let slot = PreviewSlot::find_by_id(pool, preview_slot_id)
+    let slot = PreviewSlot::find_by_id(pool, path.preview_slot_id)
         .await?
         .ok_or_else(|| ApiError::BadRequest("Preview slot not found".to_string()))?;
     validate_workspace_repo(&deployment, workspace.id, slot.repo_id).await?;
@@ -347,9 +362,10 @@ pub async fn preview_slot_url(
 pub async fn start_run_config_by_id(
     Extension(workspace): Extension<Workspace>,
     State(deployment): State<DeploymentImpl>,
-    AxumPath(run_config_id): AxumPath<Uuid>,
+    AxumPath(path): AxumPath<RunConfigRoutePath>,
 ) -> Result<ResponseJson<ApiResponse<RunConfigStartResponse>>, ApiError> {
-    let run_config = RunConfig::find_by_id(&deployment.db().pool, run_config_id)
+    debug_assert_eq!(path.workspace_id, workspace.id);
+    let run_config = RunConfig::find_by_id(&deployment.db().pool, path.run_config_id)
         .await?
         .ok_or_else(|| ApiError::BadRequest("Run config not found".to_string()))?;
     let response = start_run_config(&deployment, &workspace, &run_config, None).await?;
@@ -360,9 +376,10 @@ pub async fn start_run_config_by_id(
 pub async fn start_preview_slot_by_id(
     Extension(workspace): Extension<Workspace>,
     State(deployment): State<DeploymentImpl>,
-    AxumPath(preview_slot_id): AxumPath<Uuid>,
+    AxumPath(path): AxumPath<PreviewSlotRoutePath>,
 ) -> Result<ResponseJson<ApiResponse<RunConfigStartResponse>>, ApiError> {
-    let slot = PreviewSlot::find_by_id(&deployment.db().pool, preview_slot_id)
+    debug_assert_eq!(path.workspace_id, workspace.id);
+    let slot = PreviewSlot::find_by_id(&deployment.db().pool, path.preview_slot_id)
         .await?
         .ok_or_else(|| ApiError::BadRequest("Preview slot not found".to_string()))?;
     let run_config = RunConfig::find_by_id(&deployment.db().pool, slot.run_config_id)
@@ -830,6 +847,70 @@ pub async fn run_cleanup_script(
         .await;
 
     Ok(ResponseJson(ApiResponse::success(execution_process)))
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::{Router, body::Body, extract::Path as AxumPath, routing::get};
+    use http::Request;
+    use tower::ServiceExt;
+    use uuid::Uuid;
+
+    use super::{PreviewSlotRoutePath, RunConfigRoutePath};
+
+    #[tokio::test]
+    async fn nested_run_config_route_path_extracts_workspace_and_run_config_ids() {
+        let workspace_id = Uuid::new_v4();
+        let run_config_id = Uuid::new_v4();
+        let app = Router::new().route(
+            "/workspaces/{id}/execution/run-configs/{run_config_id}/start",
+            get(|AxumPath(path): AxumPath<RunConfigRoutePath>| async move {
+                format!("{}:{}", path.workspace_id, path.run_config_id)
+            }),
+        );
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!(
+                        "/workspaces/{workspace_id}/execution/run-configs/{run_config_id}/start"
+                    ))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), http::StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn nested_preview_slot_route_path_extracts_workspace_and_preview_slot_ids() {
+        let workspace_id = Uuid::new_v4();
+        let preview_slot_id = Uuid::new_v4();
+        let app = Router::new().route(
+            "/workspaces/{id}/execution/preview-slots/{preview_slot_id}/url",
+            get(
+                |AxumPath(path): AxumPath<PreviewSlotRoutePath>| async move {
+                    format!("{}:{}", path.workspace_id, path.preview_slot_id)
+                },
+            ),
+        );
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!(
+                        "/workspaces/{workspace_id}/execution/preview-slots/{preview_slot_id}/url"
+                    ))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), http::StatusCode::OK);
+    }
 }
 
 pub async fn run_archive_script(
