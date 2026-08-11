@@ -7,6 +7,7 @@ import {
   type Session,
   type BaseCodingAgent,
   ExecutionProcessStatus,
+  type HostCommandRequest,
 } from 'shared/types';
 import { AgentIcon } from '@/shared/components/AgentIcon';
 import { useHostId } from '@/shared/providers/HostIdProvider';
@@ -94,6 +95,43 @@ function computeExecutionStatus(params: {
   if (params.isQueued) return 'queued';
   if (params.isAttemptRunning) return 'running';
   return 'idle';
+}
+
+function HostCommandApprovalDetails({
+  request,
+}: {
+  request: HostCommandRequest;
+}) {
+  const envKeys = Object.keys(request.env ?? {});
+
+  return (
+    <div className="bg-amber-50 px-4 py-3 text-xs text-amber-950 dark:bg-amber-950/30 dark:text-amber-100">
+      <div className="mb-2 font-semibold">Host command approval</div>
+      <div className="space-y-1">
+        <div>
+          <span className="font-medium">Reason:</span> {request.reason}
+        </div>
+        <div>
+          <span className="font-medium">CWD:</span>{' '}
+          <code className="break-all">{request.cwd}</code>
+        </div>
+        <div>
+          <span className="font-medium">Env:</span>{' '}
+          {envKeys.length > 0 ? envKeys.join(', ') : 'no overrides'}
+        </div>
+        <div>
+          <span className="font-medium">Limits:</span> {request.timeout_secs}s,{' '}
+          {request.output_limit_bytes} bytes output
+        </div>
+      </div>
+      <pre className="mt-2 max-h-32 overflow-auto whitespace-pre-wrap break-words rounded bg-black/5 p-2 font-mono text-[11px] dark:bg-white/10">
+        {request.command}
+      </pre>
+      <div className="mt-2 text-[11px]">
+        Approval runs this exact command on the host, outside the agent sandbox.
+      </div>
+    </div>
+  );
 }
 
 /** Shared props across all modes */
@@ -282,6 +320,7 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
           approvalId: info.approval_id,
           timeoutAt: info.timeout_at,
           executionProcessId: info.execution_process_id,
+          hostCommand: info.host_command,
           questions,
         };
       }
@@ -884,13 +923,17 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
 
   // Handle request changes (deny with feedback)
   const handleRequestChanges = useCallback(async () => {
-    if (!pendingApproval || !localMessage.trim()) return;
+    if (!pendingApproval) return;
 
     try {
       await denyAsync({
         approvalId: pendingApproval.approvalId,
         executionProcessId: pendingApproval.executionProcessId,
-        reason: localMessage.trim(),
+        reason:
+          localMessage.trim() ||
+          (pendingApproval.hostCommand
+            ? 'User denied this host command request.'
+            : 'User requested changes.'),
       });
       cancelDebouncedSave();
       setLocalMessage('');
@@ -1167,6 +1210,12 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
               isSubmitting: isApproving || isDenying,
               isTimedOut: isApprovalTimedOut,
               error: denyError?.message ?? null,
+              denyLabel: pendingApproval.hostCommand ? 'Deny' : undefined,
+              details: pendingApproval.hostCommand ? (
+                <HostCommandApprovalDetails
+                  request={pendingApproval.hostCommand}
+                />
+              ) : undefined,
             }
           : undefined
       }

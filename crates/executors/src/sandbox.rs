@@ -5,7 +5,7 @@
 //! the bwrap sandbox MVP and should be audited separately before inclusion.
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     path::{Component, Path, PathBuf},
 };
 
@@ -360,7 +360,17 @@ pub fn build_bwrap_args(
         push_bind(&mut args, "--bind", &src, &dest);
     }
 
-    for (canonical, path) in readonly_repo_overlay_paths(config, &workspace_root, env)? {
+    let mut readonly_overlays = readonly_repo_overlay_paths(config, &workspace_root, env)?;
+    readonly_overlays.extend(readonly_current_dir_overlay_paths(
+        config,
+        &workspace_root,
+        current_dir,
+    )?);
+    let mut seen_overlay_destinations = HashSet::new();
+    for (canonical, path) in readonly_overlays {
+        if !seen_overlay_destinations.insert(path.clone()) {
+            continue;
+        }
         push_bind(&mut args, "--ro-bind", &canonical, &path);
     }
 
@@ -541,6 +551,10 @@ pub fn build_sandbox_exec_profile(
     for (canonical, _) in readonly_repo_overlay_paths(config, &workspace_root, env)? {
         push_sbpl_rule(&mut profile, "deny", "file-write*", "subpath", &canonical);
     }
+    for (canonical, _) in readonly_current_dir_overlay_paths(config, &workspace_root, &current_dir)?
+    {
+        push_sbpl_rule(&mut profile, "deny", "file-write*", "subpath", &canonical);
+    }
 
     Ok(profile)
 }
@@ -609,6 +623,61 @@ fn readonly_repo_overlay_paths(
                 }
                 overlays.push((canonical, path));
             }
+        }
+    }
+    Ok(overlays)
+}
+
+fn readonly_current_dir_overlay_paths(
+    config: &AgentSandboxConfig,
+    workspace_root: &Path,
+    current_dir: &Path,
+) -> Result<Vec<(PathBuf, PathBuf)>, ExecutorError> {
+    let workspace_root = workspace_root
+        .canonicalize()
+        .map_err(|err| ExecutorError::InvalidSandboxConfig(format!("workspace root: {err}")))?;
+    let current_dir = current_dir
+        .canonicalize()
+        .map_err(|err| ExecutorError::InvalidSandboxConfig(format!("current dir: {err}")))?;
+    if !current_dir.starts_with(&workspace_root) {
+        return Err(ExecutorError::InvalidSandboxConfig(format!(
+            "current dir escapes workspace: {}",
+            current_dir.display()
+        )));
+    }
+
+    let current_rel = current_dir.strip_prefix(&workspace_root).map_err(|err| {
+        ExecutorError::InvalidSandboxConfig(format!(
+            "current dir is not under workspace: {}: {err}",
+            current_dir.display()
+        ))
+    })?;
+    let mut overlays = Vec::new();
+    for rel in &config.readonly_repo_paths {
+        let rel_path = Path::new(rel);
+        if rel_path.is_absolute()
+            || rel_path
+                .components()
+                .any(|c| matches!(c, Component::ParentDir | Component::Prefix(_)))
+        {
+            return Err(ExecutorError::InvalidSandboxConfig(format!(
+                "invalid readonly repo path: {rel}"
+            )));
+        }
+
+        let path = current_dir.join(rel_path);
+        if path.exists() {
+            reject_symlink_components(&workspace_root, &current_rel.join(rel_path))?;
+            let canonical = path.canonicalize().map_err(|err| {
+                ExecutorError::InvalidSandboxConfig(format!("{}: {err}", path.display()))
+            })?;
+            if !canonical.starts_with(&workspace_root) {
+                return Err(ExecutorError::InvalidSandboxConfig(format!(
+                    "readonly current-dir path escapes workspace: {}",
+                    path.display()
+                )));
+            }
+            overlays.push((canonical, path));
         }
     }
     Ok(overlays)
@@ -890,6 +959,41 @@ mod tests {
     }
 
     #[test]
+    fn sandbox_exec_profile_denies_current_dir_readonly_repo_path() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join("node_modules")).unwrap();
+        std::fs::create_dir_all(root.path().join("repo")).unwrap();
+        let home = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(home.path().join("tmp")).unwrap();
+        let env = ExecutionEnv {
+            vars: HashMap::new(),
+            repo_context: RepoContext::new(root.path().to_path_buf(), vec!["repo".to_string()]),
+            commit_reminder: false,
+            commit_reminder_prompt: String::new(),
+            sandbox: None,
+        };
+        let cfg = AgentSandboxConfig {
+            enabled: true,
+            network: SandboxNetworkMode::None,
+            ..Default::default()
+        };
+        let profile = build_sandbox_exec_profile(
+            &cfg,
+            root.path(),
+            root.path(),
+            home.path(),
+            Path::new("/bin/sh"),
+            &env,
+        )
+        .unwrap();
+        let root_canonical = root.path().canonicalize().unwrap();
+        assert!(profile.contains(&format!(
+            "(deny file-write* (subpath {}))",
+            sbpl_quote(&root_canonical.join("node_modules").to_string_lossy())
+        )));
+    }
+
+    #[test]
     fn sandbox_exec_allows_network_when_inherited() {
         let root = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(root.path().join("repo")).unwrap();
@@ -1127,6 +1231,52 @@ mod tests {
         assert!(!status.success());
         assert!(root.path().join("repo/allowed.txt").exists());
         assert!(!root.path().join("repo/node_modules/blocked.txt").exists());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn sandbox_exec_enforces_current_dir_readonly_overlay_on_macos() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join("node_modules")).unwrap();
+        std::fs::create_dir_all(root.path().join("repo")).unwrap();
+        let home = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(home.path().join("tmp")).unwrap();
+        let env = ExecutionEnv {
+            vars: HashMap::new(),
+            repo_context: RepoContext::new(root.path().to_path_buf(), vec!["repo".to_string()]),
+            commit_reminder: false,
+            commit_reminder_prompt: String::new(),
+            sandbox: None,
+        };
+        let cfg = AgentSandboxConfig {
+            enabled: true,
+            network: SandboxNetworkMode::None,
+            ..Default::default()
+        };
+        let args = build_sandbox_exec_args(
+            &cfg,
+            root.path(),
+            root.path(),
+            home.path(),
+            Path::new("/bin/sh"),
+            &[
+                "-c".to_string(),
+                "set -e; echo ok > allowed.txt; echo denied > node_modules/blocked.txt".to_string(),
+            ],
+            &env,
+        )
+        .unwrap();
+        let status = std::process::Command::new("sandbox-exec")
+            .args(&args[1..])
+            .current_dir(root.path().canonicalize().unwrap())
+            .env_clear()
+            .env("HOME", home.path())
+            .env("TMPDIR", home.path().join("tmp"))
+            .status()
+            .unwrap();
+        assert!(!status.success());
+        assert!(root.path().join("allowed.txt").exists());
+        assert!(!root.path().join("node_modules/blocked.txt").exists());
     }
 
     #[cfg(target_os = "macos")]

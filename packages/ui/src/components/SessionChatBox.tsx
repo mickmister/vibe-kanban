@@ -120,6 +120,8 @@ interface ApprovalModeProps {
   isSubmitting: boolean;
   isTimedOut: boolean;
   error?: string | null;
+  denyLabel?: string;
+  details?: ReactNode;
 }
 
 interface AskQuestionModeProps {
@@ -454,21 +456,21 @@ export function SessionChatBox<TExecutor extends string = string>({
             onClick={actions.onStop}
             value={t('conversation.actions.stop')}
           />
-          {hasMessage ? (
-            <PrimaryButton
-              onClick={approvalMode?.onRequestChanges}
-              disabled={approvalMode?.isSubmitting}
-              actionIcon={approvalMode?.isSubmitting ? 'spinner' : undefined}
-              value={t('conversation.actions.requestChanges')}
-            />
-          ) : (
-            <PrimaryButton
-              onClick={approvalMode?.onApprove}
-              disabled={approvalMode?.isSubmitting}
-              actionIcon={approvalMode?.isSubmitting ? 'spinner' : undefined}
-              value={t('conversation.actions.approve')}
-            />
-          )}
+          <PrimaryButton
+            variant="secondary"
+            onClick={approvalMode?.onRequestChanges}
+            disabled={approvalMode?.isSubmitting}
+            actionIcon={approvalMode?.isSubmitting ? 'spinner' : undefined}
+            value={
+              approvalMode?.denyLabel ?? t('conversation.actions.requestChanges')
+            }
+          />
+          <PrimaryButton
+            onClick={approvalMode?.onApprove}
+            disabled={approvalMode?.isSubmitting || hasMessage}
+            actionIcon={approvalMode?.isSubmitting ? 'spinner' : undefined}
+            value={t('conversation.actions.approve')}
+          />
         </>
       );
     }
@@ -624,6 +626,14 @@ export function SessionChatBox<TExecutor extends string = string>({
           isTimedOut={askQuestionMode.isTimedOut}
           error={askQuestionMode.error ?? null}
         />
+      );
+    }
+
+    if (isInApprovalMode && approvalMode?.details) {
+      banners.push(
+        <div key="approval-details" className="border-b">
+          {approvalMode.details}
+        </div>
       );
     }
 
