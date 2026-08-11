@@ -15,7 +15,7 @@ use uuid::Uuid;
 const DEFAULT_PREVIEW_MESSAGE_LIMIT: usize = 3;
 const MAX_PREVIEW_MESSAGE_LIMIT: usize = 50;
 const PREVIEW_CACHE_SESSION_CAPACITY: usize = 25;
-const RECENT_TURN_SCAN_LIMIT: i64 = 32;
+const RECENT_TURN_SCAN_LIMIT: i64 = 100;
 
 #[derive(Debug, Error)]
 pub enum ConversationPreviewError {
@@ -661,9 +661,9 @@ mod tests {
 
     use super::{
         ConversationPreviewError, ConversationPreviewMessage, ConversationPreviewMessageRole,
-        ConversationPreviewSource, WarmConversationPreviewRequest, get_or_compute_preview,
-        get_workspace_conversation_preview, normalize_limit, take_latest_messages,
-        warm_conversation_previews,
+        ConversationPreviewSource, MAX_PREVIEW_MESSAGE_LIMIT, RECENT_TURN_SCAN_LIMIT,
+        WarmConversationPreviewRequest, get_or_compute_preview, get_workspace_conversation_preview,
+        normalize_limit, take_latest_messages, warm_conversation_previews,
     };
 
     #[test]
@@ -698,6 +698,7 @@ mod tests {
         assert_eq!(normalize_limit(None), 3);
         assert_eq!(normalize_limit(Some(0)), 1);
         assert_eq!(normalize_limit(Some(100)), 50);
+        assert!(RECENT_TURN_SCAN_LIMIT >= MAX_PREVIEW_MESSAGE_LIMIT as i64);
     }
 
     async fn test_pool() -> SqlitePool {
@@ -893,6 +894,52 @@ mod tests {
 
         assert_eq!(
             preview
+                .messages
+                .iter()
+                .map(|message| message.content.as_str())
+                .collect::<Vec<_>>(),
+            vec!["after", "new answer"]
+        );
+    }
+
+    #[tokio::test]
+    async fn db_cached_preview_recomputes_after_context_reset_boundary_changes() {
+        let pool = test_pool().await;
+        let workspace_id = Uuid::new_v4();
+        let session_id = Uuid::new_v4();
+        insert_workspace(&pool, workspace_id).await;
+        insert_session(&pool, session_id, workspace_id).await;
+
+        insert_turn(&pool, session_id, "before", "old answer", 0).await;
+        let boundary = insert_turn(&pool, session_id, "/clear", "cleared", 10).await;
+        insert_turn(&pool, session_id, "after", "new answer", 20).await;
+
+        let warm = get_or_compute_preview(&pool, session_id, 10).await.unwrap();
+        assert_eq!(warm.source, ConversationPreviewSource::Computed);
+        assert_eq!(
+            warm.messages
+                .iter()
+                .map(|message| message.content.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "before",
+                "old answer",
+                "/clear",
+                "cleared",
+                "after",
+                "new answer"
+            ]
+        );
+
+        let cached = get_or_compute_preview(&pool, session_id, 10).await.unwrap();
+        assert_eq!(cached.source, ConversationPreviewSource::Cache);
+
+        set_context_reset_boundary(&pool, session_id, boundary).await;
+
+        let recomputed = get_or_compute_preview(&pool, session_id, 10).await.unwrap();
+        assert_eq!(recomputed.source, ConversationPreviewSource::Computed);
+        assert_eq!(
+            recomputed
                 .messages
                 .iter()
                 .map(|message| message.content.as_str())
