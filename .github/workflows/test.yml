@@ -91,6 +91,7 @@ jobs:
               - 'Cargo.lock'
               - 'shared/**'
               - 'scripts/prepare-db.js'
+              - 'scripts/ci-run-linux-bwrap-sandbox-probe.sh'
               - 'pnpm-lock.yaml'
               - 'package.json'
               - 'rustfmt.toml'
@@ -329,4 +330,5 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y bubblewrap
+          cargo test -p executors bwrap_ -- --nocapture
           cargo test -p executors --features qa-mode qa_sandbox_probe_runs_inside_prepared_sandbox -- --nocapture
