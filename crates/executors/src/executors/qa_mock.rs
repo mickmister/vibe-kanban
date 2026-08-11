@@ -103,8 +103,8 @@ impl StandardCodingAgentExecutor for QaMockExecutor {
             .await
             .map_err(|e| ExecutorError::Io(std::io::Error::other(e)))?;
 
-        let wants_sandbox_probe = prompt.contains("VK_QA_SANDBOX_PROBE");
-        let wants_host_command = prompt.contains("VK_QA_HOST_COMMAND");
+        let wants_sandbox_probe = qa_prompt_contains_marker(prompt, "VK_QA_SANDBOX_PROBE");
+        let wants_host_command = qa_prompt_contains_marker(prompt, "VK_QA_HOST_COMMAND");
         let cancel = CancellationToken::new();
         if wants_host_command {
             if let Some(approvals) = self.approvals.clone() {
@@ -342,6 +342,17 @@ fn spawn_host_command_trigger(
 
 fn shell_single_quote(path: &Path) -> String {
     format!("'{}'", path.to_string_lossy().replace('\'', "'\\''"))
+}
+
+fn qa_prompt_contains_marker(prompt: &str, marker: &str) -> bool {
+    if prompt.contains(marker) {
+        return true;
+    }
+    // VK's markdown editor may escape underscores before sending the prompt
+    // through the API (for example `VK_QA_HOST_COMMAND` becomes
+    // `VK\_QA\_HOST\_COMMAND`). Normalize that markdown escaping only for
+    // qa-mode trigger detection so tester/user prompt text remains unchanged.
+    prompt.replace("\\_", "_").contains(marker)
 }
 
 /// Perform random file operations in the worktree
@@ -771,6 +782,26 @@ mod tests {
         assert!(script.contains("host-command.done"));
         assert!(script.contains("host-command-result.txt"));
         assert!(!script.contains("qa_sandbox_probe_result.json"));
+    }
+
+    #[test]
+    fn qa_marker_detection_accepts_plain_and_markdown_escaped_underscores() {
+        assert!(qa_prompt_contains_marker(
+            "please run VK_QA_SANDBOX_PROBE now",
+            "VK_QA_SANDBOX_PROBE"
+        ));
+        assert!(qa_prompt_contains_marker(
+            r"please run VK\_QA\_SANDBOX\_PROBE now",
+            "VK_QA_SANDBOX_PROBE"
+        ));
+        assert!(qa_prompt_contains_marker(
+            r"please run VK\_QA\_HOST\_COMMAND now",
+            "VK_QA_HOST_COMMAND"
+        ));
+        assert!(!qa_prompt_contains_marker(
+            r"please run VK\_QA\_UNKNOWN now",
+            "VK_QA_HOST_COMMAND"
+        ));
     }
 
     #[derive(Debug)]
