@@ -75,6 +75,20 @@ async fn queue_message(
         tracing::warn!("Failed to pump queued messages after enqueue: {}", e);
     }
 
+    let delayed_deployment = deployment.clone();
+    tokio::spawn(async move {
+        for delay_ms in [500_u64, 1_500, 3_000] {
+            tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+            if let Err(e) = delayed_deployment
+                .container()
+                .try_start_queued_messages(delayed_deployment.queued_message_service())
+                .await
+            {
+                tracing::warn!("Failed delayed queue pump after enqueue: {}", e);
+            }
+        }
+    });
+
     let status = deployment
         .queued_message_service()
         .get_status(session.id)
