@@ -60,6 +60,7 @@ function createPreviewProcessState(
           working_dir: null,
         },
         next_action: null,
+        provenance: null,
       },
     },
     entries: [],

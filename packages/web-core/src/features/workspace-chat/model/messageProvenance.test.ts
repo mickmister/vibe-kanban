@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  BaseCodingAgent,
   ExecutorActionProvenanceKind,
   type ExecutorAction,
 } from 'shared/types';
