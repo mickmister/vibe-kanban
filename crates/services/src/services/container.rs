@@ -23,17 +23,13 @@ use db::{
         workspace_repo::WorkspaceRepo,
     },
 };
-#[cfg(feature = "qa-mode")]
-use executors::executors::qa_mock::QaMockExecutor;
-#[cfg(not(feature = "qa-mode"))]
-use executors::profile::ExecutorConfigs;
 use executors::{
     actions::{
         ExecutorAction, ExecutorActionType,
         coding_agent_initial::CodingAgentInitialRequest,
         script::{ScriptContext, ScriptRequest, ScriptRequestLanguage},
     },
-    executors::{ExecutorError, StandardCodingAgentExecutor},
+    executors::{ExecutorError, StandardCodingAgentExecutor, qa_mock::QaMockExecutor},
     logs::{
         NormalizedEntry, NormalizedEntryError, NormalizedEntryType,
         utils::{
@@ -41,7 +37,7 @@ use executors::{
             patch::{fix_patch_ops, is_add_or_replace, patch_entry_path},
         },
     },
-    profile::{ExecutorConfig, ExecutorProfileId},
+    profile::{ExecutorConfig, ExecutorConfigs, ExecutorProfileId},
 };
 use futures::{StreamExt, future, stream::BoxStream};
 use git::{GitService, GitServiceError};
@@ -916,16 +912,13 @@ pub trait ContainerService {
             // Spawn normalizer on populated store and collect JoinHandles
             let handles = match executor_action.typ() {
                 ExecutorActionType::CodingAgentInitialRequest(request) => {
-                    #[cfg(feature = "qa-mode")]
-                    {
+                    if QaMockExecutor::runtime_enabled() {
                         let executor = QaMockExecutor;
-                        executor.normalize_logs(
+                        executor.normalize_mock_logs(
                             temp_store.clone(),
                             &request.effective_dir(&current_dir),
                         )
-                    }
-                    #[cfg(not(feature = "qa-mode"))]
-                    {
+                    } else {
                         let executor = ExecutorConfigs::get_cached()
                             .get_coding_agent_or_default(&request.executor_config.profile_id());
                         executor.normalize_logs(
@@ -935,16 +928,13 @@ pub trait ContainerService {
                     }
                 }
                 ExecutorActionType::CodingAgentFollowUpRequest(request) => {
-                    #[cfg(feature = "qa-mode")]
-                    {
+                    if QaMockExecutor::runtime_enabled() {
                         let executor = QaMockExecutor;
-                        executor.normalize_logs(
+                        executor.normalize_mock_logs(
                             temp_store.clone(),
                             &request.effective_dir(&current_dir),
                         )
-                    }
-                    #[cfg(not(feature = "qa-mode"))]
-                    {
+                    } else {
                         let executor = ExecutorConfigs::get_cached()
                             .get_coding_agent_or_default(&request.executor_config.profile_id());
                         executor.normalize_logs(
@@ -959,16 +949,13 @@ pub trait ContainerService {
                             temp_store.clone(),
                         )
                     } else {
-                        #[cfg(feature = "qa-mode")]
-                        {
+                        if QaMockExecutor::runtime_enabled() {
                             let executor = QaMockExecutor;
-                            executor.normalize_logs(
+                            executor.normalize_mock_logs(
                                 temp_store.clone(),
                                 &request.effective_dir(&current_dir),
                             )
-                        }
-                        #[cfg(not(feature = "qa-mode"))]
-                        {
+                        } else {
                             let executor = ExecutorConfigs::get_cached()
                                 .get_coding_agent_or_default(&request.executor_config.profile_id());
                             executor.normalize_logs(
@@ -978,16 +965,15 @@ pub trait ContainerService {
                         }
                     }
                 }
-                #[cfg(feature = "qa-mode")]
-                ExecutorActionType::ReviewRequest(_request) => {
-                    let executor = QaMockExecutor;
-                    executor.normalize_logs(temp_store.clone(), &current_dir)
-                }
-                #[cfg(not(feature = "qa-mode"))]
                 ExecutorActionType::ReviewRequest(request) => {
-                    let executor = ExecutorConfigs::get_cached()
-                        .get_coding_agent_or_default(&request.executor_config.profile_id());
-                    executor.normalize_logs(temp_store.clone(), &current_dir)
+                    if QaMockExecutor::runtime_enabled() {
+                        let executor = QaMockExecutor;
+                        executor.normalize_mock_logs(temp_store.clone(), &current_dir)
+                    } else {
+                        let executor = ExecutorConfigs::get_cached()
+                            .get_coding_agent_or_default(&request.executor_config.profile_id());
+                        executor.normalize_logs(temp_store.clone(), &current_dir)
+                    }
                 }
                 _ => {
                     tracing::debug!(
@@ -1395,13 +1381,10 @@ pub trait ContainerService {
                     )));
                 }
             };
-            #[cfg(feature = "qa-mode")]
-            {
+            if QaMockExecutor::runtime_enabled() {
                 let executor = QaMockExecutor;
-                let _ = executor.normalize_logs(msg_store, &working_dir);
-            }
-            #[cfg(not(feature = "qa-mode"))]
-            {
+                let _ = executor.normalize_mock_logs(msg_store, &working_dir);
+            } else {
                 if let Some(executor) =
                     ExecutorConfigs::get_cached().get_coding_agent(&executor_profile_id)
                 {
