@@ -6,7 +6,12 @@
 //!    `VK_QA_SCRIPTED_OUTCOME_FILE` is set
 //! 3. Outputs logs in ClaudeJson format for compatibility with existing log normalization
 
-use std::{path::Path, process::Stdio, sync::Arc};
+use std::{
+    collections::HashMap,
+    path::Path,
+    process::Stdio,
+    sync::{Arc, LazyLock, Mutex},
+};
 
 use async_trait::async_trait;
 use rand::seq::SliceRandom as _;
@@ -74,6 +79,32 @@ pub struct QaScriptedOutcome {
     #[serde(default)]
     pub exit_code: Option<i32>,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct QaScriptedOutcomePlan {
+    pub outcomes: Vec<QaScriptedOutcomePlanEntry>,
+    #[serde(default)]
+    pub fallback: Option<QaScriptedOutcome>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct QaScriptedOutcomePlanEntry {
+    #[serde(default)]
+    pub prompt_contains: Option<String>,
+    #[serde(flatten)]
+    pub outcome: QaScriptedOutcome,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(untagged)]
+enum QaScriptedOutcomeFile {
+    Plan(QaScriptedOutcomePlan),
+    Sequence(Vec<QaScriptedOutcomePlanEntry>),
+    Single(QaScriptedOutcome),
+}
+
+static SCRIPTED_OUTCOME_PLAN_CURSORS: LazyLock<Mutex<HashMap<String, usize>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 impl Default for QaScriptedOutcome {
     fn default() -> Self {
@@ -181,7 +212,7 @@ impl StandardCodingAgentExecutor for QaMockExecutor {
         prompt: &str,
         env: &ExecutionEnv,
     ) -> Result<SpawnedChild, ExecutorError> {
-        if let Some(script) = load_scripted_outcome(env).await? {
+        if let Some(script) = load_scripted_outcome(env, prompt).await? {
             info!(?script.outcome, "QA Mock Executor: spawning scripted execution");
             let logs = generate_scripted_logs(prompt, &script);
             return spawn_log_process(current_dir, logs, script.exit_code(), script.delay_ms())
@@ -245,6 +276,7 @@ impl StandardCodingAgentExecutor for QaMockExecutor {
 
 async fn load_scripted_outcome(
     env: &ExecutionEnv,
+    prompt: &str,
 ) -> Result<Option<QaScriptedOutcome>, ExecutorError> {
     let inline = env
         .get("VK_QA_SCRIPTED_OUTCOME")
@@ -261,15 +293,70 @@ async fn load_scripted_outcome(
         .cloned()
         .or_else(|| std::env::var("VK_QA_SCRIPTED_OUTCOME_FILE").ok());
     if let Some(file) = file.filter(|value| !value.trim().is_empty()) {
-        let content = tokio::fs::read_to_string(file)
+        let content = tokio::fs::read_to_string(&file)
             .await
             .map_err(|e| ExecutorError::Io(std::io::Error::other(e)))?;
-        return serde_json::from_str(&content)
+        return select_scripted_outcome_from_file(&file, &content, prompt)
             .map(Some)
             .map_err(ExecutorError::Json);
     }
 
     Ok(None)
+}
+
+fn select_scripted_outcome_from_file(
+    file: &str,
+    content: &str,
+    prompt: &str,
+) -> Result<QaScriptedOutcome, serde_json::Error> {
+    match serde_json::from_str::<QaScriptedOutcomeFile>(content)? {
+        QaScriptedOutcomeFile::Single(script) => Ok(script),
+        QaScriptedOutcomeFile::Sequence(outcomes) => Ok(select_scripted_outcome_from_plan(
+            file, &outcomes, None, prompt,
+        )),
+        QaScriptedOutcomeFile::Plan(plan) => Ok(select_scripted_outcome_from_plan(
+            file,
+            &plan.outcomes,
+            plan.fallback.as_ref(),
+            prompt,
+        )),
+    }
+}
+
+fn select_scripted_outcome_from_plan(
+    file: &str,
+    outcomes: &[QaScriptedOutcomePlanEntry],
+    fallback: Option<&QaScriptedOutcome>,
+    prompt: &str,
+) -> QaScriptedOutcome {
+    if outcomes.is_empty() {
+        return fallback.cloned().unwrap_or_default();
+    }
+
+    let mut cursors = SCRIPTED_OUTCOME_PLAN_CURSORS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let cursor = *cursors.get(file).unwrap_or(&0);
+    let chosen_index = outcomes
+        .iter()
+        .enumerate()
+        .skip(cursor)
+        .find(|(_, entry)| {
+            entry
+                .prompt_contains
+                .as_deref()
+                .is_none_or(|needle| prompt.contains(needle))
+        })
+        .map(|(index, _)| index);
+
+    if let Some(index) = chosen_index {
+        cursors.insert(file.to_string(), index + 1);
+        return outcomes[index].outcome.clone();
+    }
+
+    fallback
+        .cloned()
+        .unwrap_or_else(|| outcomes.last().expect("non-empty outcomes").outcome.clone())
 }
 
 async fn spawn_log_process(
@@ -827,6 +914,43 @@ mod tests {
             }
             other => panic!("expected system stall marker, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn scripted_outcome_file_can_return_sequential_decision_responses() {
+        let file = format!("test-sequence-{}", uuid::Uuid::new_v4());
+        let content = serde_json::json!({
+            "outcomes": [
+                {
+                    "outcome": "completed",
+                    "final_message": "first",
+                    "prompt_contains": "dev"
+                },
+                {
+                    "outcome": "completed",
+                    "final_message": "<decision action=\"approved\" />"
+                }
+            ],
+            "fallback": {
+                "outcome": "completed",
+                "final_message": "fallback"
+            }
+        })
+        .to_string();
+
+        let first = select_scripted_outcome_from_file(&file, &content, "hello dev")
+            .expect("plan should parse");
+        let second = select_scripted_outcome_from_file(&file, &content, "review prompt")
+            .expect("plan should parse");
+        let third = select_scripted_outcome_from_file(&file, &content, "extra prompt")
+            .expect("plan should parse");
+
+        assert_eq!(first.final_message("prompt").as_deref(), Some("first"));
+        assert_eq!(
+            second.final_message("prompt").as_deref(),
+            Some("<decision action=\"approved\" />")
+        );
+        assert_eq!(third.final_message("prompt").as_deref(), Some("fallback"));
     }
 
     #[test]
