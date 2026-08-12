@@ -1,5 +1,5 @@
 use chrono::{DateTime, Duration, Utc};
-use executors::actions::session_command::SessionCommand;
+use executors::actions::{ExecutorActionProvenance, session_command::SessionCommand};
 use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, Row, SqlitePool, Type, sqlite::SqliteRow};
 use ts_rs::TS;
@@ -54,6 +54,8 @@ pub struct QueuedFollowUpData {
     pub message: String,
     #[serde(default)]
     pub session_command: Option<SessionCommand>,
+    #[serde(default)]
+    pub provenance: Option<ExecutorActionProvenance>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -504,6 +506,7 @@ impl AgentMessageQueueItem {
 #[cfg(test)]
 mod tests {
     use chrono::{Duration, Utc};
+    use executors::actions::{ExecutorActionProvenance, ExecutorActionProvenanceKind};
     use sqlx::{Executor, SqlitePool, sqlite::SqlitePoolOptions};
     use uuid::Uuid;
 
@@ -596,6 +599,7 @@ mod tests {
                 data: QueuedFollowUpData {
                     message: message.to_string(),
                     session_command: None,
+                    provenance: None,
                 },
             },
             Uuid::new_v4(),
@@ -903,6 +907,52 @@ mod tests {
             .unwrap();
         assert_eq!(after_race.status, AgentMessageQueueStatus::Cancelled);
         assert!(after_race.last_error.is_none());
+    }
+
+    #[tokio::test]
+    async fn queue_item_round_trips_automation_provenance() {
+        let pool = test_pool().await;
+        let session_id = Uuid::new_v4();
+        let workspace_id = Uuid::new_v4();
+        insert_session(&pool, session_id, workspace_id).await;
+
+        let item = AgentMessageQueueItem::create(
+            &pool,
+            &CreateAgentMessageQueueItem {
+                session_id,
+                workspace_id,
+                source: AgentMessageSource::Workflow,
+                priority: None,
+                data: QueuedFollowUpData {
+                    message: "Review workflow result".to_string(),
+                    session_command: None,
+                    provenance: Some(ExecutorActionProvenance {
+                        kind: ExecutorActionProvenanceKind::Workflow,
+                        label: "Workflow automation".to_string(),
+                        workflow_run_id: Some("run-1".to_string()),
+                        workflow_name: Some("Dev Review Tester".to_string()),
+                        workflow_design_id: Some("design-drt".to_string()),
+                        workflow_version: Some(2),
+                    }),
+                },
+            },
+            Uuid::new_v4(),
+        )
+        .await
+        .unwrap();
+
+        let loaded = AgentMessageQueueItem::find_by_id(&pool, item.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded.source, AgentMessageSource::Workflow);
+        let provenance = loaded.data.provenance.expect("provenance");
+        assert_eq!(provenance.kind, ExecutorActionProvenanceKind::Workflow);
+        assert_eq!(
+            provenance.workflow_name.as_deref(),
+            Some("Dev Review Tester")
+        );
+        assert_eq!(provenance.workflow_version, Some(2));
     }
 
     #[tokio::test]

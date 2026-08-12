@@ -10,6 +10,7 @@ use db::{
         session::Session,
     },
 };
+use executors::actions::ExecutorActionProvenance;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::sync::{Mutex, Notify};
@@ -87,6 +88,7 @@ impl QueuedMessageService {
         session_command: Option<executors::actions::session_command::SessionCommand>,
         source: AgentMessageSource,
         priority: Option<i64>,
+        provenance: Option<ExecutorActionProvenance>,
     ) -> Result<AgentMessageQueueItem, QueueError> {
         if session.executor.as_deref().is_none_or(str::is_empty) {
             return Err(QueueError::SessionExecutorMissing);
@@ -101,6 +103,7 @@ impl QueuedMessageService {
                 data: QueuedFollowUpData {
                     message,
                     session_command,
+                    provenance,
                 },
             },
             Uuid::new_v4(),

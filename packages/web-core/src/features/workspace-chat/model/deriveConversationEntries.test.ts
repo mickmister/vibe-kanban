@@ -227,4 +227,56 @@ describe('deriveConversationEntries', () => {
     ).toBe(true);
     expect(result.latestTokenUsageInfo).toBeNull();
   });
+
+  it('carries workflow automation provenance on synthesized user messages', () => {
+    const processId = 'workflow-process';
+    const result = deriveConversationEntries({
+      source: source([
+        processState(
+          processId,
+          '2026-06-17T00:00:00.000Z',
+          {
+            typ: {
+              type: 'CodingAgentFollowUpRequest',
+              prompt: 'Review the workflow change',
+              session_id: 'thread-1',
+              reset_to_message_id: null,
+              executor_config: {
+                executor: BaseCodingAgent.CODEX,
+                variant: null,
+                model_id: null,
+                agent_id: null,
+                reasoning_id: null,
+                permission_policy: null,
+              },
+              working_dir: null,
+            },
+            next_action: null,
+            provenance: {
+              kind: 'workflow',
+              label: 'Workflow automation',
+              workflow_run_id: 'run-1',
+              workflow_name: 'Dev Review Tester',
+              workflow_design_id: 'design-drt',
+              workflow_version: 3n,
+            },
+          } as ExecutorAction,
+          []
+        ),
+      ]),
+      scriptOutputCache: new Map(),
+    });
+
+    const userMessage = result.entries.find(
+      (entry) =>
+        entry.type === 'NORMALIZED_ENTRY' &&
+        entry.content.entry_type.type === 'user_message'
+    );
+    expect(userMessage?.type).toBe('NORMALIZED_ENTRY');
+    expect((userMessage?.content as any).provenance).toMatchObject({
+      kind: 'workflow',
+      workflow_name: 'Dev Review Tester',
+      workflow_version: 3n,
+    });
+  });
 });

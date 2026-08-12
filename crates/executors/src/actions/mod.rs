@@ -34,15 +34,57 @@ pub enum ExecutorActionType {
     ReviewRequest,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(use_ts_enum)]
+pub enum ExecutorActionProvenanceKind {
+    User,
+    Workflow,
+    Agent,
+    System,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct ExecutorActionProvenance {
+    pub kind: ExecutorActionProvenanceKind,
+    pub label: String,
+    #[serde(default)]
+    pub workflow_run_id: Option<String>,
+    #[serde(default)]
+    pub workflow_name: Option<String>,
+    #[serde(default)]
+    pub workflow_design_id: Option<String>,
+    #[serde(default)]
+    pub workflow_version: Option<i64>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 pub struct ExecutorAction {
     pub typ: ExecutorActionType,
     pub next_action: Option<Box<ExecutorAction>>,
+    #[serde(default)]
+    pub provenance: Option<ExecutorActionProvenance>,
 }
 
 impl ExecutorAction {
     pub fn new(typ: ExecutorActionType, next_action: Option<Box<ExecutorAction>>) -> Self {
-        Self { typ, next_action }
+        Self {
+            typ,
+            next_action,
+            provenance: None,
+        }
+    }
+
+    pub fn new_with_provenance(
+        typ: ExecutorActionType,
+        next_action: Option<Box<ExecutorAction>>,
+        provenance: Option<ExecutorActionProvenance>,
+    ) -> Self {
+        Self {
+            typ,
+            next_action,
+            provenance,
+        }
     }
     pub fn append_action(mut self, action: ExecutorAction) -> Self {
         if let Some(next) = self.next_action {

@@ -578,11 +578,15 @@ export enum AgentMessageQueueStatus { queued = "queued", leased = "leased", star
 
 export enum AgentMessageSource { from_user = "from_user", workflow = "workflow", agent = "agent", system = "system" }
 
-export type QueuedFollowUpData = { message: string, session_command: SessionCommand | null, };
+export type QueuedFollowUpData = { message: string, session_command: SessionCommand | null, provenance: ExecutorActionProvenance | null, };
 
 export type ConflictOp = "rebase" | "merge" | "cherry_pick" | "revert";
 
-export type ExecutorAction = { typ: ExecutorActionType, next_action: ExecutorAction | null, };
+export type ExecutorAction = { typ: ExecutorActionType, next_action: ExecutorAction | null, provenance: ExecutorActionProvenance | null, };
+
+export type ExecutorActionProvenance = { kind: ExecutorActionProvenanceKind, label: string, workflow_run_id: string | null, workflow_name: string | null, workflow_design_id: string | null, workflow_version: bigint | null, };
+
+export enum ExecutorActionProvenanceKind { user = "user", workflow = "workflow", agent = "agent", system = "system" }
 
 export type McpConfig = { servers: { [key in string]?: JsonValue }, servers_path: Array<string>, template: JsonValue, preconfigured: JsonValue, is_toml_config: boolean, };
 

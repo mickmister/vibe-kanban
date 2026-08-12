@@ -312,7 +312,11 @@ pub trait ContainerService {
         } else {
             cleanup_action
         };
-        let action = ExecutorAction::new(action_type, cleanup_action.map(Box::new));
+        let action = ExecutorAction::new_with_provenance(
+            action_type,
+            cleanup_action.map(Box::new),
+            item.data.provenance.clone(),
+        );
         let process_id = Uuid::new_v4();
         if !queue.mark_starting(item.id, process_id).await? {
             let current = AgentMessageQueueItem::find_by_id(&self.db().pool, item.id).await?;

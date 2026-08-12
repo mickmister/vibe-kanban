@@ -224,6 +224,8 @@ fn generate_types_content() -> String {
         db::models::agent_message_queue::QueuedFollowUpData::decl(),
         git::ConflictOp::decl(),
         executors::actions::ExecutorAction::decl(),
+        executors::actions::ExecutorActionProvenance::decl(),
+        executors::actions::ExecutorActionProvenanceKind::decl(),
         executors::mcp_config::McpConfig::decl(),
         executors::actions::ExecutorActionType::decl(),
         executors::profile::ExecutorConfig::decl(),

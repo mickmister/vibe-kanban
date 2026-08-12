@@ -10,6 +10,7 @@ use db::models::{
     session::Session,
 };
 use deployment::Deployment;
+use executors::actions::{ExecutorActionProvenance, ExecutorActionProvenanceKind};
 use serde::{Deserialize, Serialize};
 use services::services::{container::ContainerService, queued_message::QueueStatus};
 use ts_rs::TS;
@@ -25,6 +26,8 @@ pub struct QueueMessageRequest {
     pub source: Option<AgentMessageSource>,
     #[serde(default)]
     pub priority: Option<i64>,
+    #[serde(default)]
+    pub provenance: Option<ExecutorActionProvenance>,
 }
 
 #[derive(Debug, Serialize, TS)]
@@ -45,14 +48,18 @@ async fn queue_message(
         return Err(ApiError::BadRequest(message));
     }
     let session_command = super::parse_session_command(&payload.message);
+    let source = payload.source.unwrap_or(AgentMessageSource::FromUser);
     let queued_item = deployment
         .queued_message_service()
         .queue_message(
             &session,
             payload.message,
             session_command,
-            payload.source.unwrap_or(AgentMessageSource::FromUser),
+            source,
             payload.priority,
+            payload
+                .provenance
+                .or_else(|| default_provenance_for_source(source)),
         )
         .await
         .map_err(|e| ApiError::BadRequest(e.to_string()))?;
@@ -98,6 +105,36 @@ async fn queue_message(
         queued_item,
         status,
     })))
+}
+
+fn default_provenance_for_source(source: AgentMessageSource) -> Option<ExecutorActionProvenance> {
+    match source {
+        AgentMessageSource::FromUser => None,
+        AgentMessageSource::Workflow => Some(ExecutorActionProvenance {
+            kind: ExecutorActionProvenanceKind::Workflow,
+            label: "Workflow automation".to_string(),
+            workflow_run_id: None,
+            workflow_name: None,
+            workflow_design_id: None,
+            workflow_version: None,
+        }),
+        AgentMessageSource::Agent => Some(ExecutorActionProvenance {
+            kind: ExecutorActionProvenanceKind::Agent,
+            label: "Agent".to_string(),
+            workflow_run_id: None,
+            workflow_name: None,
+            workflow_design_id: None,
+            workflow_version: None,
+        }),
+        AgentMessageSource::System => Some(ExecutorActionProvenance {
+            kind: ExecutorActionProvenanceKind::System,
+            label: "System".to_string(),
+            workflow_run_id: None,
+            workflow_name: None,
+            workflow_design_id: None,
+            workflow_version: None,
+        }),
+    }
 }
 
 async fn cancel_queued_messages(
