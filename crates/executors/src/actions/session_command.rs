@@ -155,7 +155,7 @@ impl Executable for CodingAgentSessionCommandRequest {
     }
 }
 
-async fn spawn_static_session_command_reply(
+pub(crate) async fn spawn_static_session_command_reply(
     message: String,
 ) -> Result<SpawnedChild, ExecutorError> {
     let (mut spawned, mut writer) = spawn_local_output_process()?;
