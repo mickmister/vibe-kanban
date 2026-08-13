@@ -552,7 +552,9 @@ export type QueueStatus = { "status": "empty" } | { "status": "queued", message:
 
 export type ConflictOp = "rebase" | "merge" | "cherry_pick" | "revert";
 
-export type ExecutorAction = { typ: ExecutorActionType, next_action: ExecutorAction | null, };
+export type ExecutorAction = { typ: ExecutorActionType, next_action: ExecutorAction | null, log_normalizer?: ExecutorActionLogNormalizer, };
+
+export enum ExecutorActionLogNormalizer { selected_executor = "selected_executor", qa_mock_claude = "qa_mock_claude" }
 
 export type McpConfig = { servers: { [key in string]?: JsonValue }, servers_path: Array<string>, template: JsonValue, preconfigured: JsonValue, is_toml_config: boolean, };
 
