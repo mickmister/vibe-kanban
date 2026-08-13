@@ -38,12 +38,9 @@ pub enum ExecutorActionType {
 pub struct ExecutorAction {
     pub typ: ExecutorActionType,
     pub next_action: Option<Box<ExecutorAction>>,
-    #[serde(
-        default,
-        skip_serializing_if = "ExecutorActionLogNormalizer::is_selected_executor"
-    )]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
-    pub log_normalizer: ExecutorActionLogNormalizer,
+    pub log_normalizer: Option<ExecutorActionLogNormalizer>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, TS, Default)]
@@ -55,18 +52,12 @@ pub enum ExecutorActionLogNormalizer {
     QaMockClaude,
 }
 
-impl ExecutorActionLogNormalizer {
-    pub fn is_selected_executor(&self) -> bool {
-        matches!(self, Self::SelectedExecutor)
-    }
-}
-
 impl ExecutorAction {
     pub fn new(typ: ExecutorActionType, next_action: Option<Box<ExecutorAction>>) -> Self {
         Self {
             typ,
             next_action,
-            log_normalizer: ExecutorActionLogNormalizer::SelectedExecutor,
+            log_normalizer: None,
         }
     }
     pub fn append_action(mut self, action: ExecutorAction) -> Self {
@@ -88,17 +79,19 @@ impl ExecutorAction {
 
     pub fn with_current_runtime_log_normalizer(mut self) -> Self {
         if self.supports_agent_log_normalization() {
-            self.log_normalizer = if crate::executors::qa_mock::QaMockExecutor::runtime_enabled() {
-                ExecutorActionLogNormalizer::QaMockClaude
-            } else {
-                ExecutorActionLogNormalizer::SelectedExecutor
-            };
+            self.log_normalizer = Some(
+                if crate::executors::qa_mock::QaMockExecutor::runtime_enabled() {
+                    ExecutorActionLogNormalizer::QaMockClaude
+                } else {
+                    ExecutorActionLogNormalizer::SelectedExecutor
+                },
+            );
         }
         self
     }
 
     pub fn uses_qa_mock_log_normalizer(&self) -> bool {
-        self.log_normalizer == ExecutorActionLogNormalizer::QaMockClaude
+        self.log_normalizer == Some(ExecutorActionLogNormalizer::QaMockClaude)
     }
 
     pub fn should_use_qa_mock_for_spawn(&self) -> bool {
@@ -160,7 +153,7 @@ mod tests {
     #[test]
     fn uses_qa_mock_log_normalizer_when_action_marks_it() {
         let mut action = coding_action();
-        action.log_normalizer = ExecutorActionLogNormalizer::QaMockClaude;
+        action.log_normalizer = Some(ExecutorActionLogNormalizer::QaMockClaude);
 
         assert!(action.uses_qa_mock_log_normalizer());
         assert!(action.should_use_qa_mock_for_spawn());
@@ -177,10 +170,54 @@ mod tests {
     #[test]
     fn selected_executor_log_normalizer_does_not_use_qa_mock() {
         let mut action = coding_action();
-        action.log_normalizer = ExecutorActionLogNormalizer::SelectedExecutor;
+        action.log_normalizer = Some(ExecutorActionLogNormalizer::SelectedExecutor);
 
         assert!(!action.uses_qa_mock_log_normalizer());
         assert!(!action.should_use_qa_mock_for_spawn());
+    }
+
+    #[test]
+    fn persisted_selected_executor_normalizer_does_not_follow_current_env() {
+        let action_json = serde_json::json!({
+            "typ": {
+                "type": "CodingAgentInitialRequest",
+                "prompt": "test",
+                "executor_config": {
+                    "executor": "CODEX"
+                }
+            },
+            "next_action": null,
+            "log_normalizer": "selected_executor"
+        });
+        let action: ExecutorAction = serde_json::from_value(action_json).unwrap();
+
+        assert_eq!(
+            action.log_normalizer,
+            Some(ExecutorActionLogNormalizer::SelectedExecutor)
+        );
+        assert!(!action.should_use_qa_mock_for_spawn());
+    }
+
+    #[test]
+    fn persisted_qa_mock_normalizer_replays_with_qa_mock() {
+        let action_json = serde_json::json!({
+            "typ": {
+                "type": "CodingAgentInitialRequest",
+                "prompt": "test",
+                "executor_config": {
+                    "executor": "CODEX"
+                }
+            },
+            "next_action": null,
+            "log_normalizer": "qa_mock_claude"
+        });
+        let action: ExecutorAction = serde_json::from_value(action_json).unwrap();
+
+        assert_eq!(
+            action.log_normalizer,
+            Some(ExecutorActionLogNormalizer::QaMockClaude)
+        );
+        assert!(action.should_use_qa_mock_for_spawn());
     }
 
     #[test]
@@ -196,10 +233,7 @@ mod tests {
         )
         .with_current_runtime_log_normalizer();
 
-        assert_eq!(
-            action.log_normalizer,
-            ExecutorActionLogNormalizer::SelectedExecutor
-        );
+        assert_eq!(action.log_normalizer, None);
     }
 }
 
