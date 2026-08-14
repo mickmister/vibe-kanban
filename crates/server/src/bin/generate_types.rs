@@ -102,6 +102,15 @@ fn generate_types_content() -> String {
         server::routes::config::CheckEditorAvailabilityResponse::decl(),
         server::routes::config::CheckAgentAvailabilityQuery::decl(),
         server::routes::config::AgentPresetOptionsQuery::decl(),
+        services::services::conversation_preview::ConversationPreviewMessageRole::decl(),
+        services::services::conversation_preview::ConversationPreviewMessage::decl(),
+        services::services::conversation_preview::ConversationPreviewSource::decl(),
+        services::services::conversation_preview::ConversationPreview::decl(),
+        services::services::conversation_preview::WarmWorkspaceSessionsRequest::decl(),
+        services::services::conversation_preview::WarmConversationPreviewRequest::decl(),
+        services::services::conversation_preview::WarmConversationPreviewItem::decl(),
+        services::services::conversation_preview::WarmConversationPreviewError::decl(),
+        services::services::conversation_preview::WarmConversationPreviewResponse::decl(),
         server::routes::oauth::CurrentUserResponse::decl(),
         relay_types::StartSpake2EnrollmentRequest::decl(),
         relay_types::FinishSpake2EnrollmentRequest::decl(),
@@ -199,6 +208,8 @@ fn generate_types_content() -> String {
         executors::profile::ExecutorConfig::decl(),
         executors::actions::script::ScriptContext::decl(),
         executors::actions::script::ScriptRequest::decl(),
+        executors::actions::session_command::SessionCommand::decl(),
+        executors::actions::session_command::CodingAgentSessionCommandRequest::decl(),
         executors::actions::script::ScriptRequestLanguage::decl(),
         executors::executors::BaseCodingAgent::decl(),
         executors::executors::CodingAgent::decl(),
@@ -291,7 +302,17 @@ fn generate_types_content() -> String {
         serde_json::to_string(DEFAULT_COMMIT_REMINDER_PROMPT).unwrap()
     );
 
-    format!("{HEADER}\n\n{body}\n\n{constants}")
+    trim_trailing_line_whitespace(format!("{HEADER}\n\n{body}\n\n{constants}"))
+}
+
+fn trim_trailing_line_whitespace(content: String) -> String {
+    let mut trimmed = content
+        .lines()
+        .map(str::trim_end)
+        .collect::<Vec<_>>()
+        .join("\n");
+    trimmed.push('\n');
+    trimmed
 }
 
 fn generate_json_schema<T: JsonSchema>() -> Result<String, serde_json::Error> {
