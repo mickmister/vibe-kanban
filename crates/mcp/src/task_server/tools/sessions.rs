@@ -493,6 +493,45 @@ impl McpServer {
     }
 }
 
+impl McpServer {
+    fn executor_config_payload_for_session(
+        session: &Session,
+    ) -> Result<ExecutorConfigPayload, super::ToolError> {
+        Ok(ExecutorConfigPayload {
+            executor: Self::normalize_executor_name(session.executor.as_deref())?,
+            variant: None,
+            model_id: None,
+            agent_id: None,
+            reasoning_id: None,
+            permission_policy: None,
+        })
+    }
+
+    fn session_summary(&self, session: Session) -> SessionSummary {
+        let is_orchestrator_session = self.orchestrator_session_id() == Some(session.id);
+        SessionSummary {
+            id: session.id.to_string(),
+            workspace_id: session.workspace_id.to_string(),
+            name: session.name,
+            executor: session.executor,
+            created_at: session.created_at.to_rfc3339(),
+            updated_at: session.updated_at.to_rfc3339(),
+            is_orchestrator_session,
+        }
+    }
+
+    fn serialize_execution_process(
+        execution_process: &ExecutionProcess,
+    ) -> Result<serde_json::Value, super::ToolError> {
+        serde_json::to_value(execution_process).map_err(|error| {
+            super::ToolError::new(
+                "Failed to serialize execution process response",
+                Some(error.to_string()),
+            )
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use uuid::Uuid;
@@ -537,44 +576,5 @@ mod tests {
         assert_eq!(message.as_deref(), Some("final"));
         assert!(truncated);
         assert_eq!(max_chars, Some(4096));
-    }
-}
-
-impl McpServer {
-    fn executor_config_payload_for_session(
-        session: &Session,
-    ) -> Result<ExecutorConfigPayload, super::ToolError> {
-        Ok(ExecutorConfigPayload {
-            executor: Self::normalize_executor_name(session.executor.as_deref())?,
-            variant: None,
-            model_id: None,
-            agent_id: None,
-            reasoning_id: None,
-            permission_policy: None,
-        })
-    }
-
-    fn session_summary(&self, session: Session) -> SessionSummary {
-        let is_orchestrator_session = self.orchestrator_session_id() == Some(session.id);
-        SessionSummary {
-            id: session.id.to_string(),
-            workspace_id: session.workspace_id.to_string(),
-            name: session.name,
-            executor: session.executor,
-            created_at: session.created_at.to_rfc3339(),
-            updated_at: session.updated_at.to_rfc3339(),
-            is_orchestrator_session,
-        }
-    }
-
-    fn serialize_execution_process(
-        execution_process: &ExecutionProcess,
-    ) -> Result<serde_json::Value, super::ToolError> {
-        serde_json::to_value(execution_process).map_err(|error| {
-            super::ToolError::new(
-                "Failed to serialize execution process response",
-                Some(error.to_string()),
-            )
-        })
     }
 }

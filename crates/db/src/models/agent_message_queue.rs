@@ -21,13 +21,14 @@ pub enum AgentMessageQueueStatus {
     Cancelled,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS, Type)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS, Type)]
 #[serde(rename_all = "snake_case")]
 #[sqlx(type_name = "TEXT", rename_all = "snake_case")]
 #[ts(use_ts_enum)]
 pub enum AgentMessageSource {
     FromUser,
     Workflow,
+    #[default]
     Agent,
     System,
 }
@@ -40,12 +41,6 @@ impl AgentMessageSource {
             Self::Agent => 50,
             Self::System => 25,
         }
-    }
-}
-
-impl Default for AgentMessageSource {
-    fn default() -> Self {
-        Self::Agent
     }
 }
 

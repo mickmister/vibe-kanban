@@ -707,31 +707,33 @@ mod tests {
         let (ok_url, ok_rx) = spawn_http_server(200).await;
         let (fail_url, fail_rx) = spawn_http_server(500).await;
         let now = Utc::now();
-        let mut config = Config::default();
-        config.webhook_subscriptions = vec![
-            WebhookSubscription {
-                id: Uuid::parse_str("11111111-1111-1111-1111-111111111111").unwrap(),
-                name: "failing".to_string(),
-                upsert_key: Some("failing".to_string()),
-                url: fail_url,
-                enabled: true,
-                event_filters: vec![],
-                signing_secret: "secret".to_string(),
-                created_at: now,
-                updated_at: now,
-            },
-            WebhookSubscription {
-                id: Uuid::parse_str("22222222-2222-2222-2222-222222222222").unwrap(),
-                name: "ok".to_string(),
-                upsert_key: Some("ok".to_string()),
-                url: ok_url,
-                enabled: true,
-                event_filters: vec!["execution.completed".to_string()],
-                signing_secret: "secret".to_string(),
-                created_at: now,
-                updated_at: now,
-            },
-        ];
+        let config = Config {
+            webhook_subscriptions: vec![
+                WebhookSubscription {
+                    id: Uuid::parse_str("11111111-1111-1111-1111-111111111111").unwrap(),
+                    name: "failing".to_string(),
+                    upsert_key: Some("failing".to_string()),
+                    url: fail_url,
+                    enabled: true,
+                    event_filters: vec![],
+                    signing_secret: "secret".to_string(),
+                    created_at: now,
+                    updated_at: now,
+                },
+                WebhookSubscription {
+                    id: Uuid::parse_str("22222222-2222-2222-2222-222222222222").unwrap(),
+                    name: "ok".to_string(),
+                    upsert_key: Some("ok".to_string()),
+                    url: ok_url,
+                    enabled: true,
+                    event_filters: vec!["execution.completed".to_string()],
+                    signing_secret: "secret".to_string(),
+                    created_at: now,
+                    updated_at: now,
+                },
+            ],
+            ..Default::default()
+        };
         let service = WebhookNotificationService::new(Arc::new(RwLock::new(config)));
 
         let results = service
@@ -775,18 +777,20 @@ mod tests {
     async fn disabled_or_non_matching_subscriptions_do_not_receive_events() {
         let (url, rx) = spawn_http_server(200).await;
         let now = Utc::now();
-        let mut config = Config::default();
-        config.webhook_subscriptions = vec![WebhookSubscription {
-            id: Uuid::new_v4(),
-            name: "failed-only".to_string(),
-            upsert_key: None,
-            url,
-            enabled: true,
-            event_filters: vec!["execution.failed".to_string()],
-            signing_secret: "secret".to_string(),
-            created_at: now,
-            updated_at: now,
-        }];
+        let config = Config {
+            webhook_subscriptions: vec![WebhookSubscription {
+                id: Uuid::new_v4(),
+                name: "failed-only".to_string(),
+                upsert_key: None,
+                url,
+                enabled: true,
+                event_filters: vec!["execution.failed".to_string()],
+                signing_secret: "secret".to_string(),
+                created_at: now,
+                updated_at: now,
+            }],
+            ..Default::default()
+        };
         let service = WebhookNotificationService::new(Arc::new(RwLock::new(config)));
 
         let results = service

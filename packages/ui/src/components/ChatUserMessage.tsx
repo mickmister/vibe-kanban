@@ -1,8 +1,8 @@
-import type { ReactNode } from "react";
-import { useTranslation } from "react-i18next";
-import { PencilSimpleIcon, ArrowUUpLeftIcon } from "@phosphor-icons/react";
-import { ChatEntryContainer } from "./ChatEntryContainer";
-import { Tooltip } from "./Tooltip";
+import type { ReactNode } from 'react';
+import { useTranslation } from 'react-i18next';
+import { PencilSimpleIcon, ArrowUUpLeftIcon } from '@phosphor-icons/react';
+import { ChatEntryContainer } from './ChatEntryContainer';
+import { Tooltip } from './Tooltip';
 
 export interface ChatUserMessageRenderProps {
   content: string;
@@ -34,13 +34,13 @@ export function ChatUserMessage({
   title,
   renderMarkdown,
 }: ChatUserMessageProps) {
-  const { t } = useTranslation("tasks");
+  const { t } = useTranslation('tasks');
 
   const headerActions =
     !isGreyed && (onEdit || onReset) ? (
       <div className="flex items-center gap-1">
         {onReset && (
-          <Tooltip content={t("conversation.actions.resetTooltip")}>
+          <Tooltip content={t('conversation.actions.resetTooltip')}>
             <button
               type="button"
               onClick={(e) => {
@@ -48,14 +48,14 @@ export function ChatUserMessage({
                 onReset();
               }}
               className="p-1 rounded hover:bg-muted text-low hover:text-normal transition-colors"
-              aria-label={t("conversation.actions.reset")}
+              aria-label={t('conversation.actions.reset')}
             >
               <ArrowUUpLeftIcon className="size-icon-xs" />
             </button>
           </Tooltip>
         )}
         {onEdit && (
-          <Tooltip content={t("conversation.actions.edit")}>
+          <Tooltip content={t('conversation.actions.edit')}>
             <button
               type="button"
               onClick={(e) => {
@@ -63,7 +63,7 @@ export function ChatUserMessage({
                 onEdit();
               }}
               className="p-1 rounded hover:bg-muted text-low hover:text-normal transition-colors"
-              aria-label={t("conversation.actions.edit")}
+              aria-label={t('conversation.actions.edit')}
             >
               <PencilSimpleIcon className="size-icon-xs" />
             </button>
@@ -75,7 +75,7 @@ export function ChatUserMessage({
   return (
     <ChatEntryContainer
       variant="user"
-      title={title ?? t("conversation.you")}
+      title={title ?? t('conversation.you')}
       expanded={expanded}
       onToggle={onToggle}
       className={className}
