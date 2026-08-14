@@ -467,6 +467,15 @@ impl Codex {
         apply_overrides(builder, &self.cmd)
     }
 
+    pub fn build_delete_session_command(
+        &self,
+        session_id: &str,
+    ) -> Result<CommandParts, CommandBuildError> {
+        let builder = CommandBuilder::new(Self::base_command())
+            .extend_params(["delete", "--force", session_id]);
+        apply_overrides(builder, &self.cmd)?.build_initial()
+    }
+
     fn build_thread_start_params(&self, cwd: &Path) -> ThreadStartParams {
         let sandbox = match self.sandbox.as_ref() {
             None | Some(SandboxMode::Auto) => Some(V2SandboxMode::WorkspaceWrite), // match the Auto preset in codex
@@ -837,7 +846,10 @@ impl Codex {
 
 #[cfg(test)]
 mod tests {
-    use super::resolve_model;
+    use std::collections::HashMap;
+
+    use super::{Codex, resolve_model};
+    use crate::command::CmdOverrides;
 
     #[test]
     fn resolve_model_detects_fast_suffix() {
@@ -853,5 +865,84 @@ mod tests {
             (Some("gpt-5.4-mini"), false)
         );
         assert_eq!(resolve_model(None), (None, false));
+    }
+
+    #[test]
+    fn delete_session_command_uses_native_codex_cli() {
+        let codex = Codex {
+            append_prompt: Default::default(),
+            sandbox: None,
+            ask_for_approval: None,
+            oss: None,
+            model: None,
+            model_reasoning_effort: None,
+            model_reasoning_summary: None,
+            model_reasoning_summary_format: None,
+            profile: None,
+            base_instructions: None,
+            include_apply_patch_tool: None,
+            model_provider: None,
+            compact_prompt: None,
+            developer_instructions: None,
+            plan: false,
+            cmd: CmdOverrides::default(),
+            approvals: None,
+        };
+
+        let command = codex.build_delete_session_command("session-123").unwrap();
+
+        assert_eq!(command.program(), "npx");
+        assert_eq!(
+            command.args(),
+            &[
+                "-y".to_string(),
+                "@openai/codex@0.124.0".to_string(),
+                "delete".to_string(),
+                "--force".to_string(),
+                "session-123".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn delete_session_command_honors_command_overrides() {
+        let mut env = HashMap::new();
+        env.insert("CODEX_HOME".to_string(), "/tmp/codex".to_string());
+        let codex = Codex {
+            append_prompt: Default::default(),
+            sandbox: None,
+            ask_for_approval: None,
+            oss: None,
+            model: None,
+            model_reasoning_effort: None,
+            model_reasoning_summary: None,
+            model_reasoning_summary_format: None,
+            profile: None,
+            base_instructions: None,
+            include_apply_patch_tool: None,
+            model_provider: None,
+            compact_prompt: None,
+            developer_instructions: None,
+            plan: false,
+            cmd: CmdOverrides {
+                base_command_override: Some("custom-codex".to_string()),
+                additional_params: Some(vec!["--strict-config".to_string()]),
+                env: Some(env),
+            },
+            approvals: None,
+        };
+
+        let command = codex.build_delete_session_command("session-123").unwrap();
+
+        assert_eq!(command.program(), "custom-codex");
+        assert_eq!(
+            command.args(),
+            &[
+                "delete".to_string(),
+                "--force".to_string(),
+                "session-123".to_string(),
+                "--strict-config".to_string(),
+            ]
+        );
     }
 }

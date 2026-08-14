@@ -88,12 +88,25 @@ impl Drop for OpencodeServer {
 type ServerPassword = String;
 
 impl Opencode {
+    pub fn base_command() -> &'static str {
+        "npx -y opencode-ai@1.4.7"
+    }
+
     fn build_command_builder(&self) -> Result<CommandBuilder, CommandBuildError> {
-        let builder = CommandBuilder::new("npx -y opencode-ai@1.4.7")
+        let builder = CommandBuilder::new(Self::base_command())
             // Pass hostname/port as separate args so OpenCode treats them as explicitly set
             // (it checks `process.argv.includes(\"--port\")` / `\"--hostname\"`).
             .extend_params(["serve", "--hostname", "127.0.0.1", "--port", "0"]);
         apply_overrides(builder, &self.cmd)
+    }
+
+    pub fn build_delete_session_command(
+        &self,
+        session_id: &str,
+    ) -> Result<crate::command::CommandParts, CommandBuildError> {
+        let builder = CommandBuilder::new(Self::base_command())
+            .extend_params(["session", "delete", session_id]);
+        apply_overrides(builder, &self.cmd)?.build_initial()
     }
 
     /// Compute a cache key for model context windows based on configuration that can affect the list of available models.
@@ -819,4 +832,68 @@ fn merge_compaction_config(existing_json: Option<&str>) -> String {
     config.insert("compaction".to_string(), Value::Object(compaction));
 
     serde_json::to_string(&config).unwrap_or_else(|_| r#"{"compaction":{"auto":true}}"#.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Opencode;
+    use crate::command::CmdOverrides;
+
+    fn opencode_with_cmd(cmd: CmdOverrides) -> Opencode {
+        Opencode {
+            append_prompt: Default::default(),
+            model: None,
+            variant: None,
+            agent: None,
+            auto_approve: true,
+            auto_compact: true,
+            cmd,
+            approvals: None,
+        }
+    }
+
+    #[test]
+    fn delete_session_command_uses_native_opencode_cli() {
+        let opencode = opencode_with_cmd(CmdOverrides::default());
+
+        let command = opencode
+            .build_delete_session_command("session-123")
+            .unwrap();
+
+        assert_eq!(command.program(), "npx");
+        assert_eq!(
+            command.args(),
+            &[
+                "-y".to_string(),
+                "opencode-ai@1.4.7".to_string(),
+                "session".to_string(),
+                "delete".to_string(),
+                "session-123".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn delete_session_command_reuses_command_overrides() {
+        let opencode = opencode_with_cmd(CmdOverrides {
+            base_command_override: Some("custom-opencode".to_string()),
+            additional_params: Some(vec!["--pure".to_string()]),
+            env: None,
+        });
+
+        let command = opencode
+            .build_delete_session_command("session-123")
+            .unwrap();
+
+        assert_eq!(command.program(), "custom-opencode");
+        assert_eq!(
+            command.args(),
+            &[
+                "session".to_string(),
+                "delete".to_string(),
+                "session-123".to_string(),
+                "--pure".to_string(),
+            ]
+        );
+    }
 }

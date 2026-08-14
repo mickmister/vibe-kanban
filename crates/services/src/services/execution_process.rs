@@ -322,19 +322,10 @@ pub fn spawn_stream_raw_logs_to_storage(
                                 execution_id,
                                 e
                             );
-                        }
-
-                        if let Err(e) = agent_session_cleanup::cleanup_obsolete_agent_sessions(
-                            &db.pool,
-                            execution_id,
-                        )
-                        .await
-                        {
-                            tracing::debug!(
-                                "Failed to clean up obsolete agent sessions after recording {} for execution process {}: {}",
-                                agent_session_id,
+                        } else {
+                            agent_session_cleanup::spawn_cleanup_obsolete_agent_sessions(
+                                db.pool.clone(),
                                 execution_id,
-                                e
                             );
                         }
                     }
