@@ -203,6 +203,7 @@ fn generate_types_content() -> String {
         services::services::queued_message::QueueStatus::decl(),
         git::ConflictOp::decl(),
         executors::actions::ExecutorAction::decl(),
+        executors::actions::ExecutorActionLogNormalizer::decl(),
         executors::mcp_config::McpConfig::decl(),
         executors::actions::ExecutorActionType::decl(),
         executors::profile::ExecutorConfig::decl(),

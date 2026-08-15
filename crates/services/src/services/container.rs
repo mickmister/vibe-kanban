@@ -23,17 +23,13 @@ use db::{
         workspace_repo::WorkspaceRepo,
     },
 };
-#[cfg(feature = "qa-mode")]
-use executors::executors::qa_mock::QaMockExecutor;
-#[cfg(not(feature = "qa-mode"))]
-use executors::profile::ExecutorConfigs;
 use executors::{
     actions::{
         ExecutorAction, ExecutorActionType,
         coding_agent_initial::CodingAgentInitialRequest,
         script::{ScriptContext, ScriptRequest, ScriptRequestLanguage},
     },
-    executors::{ExecutorError, StandardCodingAgentExecutor},
+    executors::{ExecutorError, StandardCodingAgentExecutor, qa_mock::QaMockExecutor},
     logs::{
         NormalizedEntry, NormalizedEntryError, NormalizedEntryType,
         utils::{
@@ -41,7 +37,7 @@ use executors::{
             patch::{fix_patch_ops, is_add_or_replace, patch_entry_path},
         },
     },
-    profile::{ExecutorConfig, ExecutorProfileId},
+    profile::{ExecutorConfig, ExecutorConfigs, ExecutorProfileId},
 };
 use futures::{StreamExt, future, stream::BoxStream};
 use git::{GitService, GitServiceError};
@@ -916,16 +912,13 @@ pub trait ContainerService {
             // Spawn normalizer on populated store and collect JoinHandles
             let handles = match executor_action.typ() {
                 ExecutorActionType::CodingAgentInitialRequest(request) => {
-                    #[cfg(feature = "qa-mode")]
-                    {
+                    if executor_action.uses_qa_mock_log_normalizer() {
                         let executor = QaMockExecutor;
-                        executor.normalize_logs(
+                        executor.normalize_mock_logs(
                             temp_store.clone(),
                             &request.effective_dir(&current_dir),
                         )
-                    }
-                    #[cfg(not(feature = "qa-mode"))]
-                    {
+                    } else {
                         let executor = ExecutorConfigs::get_cached()
                             .get_coding_agent_or_default(&request.executor_config.profile_id());
                         executor.normalize_logs(
@@ -935,16 +928,13 @@ pub trait ContainerService {
                     }
                 }
                 ExecutorActionType::CodingAgentFollowUpRequest(request) => {
-                    #[cfg(feature = "qa-mode")]
-                    {
+                    if executor_action.uses_qa_mock_log_normalizer() {
                         let executor = QaMockExecutor;
-                        executor.normalize_logs(
+                        executor.normalize_mock_logs(
                             temp_store.clone(),
                             &request.effective_dir(&current_dir),
                         )
-                    }
-                    #[cfg(not(feature = "qa-mode"))]
-                    {
+                    } else {
                         let executor = ExecutorConfigs::get_cached()
                             .get_coding_agent_or_default(&request.executor_config.profile_id());
                         executor.normalize_logs(
@@ -959,16 +949,13 @@ pub trait ContainerService {
                             temp_store.clone(),
                         )
                     } else {
-                        #[cfg(feature = "qa-mode")]
-                        {
+                        if executor_action.uses_qa_mock_log_normalizer() {
                             let executor = QaMockExecutor;
-                            executor.normalize_logs(
+                            executor.normalize_mock_logs(
                                 temp_store.clone(),
                                 &request.effective_dir(&current_dir),
                             )
-                        }
-                        #[cfg(not(feature = "qa-mode"))]
-                        {
+                        } else {
                             let executor = ExecutorConfigs::get_cached()
                                 .get_coding_agent_or_default(&request.executor_config.profile_id());
                             executor.normalize_logs(
@@ -978,16 +965,15 @@ pub trait ContainerService {
                         }
                     }
                 }
-                #[cfg(feature = "qa-mode")]
-                ExecutorActionType::ReviewRequest(_request) => {
-                    let executor = QaMockExecutor;
-                    executor.normalize_logs(temp_store.clone(), &current_dir)
-                }
-                #[cfg(not(feature = "qa-mode"))]
                 ExecutorActionType::ReviewRequest(request) => {
-                    let executor = ExecutorConfigs::get_cached()
-                        .get_coding_agent_or_default(&request.executor_config.profile_id());
-                    executor.normalize_logs(temp_store.clone(), &current_dir)
+                    if executor_action.uses_qa_mock_log_normalizer() {
+                        let executor = QaMockExecutor;
+                        executor.normalize_mock_logs(temp_store.clone(), &current_dir)
+                    } else {
+                        let executor = ExecutorConfigs::get_cached()
+                            .get_coding_agent_or_default(&request.executor_config.profile_id());
+                        executor.normalize_logs(temp_store.clone(), &current_dir)
+                    }
                 }
                 _ => {
                     tracing::debug!(
@@ -1190,9 +1176,12 @@ pub trait ContainerService {
                 merge_commit: None,
             });
         }
+        let executor_action_for_process = executor_action
+            .clone()
+            .with_current_runtime_log_normalizer();
         let create_execution_process = CreateExecutionProcess {
             session_id: session.id,
-            executor_action: executor_action.clone(),
+            executor_action: executor_action_for_process.clone(),
             run_reason: run_reason.clone(),
         };
 
@@ -1219,7 +1208,7 @@ pub trait ContainerService {
             return Err(e.into());
         }
 
-        if let Some(prompt) = match executor_action.typ() {
+        if let Some(prompt) = match executor_action_for_process.typ() {
             ExecutorActionType::CodingAgentInitialRequest(coding_agent_request) => {
                 Some(coding_agent_request.prompt.clone())
             }
@@ -1257,7 +1246,7 @@ pub trait ContainerService {
         }
 
         let is_clear_session_command = matches!(
-            executor_action.typ(),
+            executor_action_for_process.typ(),
             ExecutorActionType::CodingAgentSessionCommandRequest(
                 executors::actions::session_command::CodingAgentSessionCommandRequest {
                     command: executors::actions::session_command::SessionCommand::Clear,
@@ -1267,7 +1256,7 @@ pub trait ContainerService {
         );
 
         if let Err(start_error) = self
-            .start_execution_inner(workspace, &execution_process, executor_action)
+            .start_execution_inner(workspace, &execution_process, &executor_action_for_process)
             .await
         {
             self.msg_stores()
@@ -1347,7 +1336,7 @@ pub trait ContainerService {
         // Start processing normalised logs for executor requests and follow ups
         let workspace_root = self.workspace_to_current_dir(workspace);
         #[cfg_attr(feature = "qa-mode", allow(unused_variables))]
-        if let Some((executor_profile_id, working_dir)) = match executor_action.typ() {
+        if let Some((executor_profile_id, working_dir)) = match executor_action_for_process.typ() {
             ExecutorActionType::CodingAgentInitialRequest(request) => Some((
                 request.executor_config.profile_id(),
                 request.effective_dir(&workspace_root),
@@ -1395,13 +1384,10 @@ pub trait ContainerService {
                     )));
                 }
             };
-            #[cfg(feature = "qa-mode")]
-            {
+            if executor_action_for_process.uses_qa_mock_log_normalizer() {
                 let executor = QaMockExecutor;
-                let _ = executor.normalize_logs(msg_store, &working_dir);
-            }
-            #[cfg(not(feature = "qa-mode"))]
-            {
+                let _ = executor.normalize_mock_logs(msg_store, &working_dir);
+            } else {
                 if let Some(executor) =
                     ExecutorConfigs::get_cached().get_coding_agent(&executor_profile_id)
                 {
