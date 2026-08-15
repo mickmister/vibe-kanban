@@ -827,6 +827,14 @@ providers: Array<ModelProvider>,
  */
 models: Array<ModelInfo>,
 /**
+ * Optional display ordering for model identifiers.
+ *
+ * Entries match either a plain model id (for single-provider selectors) or
+ * `provider_id/model_id` (for provider-scoped selectors). Unlisted models
+ * remain selectable and are sorted by the UI's default fallback.
+ */
+model_order?: Array<string>,
+/**
  * Global default model (format: provider_id/model_id)
  */
 default_model?: string | null,

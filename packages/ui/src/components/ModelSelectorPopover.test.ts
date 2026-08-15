@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   getProviderFilterState,
+  orderModelsForDisplay,
   providerMatchesSearch,
 } from './ModelSelectorPopover';
 import { modelMatchesSearch, type ModelListModel } from './ModelList';
@@ -70,5 +71,62 @@ describe('model selector filtering', () => {
 
     expect(state.visibleProviderIds).toEqual(['openrouter']);
     expect(state.activeProviderId).toBe('openrouter');
+  });
+
+  it('uses model_order metadata before alphabetical fallback', () => {
+    const models: ModelListModel[] = [
+      {
+        id: 'gpt-5.2',
+        name: 'GPT-5.2',
+        reasoning_options: [],
+      },
+      {
+        id: 'gpt-5.6-sol',
+        name: 'GPT-5.6 Sol',
+        reasoning_options: [],
+      },
+      {
+        id: 'gpt-5.6',
+        name: 'GPT-5.6',
+        reasoning_options: [],
+      },
+      {
+        id: 'custom-future',
+        name: 'Custom Future',
+        reasoning_options: [],
+      },
+    ];
+
+    expect(
+      orderModelsForDisplay(models, ['gpt-5.6', 'gpt-5.6-sol']).map(
+        (model) => model.id
+      )
+    ).toEqual(['gpt-5.6', 'gpt-5.6-sol', 'custom-future', 'gpt-5.2']);
+  });
+
+  it('keeps alphabetical ordering when model_order metadata is absent', () => {
+    const models: ModelListModel[] = [
+      {
+        id: 'gpt-5.2',
+        name: 'GPT-5.2',
+        reasoning_options: [],
+      },
+      {
+        id: 'gpt-5.6',
+        name: 'GPT-5.6',
+        reasoning_options: [],
+      },
+      {
+        id: 'custom-future',
+        name: 'Custom Future',
+        reasoning_options: [],
+      },
+    ];
+
+    expect(orderModelsForDisplay(models).map((model) => model.id)).toEqual([
+      'custom-future',
+      'gpt-5.2',
+      'gpt-5.6',
+    ]);
   });
 });

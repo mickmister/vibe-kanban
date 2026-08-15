@@ -325,94 +325,98 @@ impl StandardCodingAgentExecutor for Codex {
             .map(|e| e.as_ref().to_string()),
         );
 
+        let models = vec![
+            ModelInfo {
+                id: "gpt-5.6".to_string(),
+                name: "GPT-5.6".to_string(),
+                provider_id: None,
+                reasoning_options: xhigh_reasoning_options.clone(),
+            },
+            ModelInfo {
+                id: "gpt-5.6-sol".to_string(),
+                name: "GPT-5.6 Sol".to_string(),
+                provider_id: None,
+                reasoning_options: xhigh_reasoning_options.clone(),
+            },
+            ModelInfo {
+                id: "gpt-5.6-sol-fast".to_string(),
+                name: "GPT-5.6 Sol Fast".to_string(),
+                provider_id: None,
+                reasoning_options: xhigh_reasoning_options.clone(),
+            },
+            ModelInfo {
+                id: "gpt-5.6-terra".to_string(),
+                name: "GPT-5.6 Terra".to_string(),
+                provider_id: None,
+                reasoning_options: xhigh_reasoning_options.clone(),
+            },
+            ModelInfo {
+                id: "gpt-5.6-terra-fast".to_string(),
+                name: "GPT-5.6 Terra Fast".to_string(),
+                provider_id: None,
+                reasoning_options: xhigh_reasoning_options.clone(),
+            },
+            ModelInfo {
+                id: "gpt-5.6-luna".to_string(),
+                name: "GPT-5.6 Luna".to_string(),
+                provider_id: None,
+                reasoning_options: xhigh_reasoning_options.clone(),
+            },
+            ModelInfo {
+                id: "gpt-5.5".to_string(),
+                name: "GPT-5.5".to_string(),
+                provider_id: None,
+                reasoning_options: xhigh_reasoning_options.clone(),
+            },
+            ModelInfo {
+                id: "gpt-5.5-fast".to_string(),
+                name: "GPT-5.5 Fast".to_string(),
+                provider_id: None,
+                reasoning_options: xhigh_reasoning_options.clone(),
+            },
+            ModelInfo {
+                id: "gpt-5.4".to_string(),
+                name: "GPT-5.4".to_string(),
+                provider_id: None,
+                reasoning_options: xhigh_reasoning_options.clone(),
+            },
+            ModelInfo {
+                id: "gpt-5.4-fast".to_string(),
+                name: "GPT-5.4 Fast".to_string(),
+                provider_id: None,
+                reasoning_options: xhigh_reasoning_options.clone(),
+            },
+            ModelInfo {
+                id: "gpt-5.4-mini".to_string(),
+                name: "GPT-5.4 Mini".to_string(),
+                provider_id: None,
+                reasoning_options: xhigh_reasoning_options.clone(),
+            },
+            ModelInfo {
+                id: "gpt-5.3-codex".to_string(),
+                name: "GPT-5.3 Codex".to_string(),
+                provider_id: None,
+                reasoning_options: xhigh_reasoning_options.clone(),
+            },
+            ModelInfo {
+                id: "gpt-5.3-codex-spark".to_string(),
+                name: "GPT-5.3 Codex Spark".to_string(),
+                provider_id: None,
+                reasoning_options: xhigh_reasoning_options.clone(),
+            },
+            ModelInfo {
+                id: "gpt-5.2".to_string(),
+                name: "GPT-5.2".to_string(),
+                provider_id: None,
+                reasoning_options: xhigh_reasoning_options,
+            },
+        ];
+        let model_order = models.iter().map(|model| model.id.clone()).collect();
+
         let options = ExecutorDiscoveredOptions {
             model_selector: ModelSelectorConfig {
-                models: vec![
-                    ModelInfo {
-                        id: "gpt-5.6".to_string(),
-                        name: "GPT-5.6".to_string(),
-                        provider_id: None,
-                        reasoning_options: xhigh_reasoning_options.clone(),
-                    },
-                    ModelInfo {
-                        id: "gpt-5.6-sol".to_string(),
-                        name: "GPT-5.6 Sol".to_string(),
-                        provider_id: None,
-                        reasoning_options: xhigh_reasoning_options.clone(),
-                    },
-                    ModelInfo {
-                        id: "gpt-5.6-sol-fast".to_string(),
-                        name: "GPT-5.6 Sol Fast".to_string(),
-                        provider_id: None,
-                        reasoning_options: xhigh_reasoning_options.clone(),
-                    },
-                    ModelInfo {
-                        id: "gpt-5.6-terra".to_string(),
-                        name: "GPT-5.6 Terra".to_string(),
-                        provider_id: None,
-                        reasoning_options: xhigh_reasoning_options.clone(),
-                    },
-                    ModelInfo {
-                        id: "gpt-5.6-terra-fast".to_string(),
-                        name: "GPT-5.6 Terra Fast".to_string(),
-                        provider_id: None,
-                        reasoning_options: xhigh_reasoning_options.clone(),
-                    },
-                    ModelInfo {
-                        id: "gpt-5.6-luna".to_string(),
-                        name: "GPT-5.6 Luna".to_string(),
-                        provider_id: None,
-                        reasoning_options: xhigh_reasoning_options.clone(),
-                    },
-                    ModelInfo {
-                        id: "gpt-5.5".to_string(),
-                        name: "GPT-5.5".to_string(),
-                        provider_id: None,
-                        reasoning_options: xhigh_reasoning_options.clone(),
-                    },
-                    ModelInfo {
-                        id: "gpt-5.5-fast".to_string(),
-                        name: "GPT-5.5 Fast".to_string(),
-                        provider_id: None,
-                        reasoning_options: xhigh_reasoning_options.clone(),
-                    },
-                    ModelInfo {
-                        id: "gpt-5.4".to_string(),
-                        name: "GPT-5.4".to_string(),
-                        provider_id: None,
-                        reasoning_options: xhigh_reasoning_options.clone(),
-                    },
-                    ModelInfo {
-                        id: "gpt-5.4-fast".to_string(),
-                        name: "GPT-5.4 Fast".to_string(),
-                        provider_id: None,
-                        reasoning_options: xhigh_reasoning_options.clone(),
-                    },
-                    ModelInfo {
-                        id: "gpt-5.4-mini".to_string(),
-                        name: "GPT-5.4 Mini".to_string(),
-                        provider_id: None,
-                        reasoning_options: xhigh_reasoning_options.clone(),
-                    },
-                    ModelInfo {
-                        id: "gpt-5.3-codex".to_string(),
-                        name: "GPT-5.3 Codex".to_string(),
-                        provider_id: None,
-                        reasoning_options: xhigh_reasoning_options.clone(),
-                    },
-                    ModelInfo {
-                        id: "gpt-5.3-codex-spark".to_string(),
-                        name: "GPT-5.3 Codex Spark".to_string(),
-                        provider_id: None,
-                        reasoning_options: xhigh_reasoning_options.clone(),
-                    },
-                    ModelInfo {
-                        id: "gpt-5.2".to_string(),
-                        name: "GPT-5.2".to_string(),
-                        provider_id: None,
-                        reasoning_options: xhigh_reasoning_options,
-                    },
-                ],
+                models,
+                model_order: Some(model_order),
                 permissions: vec![
                     PermissionPolicy::Auto,
                     PermissionPolicy::Supervised,

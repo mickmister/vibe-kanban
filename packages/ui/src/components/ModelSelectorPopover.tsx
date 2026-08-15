@@ -30,6 +30,7 @@ interface ModelSelectorProvider {
 interface ModelSelectorConfigLike {
   models: ModelListModel[];
   providers: ModelSelectorProvider[];
+  model_order?: string[];
 }
 
 export interface ModelSelectorPopoverProps {
@@ -80,6 +81,47 @@ function sortModelsAlphabetically(models: ModelListModel[]): ModelListModel[] {
       numeric: true,
       sensitivity: 'base',
     });
+  });
+}
+
+function getModelOrderKey(model: ModelListModel): string {
+  return getModelKey(model).toLowerCase();
+}
+
+function getModelOrderIndex(
+  model: ModelListModel,
+  orderedKeys: Map<string, number>
+): number | null {
+  const providerScopedIndex = orderedKeys.get(getModelOrderKey(model));
+  if (providerScopedIndex !== undefined) return providerScopedIndex;
+
+  const modelIdIndex = orderedKeys.get(model.id.toLowerCase());
+  return modelIdIndex ?? null;
+}
+
+export function orderModelsForDisplay(
+  models: ModelListModel[],
+  modelOrder?: string[]
+): ModelListModel[] {
+  if (!modelOrder?.length) {
+    return sortModelsAlphabetically(models);
+  }
+
+  const alphabeticalModels = sortModelsAlphabetically(models);
+  const orderedKeys = new Map(
+    modelOrder.map((key, index) => [key.toLowerCase(), index])
+  );
+
+  return alphabeticalModels.sort((a, b) => {
+    const aIndex = getModelOrderIndex(a, orderedKeys);
+    const bIndex = getModelOrderIndex(b, orderedKeys);
+
+    if (aIndex !== null && bIndex !== null) {
+      return aIndex - bIndex;
+    }
+    if (aIndex !== null) return -1;
+    if (bIndex !== null) return 1;
+    return 0;
   });
 }
 
@@ -229,8 +271,9 @@ function ProviderAccordion({
           onValueChange={onExpandedProviderIdChange}
         >
           {providers.map((provider) => {
-            const providerModels = sortModelsAlphabetically(
-              modelsByProvider.get(provider.id) ?? []
+            const providerModels = orderModelsForDisplay(
+              modelsByProvider.get(provider.id) ?? [],
+              config.model_order
             );
             const isSelectedProvider =
               Boolean(selectedModelId) &&
@@ -383,7 +426,7 @@ export function ModelSelectorPopover({
       />
     );
   } else {
-    const sortedModels = sortModelsAlphabetically(models);
+    const sortedModels = orderModelsForDisplay(models, config.model_order);
     const selectedModel = getSelectedModel(
       models,
       selectedProviderId,
