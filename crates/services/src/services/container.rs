@@ -948,21 +948,19 @@ pub trait ContainerService {
                         executors::actions::session_command::normalize_static_session_command_logs(
                             temp_store.clone(),
                         )
+                    } else if executor_action.uses_qa_mock_log_normalizer() {
+                        let executor = QaMockExecutor;
+                        executor.normalize_mock_logs(
+                            temp_store.clone(),
+                            &request.effective_dir(&current_dir),
+                        )
                     } else {
-                        if executor_action.uses_qa_mock_log_normalizer() {
-                            let executor = QaMockExecutor;
-                            executor.normalize_mock_logs(
-                                temp_store.clone(),
-                                &request.effective_dir(&current_dir),
-                            )
-                        } else {
-                            let executor = ExecutorConfigs::get_cached()
-                                .get_coding_agent_or_default(&request.executor_config.profile_id());
-                            executor.normalize_logs(
-                                temp_store.clone(),
-                                &request.effective_dir(&current_dir),
-                            )
-                        }
+                        let executor = ExecutorConfigs::get_cached()
+                            .get_coding_agent_or_default(&request.executor_config.profile_id());
+                        executor.normalize_logs(
+                            temp_store.clone(),
+                            &request.effective_dir(&current_dir),
+                        )
                     }
                 }
                 ExecutorActionType::ReviewRequest(request) => {
@@ -1387,17 +1385,15 @@ pub trait ContainerService {
             if executor_action_for_process.uses_qa_mock_log_normalizer() {
                 let executor = QaMockExecutor;
                 let _ = executor.normalize_mock_logs(msg_store, &working_dir);
+            } else if let Some(executor) =
+                ExecutorConfigs::get_cached().get_coding_agent(&executor_profile_id)
+            {
+                let _ = executor.normalize_logs(msg_store, &working_dir);
             } else {
-                if let Some(executor) =
-                    ExecutorConfigs::get_cached().get_coding_agent(&executor_profile_id)
-                {
-                    let _ = executor.normalize_logs(msg_store, &working_dir);
-                } else {
-                    tracing::error!(
-                        "Failed to resolve profile '{:?}' for normalization",
-                        executor_profile_id
-                    );
-                }
+                tracing::error!(
+                    "Failed to resolve profile '{:?}' for normalization",
+                    executor_profile_id
+                );
             }
         }
 
