@@ -35,7 +35,9 @@ export function useWorkspaceDevServerSelection(
 
   const payload = scratch?.payload as ScratchPayload | undefined;
   const scratchData: WorkspaceDevServerSelectionData | undefined =
-    payload?.type === 'WORKSPACE_DEV_SERVER_SELECTION' ? payload.data : undefined;
+    payload?.type === 'WORKSPACE_DEV_SERVER_SELECTION'
+      ? payload.data
+      : undefined;
 
   const selectableRepoIds = useMemo(
     () => repos.filter(hasDevServerScripts).map((repo) => repo.id),
