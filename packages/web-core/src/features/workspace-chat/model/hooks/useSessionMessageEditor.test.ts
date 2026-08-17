@@ -180,6 +180,30 @@ describe('restoreQueuedFollowUpDraftAfterCancel', () => {
     ]);
   });
 
+  it('does not restore text when canceling a non-user queue item', async () => {
+    const saveToScratch = vi.fn();
+    const handleMessageChange = vi.fn();
+    const setExecutorOverrides = vi.fn();
+    const setLocalMessage = vi.fn();
+    const cancelQueue = vi.fn();
+
+    await restoreQueuedFollowUpDraftAfterCancel({
+      queuedMessage: null,
+      queuedConfig: null,
+      cancelQueue,
+      setLocalMessage,
+      setExecutorOverrides,
+      handleMessageChange,
+      saveToScratch,
+    });
+
+    expect(cancelQueue).toHaveBeenCalledOnce();
+    expect(setLocalMessage).not.toHaveBeenCalled();
+    expect(setExecutorOverrides).not.toHaveBeenCalled();
+    expect(handleMessageChange).not.toHaveBeenCalled();
+    expect(saveToScratch).not.toHaveBeenCalled();
+  });
+
   it('restores visible queued text without persisting when queued config is missing', async () => {
     const saveToScratch = vi.fn();
     const handleMessageChange = vi.fn();
