@@ -228,6 +228,7 @@ mod tests {
                 language: ScriptRequestLanguage::Bash,
                 context: crate::actions::script::ScriptContext::SetupScript,
                 working_dir: None,
+                env: Default::default(),
             }),
             None,
         )
