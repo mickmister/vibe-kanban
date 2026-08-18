@@ -684,6 +684,7 @@ async fn validate_workspace_repo(
     }
 }
 
+#[allow(clippy::result_large_err)]
 fn validate_slug(label: &str, slug: &str, max_len: usize) -> Result<(), ApiError> {
     let valid = !slug.is_empty()
         && slug.len() <= max_len
@@ -699,6 +700,7 @@ fn validate_slug(label: &str, slug: &str, max_len: usize) -> Result<(), ApiError
     }
 }
 
+#[allow(clippy::result_large_err)]
 fn allocate_preview_port() -> Result<i64, ApiError> {
     let listener = TcpListener::bind(("127.0.0.1", 0))
         .map_err(|err| ApiError::BadRequest(format!("Failed to allocate preview port: {err}")))?;
@@ -722,6 +724,7 @@ async fn repo_display_name(
         .ok_or_else(|| ApiError::BadRequest("Repository is not attached to workspace".to_string()))
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn write_run_config_audit(
     deployment: &DeploymentImpl,
     workspace_id: Option<Uuid>,
@@ -835,6 +838,71 @@ pub async fn run_cleanup_script(
     Ok(ResponseJson(ApiResponse::success(execution_process)))
 }
 
+pub async fn run_archive_script(
+    Extension(workspace): Extension<Workspace>,
+    State(deployment): State<DeploymentImpl>,
+) -> Result<ResponseJson<ApiResponse<ExecutionProcess, RunScriptError>>, ApiError> {
+    let pool = &deployment.db().pool;
+    if ExecutionProcess::has_running_non_dev_server_processes_for_workspace(pool, workspace.id)
+        .await?
+    {
+        return Ok(ResponseJson(ApiResponse::error_with_data(
+            RunScriptError::ProcessAlreadyRunning,
+        )));
+    }
+
+    deployment
+        .container()
+        .ensure_container_exists(&workspace)
+        .await?;
+
+    let repos = WorkspaceRepo::find_repos_for_workspace(pool, workspace.id).await?;
+    let executor_action = match deployment.container().archive_actions_for_repos(&repos) {
+        Some(action) => action,
+        None => {
+            return Ok(ResponseJson(ApiResponse::error_with_data(
+                RunScriptError::NoScriptConfigured,
+            )));
+        }
+    };
+    let session = match Session::find_latest_by_workspace_id(pool, workspace.id).await? {
+        Some(s) => s,
+        None => {
+            Session::create(
+                pool,
+                &CreateSession {
+                    executor: None,
+                    name: None,
+                },
+                Uuid::new_v4(),
+                workspace.id,
+            )
+            .await?
+        }
+    };
+
+    let execution_process = deployment
+        .container()
+        .start_execution(
+            &workspace,
+            &session,
+            &executor_action,
+            &ExecutionProcessRunReason::ArchiveScript,
+        )
+        .await?;
+
+    deployment
+        .track_if_analytics_allowed(
+            "archive_script_executed",
+            serde_json::json!({
+                "workspace_id": workspace.id.to_string(),
+            }),
+        )
+        .await;
+
+    Ok(ResponseJson(ApiResponse::success(execution_process)))
+}
+
 #[cfg(test)]
 mod tests {
     use axum::{Router, body::Body, extract::Path as AxumPath, routing::get};
@@ -901,69 +969,4 @@ mod tests {
 
         assert_eq!(response.status(), http::StatusCode::OK);
     }
-}
-
-pub async fn run_archive_script(
-    Extension(workspace): Extension<Workspace>,
-    State(deployment): State<DeploymentImpl>,
-) -> Result<ResponseJson<ApiResponse<ExecutionProcess, RunScriptError>>, ApiError> {
-    let pool = &deployment.db().pool;
-    if ExecutionProcess::has_running_non_dev_server_processes_for_workspace(pool, workspace.id)
-        .await?
-    {
-        return Ok(ResponseJson(ApiResponse::error_with_data(
-            RunScriptError::ProcessAlreadyRunning,
-        )));
-    }
-
-    deployment
-        .container()
-        .ensure_container_exists(&workspace)
-        .await?;
-
-    let repos = WorkspaceRepo::find_repos_for_workspace(pool, workspace.id).await?;
-    let executor_action = match deployment.container().archive_actions_for_repos(&repos) {
-        Some(action) => action,
-        None => {
-            return Ok(ResponseJson(ApiResponse::error_with_data(
-                RunScriptError::NoScriptConfigured,
-            )));
-        }
-    };
-    let session = match Session::find_latest_by_workspace_id(pool, workspace.id).await? {
-        Some(s) => s,
-        None => {
-            Session::create(
-                pool,
-                &CreateSession {
-                    executor: None,
-                    name: None,
-                },
-                Uuid::new_v4(),
-                workspace.id,
-            )
-            .await?
-        }
-    };
-
-    let execution_process = deployment
-        .container()
-        .start_execution(
-            &workspace,
-            &session,
-            &executor_action,
-            &ExecutionProcessRunReason::ArchiveScript,
-        )
-        .await?;
-
-    deployment
-        .track_if_analytics_allowed(
-            "archive_script_executed",
-            serde_json::json!({
-                "workspace_id": workspace.id.to_string(),
-            }),
-        )
-        .await;
-
-    Ok(ResponseJson(ApiResponse::success(execution_process)))
 }
