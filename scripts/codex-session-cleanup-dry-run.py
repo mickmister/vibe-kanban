@@ -3,8 +3,8 @@
 
 This script is intentionally read-only. It mirrors the current Vibe Kanban
 candidate-selection policy for Codex sessions, then scans the Codex sessions
-folder for rollout files that the existing manual cleanup logic would have
-matched.
+folder for rollout files whose session IDs would be passed to native
+`codex delete --force <session>`.
 
 Example:
     python3 scripts/codex-session-cleanup-dry-run.py --db /path/to/vibe-kanban.sqlite
@@ -12,6 +12,8 @@ Example:
 Notes:
     - The SQLite database is opened read-only.
     - No files are deleted.
+    - Apparent bytes are logical file sizes. Disk bytes are allocated
+      filesystem blocks, so they can differ slightly.
     - This estimates rollout-file space only. Native `codex delete --force
       <session>` may reclaim additional Codex metadata.
 """
@@ -62,7 +64,12 @@ def parse_args() -> argparse.Namespace:
         description=(
             "Dry-run Vibe Kanban Codex session cleanup and report reclaimable "
             "rollout-file disk usage."
-        )
+        ),
+        epilog=(
+            "Apparent bytes are logical file sizes. Disk bytes are actual "
+            "allocated filesystem blocks, so they can differ slightly. This "
+            "script is dry-run only and never deletes files."
+        ),
     )
     parser.add_argument(
         "--db",
@@ -83,12 +90,15 @@ def parse_args() -> argparse.Namespace:
         "--keep",
         type=int,
         default=DEFAULT_KEEP_COUNT,
-        help=f"Number of newest unique Codex session IDs to keep per VK session (default: {DEFAULT_KEEP_COUNT}).",
+        help=(
+            "Number of newest unique Codex session IDs to keep per VK "
+            f"session (default: {DEFAULT_KEEP_COUNT})."
+        ),
     )
     parser.add_argument(
         "--verbose",
         action="store_true",
-        help="Print retained sessions and obsolete session IDs without matching rollout files.",
+        help="Print detailed per-session and matched-file output.",
     )
     return parser.parse_args()
 
@@ -255,11 +265,33 @@ def file_disk_bytes(path: Path) -> tuple[int, int]:
     return apparent, disk
 
 
+def scan_directory_size(directory: Path) -> tuple[int, int]:
+    apparent = 0
+    disk = 0
+
+    for root, dirnames, filenames in os.walk(directory, followlinks=False):
+        dirnames.sort()
+        filenames.sort()
+        for filename in filenames:
+            path = Path(root) / filename
+            try:
+                file_apparent, file_disk = file_disk_bytes(path)
+            except OSError as error:
+                print(f"warning: unable to stat {path}: {error}", file=sys.stderr)
+                continue
+            apparent += file_apparent
+            disk += file_disk
+
+    return apparent, disk
+
+
 def scan_codex_rollout_files(
     sessions_dir: Path,
     obsolete_session_ids: set[str],
 ) -> dict[str, list[MatchedFile]]:
-    matches: dict[str, list[MatchedFile]] = {session_id: [] for session_id in obsolete_session_ids}
+    matches: dict[str, list[MatchedFile]] = {
+        session_id: [] for session_id in obsolete_session_ids
+    }
     if not obsolete_session_ids:
         return matches
 
@@ -275,7 +307,9 @@ def scan_codex_rollout_files(
                 continue
 
             path = Path(root) / filename
-            matched_ids = [session_id for session_id in obsolete_session_ids if session_id in filename]
+            matched_ids = [
+                session_id for session_id in obsolete_session_ids if session_id in filename
+            ]
             if not matched_ids:
                 continue
 
@@ -294,6 +328,8 @@ def print_report(
     sessions_dir: Path,
     plan: dict[str, SessionPlan],
     file_matches: dict[str, list[MatchedFile]],
+    current_apparent: int,
+    current_disk: int,
     verbose: bool,
 ) -> None:
     obsolete_turns = [turn for session_plan in plan.values() for turn in session_plan.obsolete]
@@ -305,20 +341,50 @@ def print_report(
         for matched in files:
             all_matched_files_by_path[matched.path] = matched
 
-    total_apparent = sum(file.apparent_bytes for file in all_matched_files_by_path.values())
-    total_disk = sum(file.disk_bytes for file in all_matched_files_by_path.values())
+    reclaimable_apparent = sum(file.apparent_bytes for file in all_matched_files_by_path.values())
+    reclaimable_disk = sum(file.disk_bytes for file in all_matched_files_by_path.values())
+    post_cleanup_apparent = max(0, current_apparent - reclaimable_apparent)
+    post_cleanup_disk = max(0, current_disk - reclaimable_disk)
 
     print("Codex session cleanup dry run")
     print("==============================")
     print(f"Database:              {db_path.expanduser()}")
     print(f"Codex home:            {codex_home}")
     print(f"Codex sessions folder: {sessions_dir}")
-    print(f"VK sessions scanned:   {len(plan)}")
-    print(f"Retained Codex IDs:    {len(retained_turns)}")
-    print(f"Obsolete Codex IDs:    {len(obsolete_ids)}")
-    print(f"Matched rollout files: {len(all_matched_files_by_path)}")
-    print(f"Apparent bytes:        {total_apparent} ({human_bytes(total_apparent)})")
-    print(f"Disk bytes:            {total_disk} ({human_bytes(total_disk)})")
+    print()
+    print("Summary")
+    print("-------")
+    print(
+        f"Current apparent bytes:               {current_apparent} "
+        f"({human_bytes(current_apparent)})"
+    )
+    print(
+        f"Current disk bytes:                   {current_disk} "
+        f"({human_bytes(current_disk)})"
+    )
+    print(
+        f"Estimated reclaimable apparent bytes: {reclaimable_apparent} "
+        f"({human_bytes(reclaimable_apparent)})"
+    )
+    print(
+        f"Estimated reclaimable disk bytes:     {reclaimable_disk} "
+        f"({human_bytes(reclaimable_disk)})"
+    )
+    print(
+        f"Estimated post-cleanup apparent bytes: {post_cleanup_apparent} "
+        f"({human_bytes(post_cleanup_apparent)})"
+    )
+    print(
+        f"Estimated post-cleanup disk bytes:     {post_cleanup_disk} "
+        f"({human_bytes(post_cleanup_disk)})"
+    )
+    print(f"Obsolete Codex session IDs:           {len(obsolete_ids)}")
+    print(f"Matched rollout files:                {len(all_matched_files_by_path)}")
+    print()
+    print(
+        "Meaning: apparent bytes are logical file sizes; disk bytes are actual "
+        "allocated filesystem blocks, so they can differ slightly."
+    )
     print()
     print("No files were deleted.")
     print(
@@ -326,13 +392,22 @@ def print_report(
         "`codex delete --force <session>` may reclaim additional Codex metadata."
     )
 
-    if not obsolete_turns:
+    if not verbose or not obsolete_turns:
         return
 
     print()
-    print("Hypothetical cleanup candidates")
-    print("-------------------------------")
-    for turn in sorted(obsolete_turns, key=lambda t: (t.app_session_id, t.created_at), reverse=True):
+    print("Selection counts")
+    print("----------------")
+    print(f"VK sessions scanned:   {len(plan)}")
+    print(f"Retained Codex IDs:    {len(retained_turns)}")
+    print(f"Obsolete Codex IDs:    {len(obsolete_ids)}")
+
+    print()
+    print("Detailed hypothetical cleanup candidates")
+    print("----------------------------------------")
+    for turn in sorted(
+        obsolete_turns, key=lambda t: (t.app_session_id, t.created_at), reverse=True
+    ):
         files = file_matches.get(turn.agent_session_id, [])
         apparent = sum(file.apparent_bytes for file in files)
         disk = sum(file.disk_bytes for file in files)
@@ -361,7 +436,9 @@ def print_report(
         print()
         print("Retained Codex IDs")
         print("------------------")
-        for turn in sorted(retained_turns, key=lambda t: (t.app_session_id, t.created_at), reverse=True):
+        for turn in sorted(
+            retained_turns, key=lambda t: (t.app_session_id, t.created_at), reverse=True
+        ):
             print(
                 f"- {turn.agent_session_id} "
                 f"(VK session {turn.app_session_id}, execution {turn.execution_process_id}, "
@@ -389,10 +466,13 @@ def main() -> int:
             return 2
         print(f"warning: {message}", file=sys.stderr)
         file_matches = {}
+        current_apparent = 0
+        current_disk = 0
     elif not sessions_dir.is_dir():
         print(f"error: Codex sessions path is not a directory: {sessions_dir}", file=sys.stderr)
         return 2
     else:
+        current_apparent, current_disk = scan_directory_size(sessions_dir)
         obsolete_ids = {
             turn.agent_session_id
             for session_plan in plan.values()
@@ -406,6 +486,8 @@ def main() -> int:
         sessions_dir=sessions_dir,
         plan=plan,
         file_matches=file_matches,
+        current_apparent=current_apparent,
+        current_disk=current_disk,
         verbose=args.verbose,
     )
     return 0
