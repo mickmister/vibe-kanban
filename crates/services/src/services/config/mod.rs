@@ -41,6 +41,8 @@ pub type GitHubConfig = versions::v8::GitHubConfig;
 pub type UiLanguage = versions::v8::UiLanguage;
 pub type ShowcaseState = versions::v8::ShowcaseState;
 pub type SendMessageShortcut = versions::v8::SendMessageShortcut;
+pub type SessionCleanupConfig = versions::v8::SessionCleanupConfig;
+pub use versions::v8::MAX_SESSION_CLEANUP_RETENTION_COUNT;
 
 /// Will always return config, trying old schemas or eventually returning default
 pub async fn load_config_from_file(config_path: &PathBuf) -> Config {

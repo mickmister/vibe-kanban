@@ -27,6 +27,8 @@ use utils::{
 };
 use uuid::Uuid;
 
+use super::agent_session_cleanup;
+
 pub async fn migrate_execution_logs_to_files() -> Result<()> {
     let pool = DBService::new_migration_pool()
         .await
@@ -319,6 +321,11 @@ pub fn spawn_stream_raw_logs_to_storage(
                                 agent_session_id,
                                 execution_id,
                                 e
+                            );
+                        } else {
+                            agent_session_cleanup::spawn_cleanup_obsolete_agent_sessions(
+                                db.pool.clone(),
+                                execution_id,
                             );
                         }
                     }

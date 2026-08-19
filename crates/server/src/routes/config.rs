@@ -21,7 +21,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use services::services::{
     config::{
-        Config, ConfigError, SoundFile,
+        Config, ConfigError, MAX_SESSION_CLEANUP_RETENTION_COUNT, SoundFile,
         editor::{EditorConfig, EditorType},
         save_config_to_file,
     },
@@ -88,6 +88,7 @@ impl Environment {
 #[derive(Debug, Serialize, Deserialize, TS)]
 pub struct UserSystemInfo {
     pub version: String,
+    pub commit_hash: Option<String>,
     pub config: Config,
     pub machine_id: String,
     pub login_status: LoginStatus,
@@ -152,8 +153,13 @@ async fn get_user_system_info(
         }
     };
 
+    let commit_hash = option_env!("VK_BUILD_COMMIT_HASH")
+        .map(str::to_string)
+        .or_else(runtime_build_version);
+
     let user_system_info = UserSystemInfo {
         version: env!("CARGO_PKG_VERSION").to_string(),
+        commit_hash,
         config,
         machine_id: deployment.user_id().to_string(),
         login_status,
@@ -177,6 +183,13 @@ async fn get_user_system_info(
     ResponseJson(ApiResponse::success(user_system_info))
 }
 
+fn runtime_build_version() -> Option<String> {
+    std::fs::read_to_string("/usr/local/share/vibe-kanban-build-version")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
 async fn update_config(
     State(deployment): State<DeploymentImpl>,
     Json(new_config): Json<Config>,
@@ -188,6 +201,15 @@ async fn update_config(
         return ResponseJson(ApiResponse::error(
             "Invalid git branch prefix. Must be a valid git branch name component without slashes.",
         ));
+    }
+
+    if new_config.session_cleanup.retention_count == 0
+        || new_config.session_cleanup.retention_count > MAX_SESSION_CLEANUP_RETENTION_COUNT
+    {
+        return ResponseJson(ApiResponse::error(&format!(
+            "Invalid session cleanup retention count. Must be between 1 and {}.",
+            MAX_SESSION_CLEANUP_RETENTION_COUNT
+        )));
     }
 
     // Get old config state before updating

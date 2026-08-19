@@ -59,6 +59,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use strum_macros::{AsRefStr, EnumString};
 use tokio::process::Command;
+use tracing::Instrument;
 use ts_rs::TS;
 use workspace_utils::{command_ext::GroupSpawnNoWindowExt, msg_store::MsgStore};
 
@@ -466,6 +467,15 @@ impl Codex {
         apply_overrides(builder, &self.cmd)
     }
 
+    pub fn build_delete_session_command(
+        &self,
+        session_id: &str,
+    ) -> Result<CommandParts, CommandBuildError> {
+        let builder = CommandBuilder::new(Self::base_command())
+            .extend_params(["delete", "--force", session_id]);
+        apply_overrides(builder, &self.cmd)?.build_initial()
+    }
+
     fn build_thread_start_params(&self, cwd: &Path) -> ThreadStartParams {
         let sandbox = match self.sandbox.as_ref() {
             None | Some(SandboxMode::Auto) => Some(V2SandboxMode::WorkspaceWrite), // match the Auto preset in codex
@@ -604,7 +614,14 @@ impl Codex {
         combined_prompt: String,
         client: Arc<AppServerClient>,
     ) -> Result<(), ExecutorError> {
-        let account = client.get_account().await?;
+        let resume = resume_session.is_some();
+        let account = client
+            .get_account()
+            .instrument(tracing::debug_span!(
+                target: "perf.agent_startup",
+                "codex.get_account"
+            ))
+            .await?;
         if account.requires_openai_auth && account.account.is_none() {
             return Err(ExecutorError::AuthRequired(
                 "Codex authentication required".to_string(),
@@ -613,21 +630,46 @@ impl Codex {
 
         let (thread_id, resolved_model) = match resume_session {
             None => {
-                let response = client.thread_start(thread_start_params).await?;
+                let response = client
+                    .thread_start(thread_start_params)
+                    .instrument(tracing::debug_span!(
+                        target: "perf.agent_startup",
+                        "codex.thread_start"
+                    ))
+                    .await?;
                 (response.thread.id, response.model)
             }
             Some(session_id) => {
                 let response = client
                     .thread_fork(fork_params_from(session_id, thread_start_params))
+                    .instrument(tracing::debug_span!(
+                        target: "perf.agent_startup",
+                        "codex.thread_fork"
+                    ))
                     .await?;
                 tracing::debug!("forked thread, new thread_id={}", response.thread.id);
                 (response.thread.id, response.model)
             }
         };
 
+        tracing::debug!(
+            target: "perf.agent_startup",
+            thread_id = %thread_id,
+            model = %resolved_model,
+            resume,
+            "codex.thread_ready"
+        );
         client.set_resolved_model(resolved_model);
-        client.register_session(&thread_id).await?;
+        client
+            .register_session(&thread_id)
+            .instrument(tracing::debug_span!(
+                target: "perf.agent_startup",
+                "codex.register_session",
+                thread_id = %thread_id,
+            ))
+            .await?;
         let collaboration_mode = client.initial_collaboration_mode()?;
+        let turn_start_thread_id = thread_id.clone();
         client
             .turn_start_with_mode(
                 thread_id,
@@ -637,6 +679,11 @@ impl Codex {
                 }],
                 Some(collaboration_mode),
             )
+            .instrument(tracing::debug_span!(
+                target: "perf.agent_startup",
+                "codex.turn_start",
+                thread_id = %turn_start_thread_id,
+            ))
             .await?;
 
         Ok(())
@@ -656,7 +703,13 @@ impl Codex {
         F: FnOnce(Arc<AppServerClient>, ExitSignalSender) -> Fut + Send + 'static,
         Fut: std::future::Future<Output = Result<(), ExecutorError>> + Send + 'static,
     {
-        let (program_path, args) = command_parts.into_resolved().await?;
+        let (program_path, args) = command_parts
+            .into_resolved()
+            .instrument(tracing::debug_span!(
+                target: "perf.agent_startup",
+                "codex.resolve_command"
+            ))
+            .await?;
 
         let mut process = Command::new(program_path);
         process
@@ -675,7 +728,15 @@ impl Codex {
             .with_profile(&self.cmd)
             .apply_to_command(&mut process);
 
-        let mut child = process.group_spawn_no_window()?;
+        let mut child = {
+            let _span = tracing::debug_span!(
+                target: "perf.agent_startup",
+                "codex.process_spawn",
+                cwd = %current_dir.display(),
+            )
+            .entered();
+            process.group_spawn_no_window()?
+        };
 
         let child_stdout = child.inner().stdout.take().ok_or_else(|| {
             ExecutorError::Io(std::io::Error::other("Codex app server missing stdout"))
@@ -699,67 +760,81 @@ impl Codex {
         let commit_reminder_prompt = env.commit_reminder_prompt.clone();
         let cancel_for_task = cancel.clone();
 
-        tokio::spawn(async move {
-            let exit_signal_tx = ExitSignalSender::new(exit_signal_tx);
-            let log_writer = LogWriter::new(new_stdout);
+        let app_server_span = tracing::debug_span!(
+            target: "perf.agent_startup",
+            "codex.spawn_app_server",
+            cwd = %current_dir.display(),
+        );
+        tokio::spawn(
+            async move {
+                let exit_signal_tx = ExitSignalSender::new(exit_signal_tx);
+                let log_writer = LogWriter::new(new_stdout);
 
-            // Initialize the AppServerClient
-            let client = AppServerClient::new(
-                log_writer.clone(),
-                approvals,
-                auto_approve,
-                plan_mode,
-                repo_context,
-                commit_reminder,
-                commit_reminder_prompt,
-                cancel_for_task.clone(),
-            );
-            let rpc_peer = JsonRpcPeer::spawn(
-                child_stdin,
-                child_stdout,
-                client.clone(),
-                exit_signal_tx.clone(),
-                cancel_for_task,
-            );
-            client.connect(rpc_peer);
+                // Initialize the AppServerClient
+                let client = AppServerClient::new(
+                    log_writer.clone(),
+                    approvals,
+                    auto_approve,
+                    plan_mode,
+                    repo_context,
+                    commit_reminder,
+                    commit_reminder_prompt,
+                    cancel_for_task.clone(),
+                );
+                let rpc_peer = JsonRpcPeer::spawn(
+                    child_stdin,
+                    child_stdout,
+                    client.clone(),
+                    exit_signal_tx.clone(),
+                    cancel_for_task,
+                );
+                client.connect(rpc_peer);
 
-            let result = async {
-                client.initialize().await?;
-                task(client, exit_signal_tx.clone()).await
-            }
-            .await;
-
-            if let Err(err) = result {
-                match &err {
-                    ExecutorError::Io(io_err)
-                        if io_err.kind() == std::io::ErrorKind::BrokenPipe =>
-                    {
-                        // Broken pipe likely means the parent process exited, so we can ignore it
-                        return;
-                    }
-                    ExecutorError::AuthRequired(message) => {
-                        log_writer
-                            .log_raw(&Error::auth_required(message.clone()).raw())
-                            .await
-                            .ok();
-                        exit_signal_tx
-                            .send_exit_signal(ExecutorExitResult::Failure)
-                            .await;
-                        return;
-                    }
-                    _ => {
-                        tracing::error!("Codex spawn error: {}", err);
-                        log_writer
-                            .log_raw(&Error::launch_error(err.to_string()).raw())
-                            .await
-                            .ok();
-                    }
+                let result = async {
+                    client
+                        .initialize()
+                        .instrument(tracing::debug_span!(
+                            target: "perf.agent_startup",
+                            "codex.rpc.initialize"
+                        ))
+                        .await?;
+                    task(client, exit_signal_tx.clone()).await
                 }
-                exit_signal_tx
-                    .send_exit_signal(ExecutorExitResult::Failure)
-                    .await;
+                .await;
+
+                if let Err(err) = result {
+                    match &err {
+                        ExecutorError::Io(io_err)
+                            if io_err.kind() == std::io::ErrorKind::BrokenPipe =>
+                        {
+                            // Broken pipe likely means the parent process exited, so we can ignore it
+                            return;
+                        }
+                        ExecutorError::AuthRequired(message) => {
+                            log_writer
+                                .log_raw(&Error::auth_required(message.clone()).raw())
+                                .await
+                                .ok();
+                            exit_signal_tx
+                                .send_exit_signal(ExecutorExitResult::Failure)
+                                .await;
+                            return;
+                        }
+                        _ => {
+                            tracing::error!("Codex spawn error: {}", err);
+                            log_writer
+                                .log_raw(&Error::launch_error(err.to_string()).raw())
+                                .await
+                                .ok();
+                        }
+                    }
+                    exit_signal_tx
+                        .send_exit_signal(ExecutorExitResult::Failure)
+                        .await;
+                }
             }
-        });
+            .instrument(app_server_span),
+        );
 
         Ok(SpawnedChild {
             child,
@@ -771,7 +846,10 @@ impl Codex {
 
 #[cfg(test)]
 mod tests {
-    use super::resolve_model;
+    use std::collections::HashMap;
+
+    use super::{Codex, resolve_model};
+    use crate::command::CmdOverrides;
 
     #[test]
     fn resolve_model_detects_fast_suffix() {
@@ -787,5 +865,84 @@ mod tests {
             (Some("gpt-5.4-mini"), false)
         );
         assert_eq!(resolve_model(None), (None, false));
+    }
+
+    #[test]
+    fn delete_session_command_uses_native_codex_cli() {
+        let codex = Codex {
+            append_prompt: Default::default(),
+            sandbox: None,
+            ask_for_approval: None,
+            oss: None,
+            model: None,
+            model_reasoning_effort: None,
+            model_reasoning_summary: None,
+            model_reasoning_summary_format: None,
+            profile: None,
+            base_instructions: None,
+            include_apply_patch_tool: None,
+            model_provider: None,
+            compact_prompt: None,
+            developer_instructions: None,
+            plan: false,
+            cmd: CmdOverrides::default(),
+            approvals: None,
+        };
+
+        let command = codex.build_delete_session_command("session-123").unwrap();
+
+        assert_eq!(command.program(), "npx");
+        assert_eq!(
+            command.args(),
+            &[
+                "-y".to_string(),
+                "@openai/codex@0.124.0".to_string(),
+                "delete".to_string(),
+                "--force".to_string(),
+                "session-123".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn delete_session_command_honors_command_overrides() {
+        let mut env = HashMap::new();
+        env.insert("CODEX_HOME".to_string(), "/tmp/codex".to_string());
+        let codex = Codex {
+            append_prompt: Default::default(),
+            sandbox: None,
+            ask_for_approval: None,
+            oss: None,
+            model: None,
+            model_reasoning_effort: None,
+            model_reasoning_summary: None,
+            model_reasoning_summary_format: None,
+            profile: None,
+            base_instructions: None,
+            include_apply_patch_tool: None,
+            model_provider: None,
+            compact_prompt: None,
+            developer_instructions: None,
+            plan: false,
+            cmd: CmdOverrides {
+                base_command_override: Some("custom-codex".to_string()),
+                additional_params: Some(vec!["--strict-config".to_string()]),
+                env: Some(env),
+            },
+            approvals: None,
+        };
+
+        let command = codex.build_delete_session_command("session-123").unwrap();
+
+        assert_eq!(command.program(), "custom-codex");
+        assert_eq!(
+            command.args(),
+            &[
+                "delete".to_string(),
+                "--force".to_string(),
+                "session-123".to_string(),
+                "--strict-config".to_string(),
+            ]
+        );
     }
 }

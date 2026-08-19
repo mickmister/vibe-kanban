@@ -70,6 +70,26 @@
         "variant": "PAR DÉFAUT",
         "defaultLabel": "Par défaut"
       },
+      "sessionCleanup": {
+        "title": "Nettoyage des sessions d'agent",
+        "description": "Contrôlez le nettoyage automatique des anciennes sessions fournisseur dupliquées. Vibe Kanban conserve une marge récente pour l'annulation et ne nettoie les sessions qu'après l'enregistrement d'un ID de session plus récent.",
+        "enabled": {
+          "label": "Activer le nettoyage automatique des sessions",
+          "helper": "Lorsque cette option est activée, les sessions dupliquées obsolètes de Codex, Claude et OpenCode sont nettoyées en arrière-plan. Désactivez-la si vous préférez conserver tout l'historique des sessions fournisseur."
+        },
+        "retention": {
+          "label": "Sessions à conserver",
+          "placeholder": "5",
+          "helper": "IDs de session fournisseur uniques les plus récents à conserver par session Vibe Kanban et par agent avant que les anciennes sessions dupliquées deviennent candidates au nettoyage.",
+          "errors": {
+            "range": "Saisissez un nombre entier de 1 à 100."
+          }
+        },
+        "status": {
+          "enabled": "Statut : le nettoyage est activé et conserve les {{count}} ID de session fournisseur les plus récents avant de supprimer les anciens candidats.",
+          "disabled": "Statut : le nettoyage est désactivé. Aucun fichier de session fournisseur ne sera supprimé automatiquement."
+        }
+      },
       "editor": {
         "title": "Éditeur",
         "description": "Configurez votre expérience d'édition de code.",

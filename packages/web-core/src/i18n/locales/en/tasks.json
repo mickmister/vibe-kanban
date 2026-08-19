@@ -4,6 +4,7 @@
     "supportedFormats": "PNG, JPG, GIF, WebP, SVG supported"
   },
   "gitPanel": {
+    "addRepo": "Add repository",
     "advanced": {
       "placeholder": "e.g acme Corp"
     }

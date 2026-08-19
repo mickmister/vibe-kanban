@@ -26,6 +26,10 @@ import {
   findPreviousUserMessageIndex,
 } from './conversation-row-model';
 import { NEAR_BOTTOM_THRESHOLD_PX } from './conversation-scroll-commands';
+import {
+  isMobilePerfDiagnosticsEnabled,
+  recordMobilePerfDiagnostic,
+} from '@/shared/lib/mobilePerfDiagnostics';
 
 // TanStack Virtual's ScrollBehavior ('auto' | 'smooth' | 'instant') shadows
 // the DOM ScrollBehavior. Use a narrow type to avoid TS2322 mismatches.
@@ -214,6 +218,7 @@ export function useConversationVirtualizer({
   const onAtBottomChangeRef = useRef(onAtBottomChange);
   onAtBottomChangeRef.current = onAtBottomChange;
   const lastAtBottomRef = useRef(true);
+  const lastVirtualizerDiagnosticAtRef = useRef(0);
 
   const syncIsAtBottom = useCallback(() => {
     const nextValue = virtualizer.isAtEnd(NEAR_BOTTOM_THRESHOLD_PX);
@@ -254,7 +259,30 @@ export function useConversationVirtualizer({
   const totalSize = virtualizer.getTotalSize();
   useLayoutEffect(() => {
     syncIsAtBottom();
-  }, [rows.length, totalSize, syncIsAtBottom]);
+    if (!isMobilePerfDiagnosticsEnabled()) return;
+
+    const now = performance.now();
+    if (now - lastVirtualizerDiagnosticAtRef.current < 1000) return;
+    lastVirtualizerDiagnosticAtRef.current = now;
+
+    const scrollEl = scrollContainerRef.current;
+    recordMobilePerfDiagnostic('conversation.virtualizer_layout', {
+      row_count: rows.length,
+      virtual_item_count: virtualItems.length,
+      total_size: Math.round(totalSize),
+      scroll_top: scrollEl ? Math.round(scrollEl.scrollTop) : null,
+      scroll_height: scrollEl?.scrollHeight ?? null,
+      client_height: scrollEl?.clientHeight ?? null,
+      is_at_bottom: virtualizer.isAtEnd(NEAR_BOTTOM_THRESHOLD_PX),
+    });
+  }, [
+    rows.length,
+    scrollContainerRef,
+    syncIsAtBottom,
+    totalSize,
+    virtualItems.length,
+    virtualizer,
+  ]);
 
   // -------------------------------------------------------------------------
   // Imperative helpers
@@ -262,9 +290,19 @@ export function useConversationVirtualizer({
 
   const scrollToBottom = useCallback(
     (behavior: ScrollToOptionsBehavior = 'smooth') => {
+      if (isMobilePerfDiagnosticsEnabled()) {
+        const scrollEl = scrollContainerRef.current;
+        recordMobilePerfDiagnostic('conversation.scroll_to_bottom', {
+          behavior,
+          row_count: rows.length,
+          scroll_top: scrollEl ? Math.round(scrollEl.scrollTop) : null,
+          scroll_height: scrollEl?.scrollHeight ?? null,
+          client_height: scrollEl?.clientHeight ?? null,
+        });
+      }
       virtualizer.scrollToEnd({ behavior });
     },
-    [virtualizer]
+    [scrollContainerRef, rows.length, virtualizer]
   );
 
   const scrollToIndex = useCallback(
@@ -275,12 +313,20 @@ export function useConversationVirtualizer({
         behavior?: ScrollToOptionsBehavior;
       }
     ) => {
+      if (isMobilePerfDiagnosticsEnabled()) {
+        recordMobilePerfDiagnostic('conversation.scroll_to_index', {
+          index,
+          row_count: rows.length,
+          align: options?.align ?? 'start',
+          behavior: options?.behavior ?? 'smooth',
+        });
+      }
       virtualizer.scrollToIndex(index, {
         align: options?.align ?? 'start',
         behavior: options?.behavior ?? 'smooth',
       });
     },
-    [virtualizer]
+    [rows.length, virtualizer]
   );
 
   const scrollToPreviousUserMessage = useCallback((): boolean => {
@@ -324,9 +370,21 @@ export function useConversationVirtualizer({
 
   const measureElement = useCallback(
     (node: Element | null) => {
+      if (node && isMobilePerfDiagnosticsEnabled()) {
+        const index = Number((node as HTMLElement).dataset.index);
+        if (Number.isFinite(index) && index % 25 === 0) {
+          const rect = node.getBoundingClientRect();
+          recordMobilePerfDiagnostic('conversation.row_measure_sample', {
+            index,
+            row_count: rows.length,
+            width: Math.round(rect.width),
+            height: Math.round(rect.height),
+          });
+        }
+      }
       virtualizer.measureElement(node);
     },
-    [virtualizer]
+    [rows.length, virtualizer]
   );
 
   // -------------------------------------------------------------------------

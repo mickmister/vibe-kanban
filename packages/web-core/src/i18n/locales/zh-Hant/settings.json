@@ -70,6 +70,26 @@
         "variant": "預設",
         "defaultLabel": "預設"
       },
+      "sessionCleanup": {
+        "title": "代理工作階段清理",
+        "description": "控制舊的分叉供應商工作階段自動清理。Vibe Kanban 會保留最近的復原緩衝，且只會在記錄較新的工作階段 ID 後清理工作階段。",
+        "enabled": {
+          "label": "啟用自動工作階段清理",
+          "helper": "啟用後，過時的 Codex、Claude 和 OpenCode 分叉工作階段會在背景清理。如果你想保留所有供應商工作階段歷史，請停用此選項。"
+        },
+        "retention": {
+          "label": "要保留的工作階段數",
+          "placeholder": "5",
+          "helper": "在舊的分叉工作階段成為清理候選項之前，每個 Vibe Kanban 工作階段和代理要保留的最新唯一供應商工作階段 ID 數。",
+          "errors": {
+            "range": "請輸入 1 到 100 之間的整數。"
+          }
+        },
+        "status": {
+          "enabled": "狀態：清理已啟用，在刪除舊候選項前會保留最新的 {{count}} 個供應商工作階段 ID。",
+          "disabled": "狀態：清理已停用。不會自動刪除供應商工作階段檔案。"
+        }
+      },
       "editor": {
         "title": "編輯器",
         "description": "設定您的程式碼編輯體驗。",

@@ -70,6 +70,26 @@
         "variant": "默认",
         "defaultLabel": "默认"
       },
+      "sessionCleanup": {
+        "title": "代理会话清理",
+        "description": "控制旧的分叉提供商会话的自动清理。Vibe Kanban 会保留最近的撤销缓冲，并且只会在记录更新的会话 ID 后清理会话。",
+        "enabled": {
+          "label": "启用自动会话清理",
+          "helper": "启用后，过时的 Codex、Claude 和 OpenCode 分叉会话会在后台清理。如果你想保留所有提供商会话历史，请将其关闭。"
+        },
+        "retention": {
+          "label": "要保留的会话数",
+          "placeholder": "5",
+          "helper": "在旧的分叉会话成为清理候选项之前，每个 Vibe Kanban 会话和代理要保留的最新唯一提供商会话 ID 数。",
+          "errors": {
+            "range": "请输入 1 到 100 之间的整数。"
+          }
+        },
+        "status": {
+          "enabled": "状态：清理已启用，在删除旧候选项前会保留最新的 {{count}} 个提供商会话 ID。",
+          "disabled": "状态：清理已禁用。不会自动删除提供商会话文件。"
+        }
+      },
       "editor": {
         "title": "编辑器",
         "description": "配置您的代码编辑体验。",

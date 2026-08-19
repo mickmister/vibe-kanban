@@ -66,7 +66,8 @@ export function GeneralSettingsSection() {
       defaultValue: 'Browser Default',
     })
   );
-  const { config, loading, updateAndSaveConfig, profiles } = useUserSystem();
+  const { config, loading, updateAndSaveConfig, profiles, buildCommitHash } =
+    useUserSystem();
 
   const [draft, setDraft] = useState(() => (config ? cloneDeep(config) : null));
   const [dirty, setDirty] = useState(false);
@@ -91,6 +92,10 @@ export function GeneralSettingsSection() {
     ? getSortedExecutorVariantKeys(selectedAgentProfile)
     : [];
   const hasVariants = variantOptions.length > 0;
+  const sessionCleanup = draft?.session_cleanup ?? {
+    enabled: true,
+    retention_count: 5,
+  };
 
   const validateBranchPrefix = useCallback(
     (prefix: string): string | null => {
@@ -137,6 +142,15 @@ export function GeneralSettingsSection() {
     if (!draft || !config) return false;
     return !isEqual(draft, config);
   }, [draft, config]);
+
+  const retentionCountError = useMemo(() => {
+    if (!draft) return null;
+    const value = draft.session_cleanup?.retention_count ?? 5;
+    if (!Number.isInteger(value) || value < 1 || value > 100) {
+      return t('settings.general.sessionCleanup.retention.errors.range');
+    }
+    return null;
+  }, [draft, t]);
 
   // Sync dirty state to context for unsaved changes confirmation
   useEffect(() => {
@@ -525,6 +539,61 @@ export function GeneralSettingsSection() {
         </SettingsField>
       </SettingsCard>
 
+      {/* Agent Session Cleanup */}
+      <SettingsCard
+        title={t('settings.general.sessionCleanup.title')}
+        description={t('settings.general.sessionCleanup.description')}
+      >
+        <SettingsCheckbox
+          id="session-cleanup-enabled"
+          label={t('settings.general.sessionCleanup.enabled.label')}
+          description={t('settings.general.sessionCleanup.enabled.helper')}
+          checked={sessionCleanup.enabled}
+          onChange={(checked) =>
+            updateDraft({
+              session_cleanup: {
+                ...sessionCleanup,
+                enabled: checked,
+              },
+            })
+          }
+        />
+
+        <SettingsField
+          label={t('settings.general.sessionCleanup.retention.label')}
+          description={t('settings.general.sessionCleanup.retention.helper')}
+          error={retentionCountError}
+        >
+          <SettingsInput
+            value={String(sessionCleanup.retention_count)}
+            onChange={(value) => {
+              const parsed = Number(value);
+              updateDraft({
+                session_cleanup: {
+                  ...sessionCleanup,
+                  retention_count: Number.isFinite(parsed)
+                    ? parsed
+                    : sessionCleanup.retention_count,
+                },
+              });
+            }}
+            placeholder={t(
+              'settings.general.sessionCleanup.retention.placeholder'
+            )}
+            error={!!retentionCountError}
+            disabled={!sessionCleanup.enabled}
+          />
+        </SettingsField>
+
+        <p className="text-sm text-low">
+          {sessionCleanup.enabled
+            ? t('settings.general.sessionCleanup.status.enabled', {
+                count: sessionCleanup.retention_count,
+              })
+            : t('settings.general.sessionCleanup.status.disabled')}
+        </p>
+      </SettingsCard>
+
       {/* Git */}
       <SettingsCard
         title={t('settings.general.git.title')}
@@ -836,10 +905,15 @@ export function GeneralSettingsSection() {
         </div>
       </SettingsCard>
 
+      <div className="pb-2 text-center text-xs text-low">
+        Build commit:{' '}
+        <code className="font-mono">{buildCommitHash ?? 'unknown'}</code>
+      </div>
+
       <SettingsSaveBar
         show={hasUnsavedChanges}
         saving={saving}
-        saveDisabled={!!branchPrefixError}
+        saveDisabled={!!branchPrefixError || !!retentionCountError}
         onSave={handleSave}
         onDiscard={handleDiscard}
       />

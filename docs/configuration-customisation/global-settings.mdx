@@ -25,6 +25,21 @@ Choose the default agent and variant for new task attempts. This profile is pre-
 You can override the default agent configuration per attempt in the create attempt dialog.
 </Tip>
 
+## Agent Session Cleanup
+
+Configure automatic cleanup for old forked provider sessions.
+
+When cleanup is enabled, Vibe Kanban keeps the newest provider session IDs for each Vibe Kanban session and coding agent, then cleans up older forked sessions in the background. This reduces local Codex, Claude Code, and OpenCode session storage while preserving a recent undo cushion.
+
+### Cleanup controls
+
+- **Enable automatic session cleanup**: Turn off this setting if you prefer to keep all provider session history.
+- **Sessions to keep**: Set how many newest unique provider session IDs Vibe Kanban keeps per session and agent before old forked sessions become cleanup candidates.
+
+<Warning>
+Session cleanup deletes provider session state. Increase the retention count or disable cleanup if you often resume older forked sessions.
+</Warning>
+
 ## Editor Integration
 
 Configure integration with your preferred code editor for a seamless development workflow.
