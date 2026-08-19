@@ -70,6 +70,26 @@
         "variant": "DEFAULT",
         "defaultLabel": "기본"
       },
+      "sessionCleanup": {
+        "title": "에이전트 세션 정리",
+        "description": "오래된 포크된 공급자 세션의 자동 정리를 제어합니다. Vibe Kanban은 최근 실행 취소 여유분을 유지하며, 더 새로운 세션 ID가 기록된 후에만 세션을 정리합니다.",
+        "enabled": {
+          "label": "자동 세션 정리 활성화",
+          "helper": "활성화하면 오래된 Codex, Claude, OpenCode 포크 세션이 백그라운드에서 정리됩니다. 모든 공급자 세션 기록을 유지하려면 비활성화하세요."
+        },
+        "retention": {
+          "label": "유지할 세션 수",
+          "placeholder": "5",
+          "helper": "오래된 포크 세션이 정리 후보가 되기 전에 Vibe Kanban 세션 및 에이전트별로 유지할 최신 고유 공급자 세션 ID 수입니다.",
+          "errors": {
+            "range": "1부터 100까지의 정수를 입력하세요."
+          }
+        },
+        "status": {
+          "enabled": "상태: 정리가 활성화되어 있으며 오래된 후보를 삭제하기 전에 최신 공급자 세션 ID {{count}}개를 유지합니다.",
+          "disabled": "상태: 정리가 비활성화되어 있습니다. 공급자 세션 파일은 자동으로 삭제되지 않습니다."
+        }
+      },
       "editor": {
         "title": "에디터",
         "description": "코드 편집 환경을 구성하세요.",

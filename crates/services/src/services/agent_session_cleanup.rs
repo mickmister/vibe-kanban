@@ -212,7 +212,7 @@ async fn cleanup_obsolete_agent_sessions_with_runner(
     let candidates = obsolete_session_candidates(
         pool,
         process.session_id,
-        base_executor.clone(),
+        base_executor,
         workspace_root.as_deref(),
         cleanup_retention_count(&settings),
     )
@@ -242,8 +242,7 @@ fn cleanup_retention_count(settings: &SessionCleanupConfig) -> usize {
     usize::from(
         settings
             .retention_count
-            .max(1)
-            .min(MAX_SESSION_CLEANUP_RETENTION_COUNT),
+            .clamp(1, MAX_SESSION_CLEANUP_RETENTION_COUNT),
     )
 }
 
@@ -499,7 +498,7 @@ async fn delete_claude_session_from_projects_dir(
     // per-session delete command exists.
     let mut matches = Vec::new();
     collect_matching_files(
-        &projects_dir,
+        projects_dir,
         &|name| name == format!("{session_id}.jsonl"),
         &mut matches,
     )

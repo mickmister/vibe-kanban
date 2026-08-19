@@ -70,6 +70,26 @@
         "variant": "PREDETERMINADO",
         "defaultLabel": "Predeterminado"
       },
+      "sessionCleanup": {
+        "title": "Limpieza de sesiones de agente",
+        "description": "Controla la limpieza automática de sesiones antiguas bifurcadas del proveedor. Vibe Kanban conserva un margen reciente para deshacer y solo limpia sesiones después de registrar un ID de sesión más reciente.",
+        "enabled": {
+          "label": "Activar limpieza automática de sesiones",
+          "helper": "Cuando está activada, las sesiones obsoletas bifurcadas de Codex, Claude y OpenCode se limpian en segundo plano. Desactívala si prefieres conservar todo el historial de sesiones del proveedor."
+        },
+        "retention": {
+          "label": "Sesiones a conservar",
+          "placeholder": "5",
+          "helper": "IDs de sesión de proveedor únicos más recientes que se conservarán por sesión de Vibe Kanban y agente antes de que las sesiones bifurcadas antiguas sean candidatas a limpieza.",
+          "errors": {
+            "range": "Introduce un número entero del 1 al 100."
+          }
+        },
+        "status": {
+          "enabled": "Estado: la limpieza está activada y conserva los {{count}} ID de sesión de proveedor más recientes antes de eliminar candidatos antiguos.",
+          "disabled": "Estado: la limpieza está desactivada. No se eliminarán automáticamente archivos de sesión del proveedor."
+        }
+      },
       "editor": {
         "title": "Editor",
         "description": "Configura cómo quieres editar tu código.",
