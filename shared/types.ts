@@ -514,8 +514,6 @@ export type Config = { config_version: string, theme: ThemeMode, executor_profil
 
 export type NotificationConfig = { sound_enabled: boolean, push_enabled: boolean, sound_file: SoundFile, };
 
-export type SessionCleanupConfig = { enabled: boolean, retention_count: number, };
-
 export enum ThemeMode { LIGHT = "LIGHT", DARK = "DARK", SYSTEM = "SYSTEM" }
 
 export type EditorConfig = { editor_type: EditorType, custom_command: string | null, remote_ssh_host: string | null, remote_ssh_user: string | null, auto_install_extension: boolean, };
@@ -533,6 +531,8 @@ export type UiLanguage = "BROWSER" | "EN" | "FR" | "JA" | "ES" | "KO" | "ZH_HANS
 export type ShowcaseState = { seen_features: Array<string>, };
 
 export type SendMessageShortcut = "ModifierEnter" | "Enter";
+
+export type SessionCleanupConfig = { enabled: boolean, retention_count: number, };
 
 export type GitBranch = { name: string, is_current: boolean, is_remote: boolean, last_commit_date: Date, };
 
