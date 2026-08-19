@@ -164,7 +164,6 @@ pub fn router() -> Router<DeploymentImpl> {
         )
         .route("/cleanup", post(run_cleanup_script))
         .route("/archive", post(run_archive_script))
-        .route("/stop", post(stop_workspace_execution))
 }
 
 #[axum::debug_handler]
@@ -750,24 +749,6 @@ async fn write_run_config_audit(
     )
     .await?;
     Ok(())
-}
-
-pub async fn stop_workspace_execution(
-    Extension(workspace): Extension<Workspace>,
-    State(deployment): State<DeploymentImpl>,
-) -> Result<ResponseJson<ApiResponse<()>>, ApiError> {
-    deployment.container().try_stop(&workspace, false).await;
-
-    deployment
-        .track_if_analytics_allowed(
-            "task_attempt_stopped",
-            serde_json::json!({
-                "workspace_id": workspace.id.to_string(),
-            }),
-        )
-        .await;
-
-    Ok(ResponseJson(ApiResponse::success(())))
 }
 
 #[axum::debug_handler]
