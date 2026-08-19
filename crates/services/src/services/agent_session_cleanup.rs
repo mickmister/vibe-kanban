@@ -30,7 +30,10 @@ use tokio::{
 };
 use uuid::Uuid;
 
-const TRAILING_SESSION_CUSHION: usize = 5;
+use crate::services::config::{
+    MAX_SESSION_CLEANUP_RETENTION_COUNT, SessionCleanupConfig, load_config_from_file,
+};
+
 const CLEANUP_DEBOUNCE: Duration = Duration::from_millis(250);
 const DELETE_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_CONCURRENT_CLEANUPS: usize = 1;
@@ -150,6 +153,7 @@ async fn debounced_cleanup_obsolete_agent_sessions(
         &pool,
         execution_process_id,
         &TokioDeleteCommandRunner,
+        load_session_cleanup_config().await,
     )
     .await
 }
@@ -162,6 +166,7 @@ pub async fn cleanup_obsolete_agent_sessions(
         pool,
         execution_process_id,
         &TokioDeleteCommandRunner,
+        load_session_cleanup_config().await,
     )
     .await
 }
@@ -170,7 +175,16 @@ async fn cleanup_obsolete_agent_sessions_with_runner(
     pool: &SqlitePool,
     execution_process_id: Uuid,
     runner: &dyn DeleteCommandRunner,
+    settings: SessionCleanupConfig,
 ) -> Result<()> {
+    if !settings.enabled {
+        tracing::debug!(
+            execution_process_id = %execution_process_id,
+            "agent session cleanup skipped because it is disabled in settings"
+        );
+        return Ok(());
+    }
+
     let Some(process) = ExecutionProcess::find_by_id(pool, execution_process_id)
         .await
         .context("load execution process for agent session cleanup")?
@@ -200,6 +214,7 @@ async fn cleanup_obsolete_agent_sessions_with_runner(
         process.session_id,
         base_executor.clone(),
         workspace_root.as_deref(),
+        cleanup_retention_count(&settings),
     )
     .await?;
 
@@ -215,6 +230,21 @@ async fn cleanup_obsolete_agent_sessions_with_runner(
     }
 
     Ok(())
+}
+
+async fn load_session_cleanup_config() -> SessionCleanupConfig {
+    load_config_from_file(&utils::assets::config_path())
+        .await
+        .session_cleanup
+}
+
+fn cleanup_retention_count(settings: &SessionCleanupConfig) -> usize {
+    usize::from(
+        settings
+            .retention_count
+            .max(1)
+            .min(MAX_SESSION_CLEANUP_RETENTION_COUNT),
+    )
 }
 
 async fn cleanup_key_for_process(
@@ -292,6 +322,7 @@ async fn obsolete_session_candidates(
     app_session_id: Uuid,
     base_executor: BaseCodingAgent,
     workspace_root: Option<&Path>,
+    keep_count: usize,
 ) -> Result<Vec<CleanupCandidate>> {
     let rows = sqlx::query_as::<_, AgentSessionTurnRow>(
         r#"SELECT
@@ -332,7 +363,7 @@ async fn obsolete_session_candidates(
                     }
                 })
         }),
-        TRAILING_SESSION_CUSHION,
+        keep_count,
     ))
 }
 
@@ -636,6 +667,13 @@ mod tests {
         }
     }
 
+    fn cleanup_settings(enabled: bool, retention_count: u16) -> SessionCleanupConfig {
+        SessionCleanupConfig {
+            enabled,
+            retention_count,
+        }
+    }
+
     #[test]
     fn select_obsolete_sessions_keeps_five_newest_unique_sessions() {
         let candidates = (0..7)
@@ -673,6 +711,13 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["old"]
         );
+    }
+
+    #[test]
+    fn cleanup_retention_count_clamps_unsafe_values() {
+        assert_eq!(cleanup_retention_count(&cleanup_settings(true, 0)), 1);
+        assert_eq!(cleanup_retention_count(&cleanup_settings(true, 2)), 2);
+        assert_eq!(cleanup_retention_count(&cleanup_settings(true, 250)), 100);
     }
 
     #[test]
@@ -769,6 +814,39 @@ mod tests {
 
         assert!(result.is_err());
         assert_eq!(runner.calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn cleanup_disabled_skips_candidate_selection_and_deletes() {
+        let pool = test_pool().await;
+        let app_session_id = Uuid::new_v4();
+        let current_process_id = Uuid::new_v4();
+        insert_session(&pool, app_session_id).await;
+        insert_turn(
+            &pool,
+            app_session_id,
+            current_process_id,
+            "2026-01-01T00:00:10Z",
+            follow_up_action(BaseCodingAgent::Codex, "current-session", None),
+            Some("current-session"),
+            false,
+        )
+        .await;
+
+        let runner = FailingRunner {
+            calls: AtomicUsize::new(0),
+        };
+
+        cleanup_obsolete_agent_sessions_with_runner(
+            &pool,
+            current_process_id,
+            &runner,
+            cleanup_settings(false, 1),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(runner.calls.load(Ordering::SeqCst), 0);
     }
 
     #[cfg(unix)]
@@ -953,7 +1031,7 @@ mod tests {
         }
 
         let candidates =
-            obsolete_session_candidates(&pool, app_session_id, BaseCodingAgent::Codex, None)
+            obsolete_session_candidates(&pool, app_session_id, BaseCodingAgent::Codex, None, 5)
                 .await
                 .unwrap();
 
@@ -998,7 +1076,7 @@ mod tests {
         .await;
 
         let candidates =
-            obsolete_session_candidates(&pool, app_session_id, BaseCodingAgent::Codex, None)
+            obsolete_session_candidates(&pool, app_session_id, BaseCodingAgent::Codex, None, 5)
                 .await
                 .unwrap();
 
@@ -1050,7 +1128,7 @@ mod tests {
         }
 
         let candidates =
-            obsolete_session_candidates(&pool, app_session_id, BaseCodingAgent::Codex, None)
+            obsolete_session_candidates(&pool, app_session_id, BaseCodingAgent::Codex, None, 5)
                 .await
                 .unwrap();
 
@@ -1090,6 +1168,7 @@ mod tests {
             app_session_id,
             BaseCodingAgent::ClaudeCode,
             Some(workspace_root),
+            5,
         )
         .await
         .unwrap();
@@ -1098,6 +1177,41 @@ mod tests {
         assert_eq!(
             candidates[0].cwd.as_deref(),
             Some(Path::new("/tmp/workspace/repo"))
+        );
+    }
+
+    #[tokio::test]
+    async fn obsolete_candidates_use_configured_retention_count() {
+        let pool = test_pool().await;
+        let app_session_id = Uuid::new_v4();
+        insert_session(&pool, app_session_id).await;
+
+        for index in 0..4 {
+            let provider_session_id = format!("provider-{index}");
+            let created_at = format!("2026-01-01T00:00:0{}Z", 4 - index);
+            insert_turn(
+                &pool,
+                app_session_id,
+                Uuid::new_v4(),
+                &created_at,
+                follow_up_action(BaseCodingAgent::Codex, &provider_session_id, None),
+                Some(&provider_session_id),
+                false,
+            )
+            .await;
+        }
+
+        let candidates =
+            obsolete_session_candidates(&pool, app_session_id, BaseCodingAgent::Codex, None, 2)
+                .await
+                .unwrap();
+
+        assert_eq!(
+            candidates
+                .into_iter()
+                .map(|candidate| candidate.session_id)
+                .collect::<Vec<_>>(),
+            vec!["provider-2", "provider-3"]
         );
     }
 }

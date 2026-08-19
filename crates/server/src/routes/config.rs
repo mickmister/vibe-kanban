@@ -21,7 +21,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use services::services::{
     config::{
-        Config, ConfigError, SoundFile,
+        Config, ConfigError, MAX_SESSION_CLEANUP_RETENTION_COUNT, SoundFile,
         editor::{EditorConfig, EditorType},
         save_config_to_file,
     },
@@ -201,6 +201,15 @@ async fn update_config(
         return ResponseJson(ApiResponse::error(
             "Invalid git branch prefix. Must be a valid git branch name component without slashes.",
         ));
+    }
+
+    if new_config.session_cleanup.retention_count == 0
+        || new_config.session_cleanup.retention_count > MAX_SESSION_CLEANUP_RETENTION_COUNT
+    {
+        return ResponseJson(ApiResponse::error(&format!(
+            "Invalid session cleanup retention count. Must be between 1 and {}.",
+            MAX_SESSION_CLEANUP_RETENTION_COUNT
+        )));
     }
 
     // Get old config state before updating

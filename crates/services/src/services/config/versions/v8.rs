@@ -25,11 +25,38 @@ fn default_relay_enabled() -> bool {
     true
 }
 
+pub const MAX_SESSION_CLEANUP_RETENTION_COUNT: u16 = 100;
+
+pub fn default_session_cleanup_retention_count() -> u16 {
+    5
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize, TS, PartialEq, Eq)]
 pub enum SendMessageShortcut {
     #[default]
     ModifierEnter,
     Enter,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, TS, PartialEq, Eq)]
+pub struct SessionCleanupConfig {
+    #[serde(default = "default_session_cleanup_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_session_cleanup_retention_count")]
+    pub retention_count: u16,
+}
+
+fn default_session_cleanup_enabled() -> bool {
+    true
+}
+
+impl Default for SessionCleanupConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_session_cleanup_enabled(),
+            retention_count: default_session_cleanup_retention_count(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, TS)]
@@ -68,6 +95,8 @@ pub struct Config {
     pub relay_enabled: bool,
     #[serde(default)]
     pub host_nickname: Option<String>,
+    #[serde(default)]
+    pub session_cleanup: SessionCleanupConfig,
 }
 
 impl Config {
@@ -99,6 +128,7 @@ impl Config {
             send_message_shortcut: SendMessageShortcut::default(),
             relay_enabled: true,
             host_nickname: None,
+            session_cleanup: SessionCleanupConfig::default(),
         }
     }
 
@@ -155,6 +185,7 @@ impl Default for Config {
             send_message_shortcut: SendMessageShortcut::default(),
             relay_enabled: true,
             host_nickname: None,
+            session_cleanup: SessionCleanupConfig::default(),
         }
     }
 }

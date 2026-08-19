@@ -78,6 +78,26 @@
         "variant": "DEFAULT",
         "defaultLabel": "Default"
       },
+      "sessionCleanup": {
+        "title": "Agent Session Cleanup",
+        "description": "Control automatic cleanup of old forked provider sessions. Vibe Kanban keeps a recent undo cushion and only cleans sessions after a newer session ID is recorded.",
+        "enabled": {
+          "label": "Enable automatic session cleanup",
+          "helper": "When enabled, obsolete forked Codex, Claude, and OpenCode sessions are cleaned up in the background. Disable this if you prefer to keep all provider session history."
+        },
+        "retention": {
+          "label": "Sessions to keep",
+          "placeholder": "5",
+          "helper": "Newest unique provider session IDs to keep per Vibe Kanban session and agent before old forked sessions become cleanup candidates.",
+          "errors": {
+            "range": "Enter a whole number from 1 to 100."
+          }
+        },
+        "status": {
+          "enabled": "Status: cleanup is enabled and keeps the newest {{count}} provider session ID before deleting older candidates.",
+          "disabled": "Status: cleanup is disabled. No provider session files will be deleted automatically."
+        }
+      },
       "editor": {
         "title": "Editor",
         "description": "Configure your code editing experience.",
