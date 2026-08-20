@@ -970,6 +970,18 @@ mod repository_attachment_tests {
                 UNIQUE (workspace_id, repo_id)
             )
             "#,
+            r#"
+            CREATE TABLE repo_dev_server_scripts (
+                id BLOB PRIMARY KEY,
+                repo_id BLOB NOT NULL,
+                name TEXT NOT NULL,
+                script TEXT NOT NULL,
+                working_dir TEXT,
+                is_default BOOLEAN NOT NULL DEFAULT FALSE,
+                created_at DATETIME NOT NULL DEFAULT (datetime('now')),
+                updated_at DATETIME NOT NULL DEFAULT (datetime('now'))
+            )
+            "#,
         ] {
             sqlx::query(statement).execute(&pool).await.unwrap();
         }

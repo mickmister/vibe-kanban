@@ -4,11 +4,41 @@
 
 // If you are an AI, and you absolutely have to edit this file, please confirm with the user first.
 
-export type Repo = { id: string, path: string, name: string, display_name: string, setup_script: string | null, cleanup_script: string | null, archive_script: string | null, copy_files: string | null, parallel_setup_script: boolean, dev_server_script: string | null, default_target_branch: string | null, default_working_dir: string | null, created_at: Date, updated_at: Date, };
+export type Repo = { id: string, path: string, name: string, display_name: string, setup_script: string | null, cleanup_script: string | null, archive_script: string | null, copy_files: string | null, parallel_setup_script: boolean, dev_server_script: string | null, dev_server_scripts: Array<RepoDevServerScript>, default_target_branch: string | null, default_working_dir: string | null, created_at: Date, updated_at: Date, };
 
 export type Project = { id: string, name: string, default_agent_working_dir: string | null, remote_project_id: string | null, created_at: Date, updated_at: Date, };
 
-export type UpdateRepo = { display_name?: string | null, setup_script?: string | null, cleanup_script?: string | null, archive_script?: string | null, copy_files?: string | null, parallel_setup_script?: boolean | null, dev_server_script?: string | null, default_target_branch?: string | null, default_working_dir?: string | null, };
+export type UpdateRepo = { display_name?: string | null, setup_script?: string | null, cleanup_script?: string | null, archive_script?: string | null, copy_files?: string | null, parallel_setup_script?: boolean | null, dev_server_script?: string | null, dev_server_scripts?: Array<UpdateRepoDevServerScript>, default_target_branch?: string | null, default_working_dir?: string | null, };
+
+export type RepoDevServerScript = { id: string, repo_id: string, name: string, script: string, working_dir: string | null, is_default: boolean, created_at: Date, updated_at: Date, };
+
+export type UpdateRepoDevServerScript = { id?: string, name: string, script: string, working_dir: string | null, is_default: boolean, };
+
+export type RunConfig = { id: string, repo_id: string, slug: string, name: string, command: string, working_dir: string | null, kind: RunConfigKind, enabled: boolean, created_at: Date, updated_at: Date, };
+
+export enum RunConfigKind { long_running = "long_running", one_shot = "one_shot", test = "test" }
+
+export type UpsertRunConfig = { id?: string, repo_id: string, slug: string, name: string, command: string, working_dir: string | null, kind: RunConfigKind, enabled: boolean, };
+
+export type PreviewSlot = { id: string, repo_id: string, run_config_id: string, slot_slug: string, title: string, enabled: boolean, created_at: Date, updated_at: Date, };
+
+export type UpsertPreviewSlot = { id?: string, repo_id: string, run_config_id: string, slot_slug: string, title: string, enabled: boolean, };
+
+export type PreviewProcessLink = { id: string, workspace_id: string, repo_id: string, run_config_id: string, preview_slot_id: string | null, execution_process_id: string, assigned_port: bigint, status_snapshot: PreviewProcessStatusSnapshot, started_at: Date, updated_at: Date, ended_at: Date | null, };
+
+export enum PreviewProcessStatusSnapshot { starting = "starting", ready = "ready", failed = "failed", stopped = "stopped" }
+
+export type RunConfigStartResponse = { execution_process: ExecutionProcess, preview_process_link: PreviewProcessLink, upstream: string, };
+
+export type WorkspaceRunConfigsResponse = { run_configs: Array<RunConfig>, preview_slots: Array<PreviewSlot>, preview_url_parts: Array<PreviewSlotUrlParts>, };
+
+export type PreviewSlotUrlParts = { previewSlotId: string, workspaceToken: string, repoSlug: string, slotSlug: string, };
+
+export type PreviewSlotUrlResponse = { previewSlotId: string, workspaceToken: string, repoSlug: string, slotSlug: string, customerSlug: string, host: string, url: string, };
+
+export type NamedPreviewResolveRequest = { host: string, workspaceToken: string, repoSlug: string, slotSlug: string, customerSlug: string, ensure: boolean, method: string, path: string, };
+
+export type NamedPreviewResolveResponse = { status: string, upstream: string | null, message: string | null, executionProcessId: string | null, };
 
 export type SearchResult = { path: string, is_file: boolean, match_type: SearchMatchType,
 /**
@@ -22,7 +52,7 @@ export type WorkspaceRepo = { id: string, workspace_id: string, repo_id: string,
 
 export type CreateWorkspaceRepo = { repo_id: string, target_branch: string, create_branch: boolean, checkout_branch?: string | null, };
 
-export type RepoWithTargetBranch = { target_branch: string, create_branch: boolean, checkout_branch?: string | null, id: string, path: string, name: string, display_name: string, setup_script: string | null, cleanup_script: string | null, archive_script: string | null, copy_files: string | null, parallel_setup_script: boolean, dev_server_script: string | null, default_target_branch: string | null, default_working_dir: string | null, created_at: Date, updated_at: Date, };
+export type RepoWithTargetBranch = { target_branch: string, create_branch: boolean, checkout_branch?: string | null, id: string, path: string, name: string, display_name: string, setup_script: string | null, cleanup_script: string | null, archive_script: string | null, copy_files: string | null, parallel_setup_script: boolean, dev_server_script: string | null, dev_server_scripts: Array<RepoDevServerScript>, default_target_branch: string | null, default_working_dir: string | null, created_at: Date, updated_at: Date, };
 
 export type Tag = { id: string, tag_name: string, content: string, created_at: string, updated_at: string, };
 
@@ -57,6 +87,8 @@ parent_issue_id: string | null, };
 export type PreviewSettingsData = { url: string, screen_size: string | null, responsive_width: number | null, responsive_height: number | null, };
 
 export type WorkspaceNotesData = { content: string, };
+
+export type WorkspaceDevServerSelectionData = { selected_repo_ids: Array<string>, };
 
 export type WorkspacePanelStateData = { right_main_panel_mode: string | null, is_left_main_panel_visible: boolean, };
 
@@ -146,9 +178,9 @@ kanban_project_view_preferences: { [key in string]?: JsonValue }, };
 
 export type ProjectRepoDefaultsData = { repos: Array<DraftWorkspaceRepo>, };
 
-export type ScratchPayload = { "type": "DRAFT_TASK", "data": string } | { "type": "DRAFT_FOLLOW_UP", "data": DraftFollowUpData } | { "type": "DRAFT_WORKSPACE", "data": DraftWorkspaceData } | { "type": "DRAFT_ISSUE", "data": DraftIssueData } | { "type": "PREVIEW_SETTINGS", "data": PreviewSettingsData } | { "type": "WORKSPACE_NOTES", "data": WorkspaceNotesData } | { "type": "UI_PREFERENCES", "data": UiPreferencesData } | { "type": "PROJECT_REPO_DEFAULTS", "data": ProjectRepoDefaultsData };
+export type ScratchPayload = { "type": "DRAFT_TASK", "data": string } | { "type": "DRAFT_FOLLOW_UP", "data": DraftFollowUpData } | { "type": "DRAFT_WORKSPACE", "data": DraftWorkspaceData } | { "type": "DRAFT_ISSUE", "data": DraftIssueData } | { "type": "PREVIEW_SETTINGS", "data": PreviewSettingsData } | { "type": "WORKSPACE_NOTES", "data": WorkspaceNotesData } | { "type": "WORKSPACE_DEV_SERVER_SELECTION", "data": WorkspaceDevServerSelectionData } | { "type": "UI_PREFERENCES", "data": UiPreferencesData } | { "type": "PROJECT_REPO_DEFAULTS", "data": ProjectRepoDefaultsData };
 
-export enum ScratchType { DRAFT_TASK = "DRAFT_TASK", DRAFT_FOLLOW_UP = "DRAFT_FOLLOW_UP", DRAFT_WORKSPACE = "DRAFT_WORKSPACE", DRAFT_ISSUE = "DRAFT_ISSUE", PREVIEW_SETTINGS = "PREVIEW_SETTINGS", WORKSPACE_NOTES = "WORKSPACE_NOTES", UI_PREFERENCES = "UI_PREFERENCES", PROJECT_REPO_DEFAULTS = "PROJECT_REPO_DEFAULTS" }
+export enum ScratchType { DRAFT_TASK = "DRAFT_TASK", DRAFT_FOLLOW_UP = "DRAFT_FOLLOW_UP", DRAFT_WORKSPACE = "DRAFT_WORKSPACE", DRAFT_ISSUE = "DRAFT_ISSUE", PREVIEW_SETTINGS = "PREVIEW_SETTINGS", WORKSPACE_NOTES = "WORKSPACE_NOTES", WORKSPACE_DEV_SERVER_SELECTION = "WORKSPACE_DEV_SERVER_SELECTION", UI_PREFERENCES = "UI_PREFERENCES", PROJECT_REPO_DEFAULTS = "PROJECT_REPO_DEFAULTS" }
 
 export type Scratch = { id: string, payload: ScratchPayload, created_at: string, updated_at: string, };
 
@@ -557,7 +589,9 @@ export type QueueStatus = { "status": "empty" } | { "status": "queued", message:
 
 export type ConflictOp = "rebase" | "merge" | "cherry_pick" | "revert";
 
-export type ExecutorAction = { typ: ExecutorActionType, next_action: ExecutorAction | null, };
+export type ExecutorAction = { typ: ExecutorActionType, next_action: ExecutorAction | null, log_normalizer?: ExecutorActionLogNormalizer, };
+
+export enum ExecutorActionLogNormalizer { selected_executor = "selected_executor", qa_mock_claude = "qa_mock_claude" }
 
 export type McpConfig = { servers: { [key in string]?: JsonValue }, servers_path: Array<string>, template: JsonValue, preconfigured: JsonValue, is_toml_config: boolean, };
 
@@ -596,7 +630,11 @@ export type ScriptRequest = { script: string, language: ScriptRequestLanguage, c
  * Optional relative path to execute the script in (relative to container_ref).
  * If None, uses the container_ref directory directly.
  */
-working_dir: string | null, };
+working_dir: string | null,
+/**
+ * Optional environment overrides for this script invocation.
+ */
+env: { [key in string]?: string }, };
 
 export type SessionCommand = { "type": "clear" } | { "type": "compact", instructions: string | null, };
 

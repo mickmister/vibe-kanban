@@ -42,6 +42,14 @@ type ScrollToOptionsBehavior = 'auto' | 'smooth';
 /** Number of items to render beyond the visible area in each direction. */
 const OVERSCAN = 8;
 
+/**
+ * Auto-follow must be stricter than the "near bottom" UI affordance threshold.
+ * A broad threshold is useful for hiding the jump-to-bottom button, but during
+ * streaming output it also causes small intentional upward scrolls to be
+ * treated as pinned and yanked back to the bottom.
+ */
+export const AUTO_FOLLOW_BOTTOM_THRESHOLD_PX = 4;
+
 export interface ConversationSizeAdjustmentInput {
   /** End offset of the measured virtual item. */
   itemEnd: number;
@@ -183,7 +191,7 @@ export function useConversationVirtualizer({
     },
     anchorTo: 'end',
     followOnAppend: 'auto',
-    scrollEndThreshold: NEAR_BOTTOM_THRESHOLD_PX,
+    scrollEndThreshold: AUTO_FOLLOW_BOTTOM_THRESHOLD_PX,
     overscan: OVERSCAN,
     measureElement: defaultMeasureElement,
     useAnimationFrameWithResizeObserver: false,
@@ -202,7 +210,7 @@ export function useConversationVirtualizer({
       shouldAdjustConversationScrollPositionOnItemSizeChange({
         itemEnd: item.end,
         scrollOffset: instance.scrollOffset ?? 0,
-        isAtEnd: instance.isAtEnd(NEAR_BOTTOM_THRESHOLD_PX),
+        isAtEnd: instance.isAtEnd(AUTO_FOLLOW_BOTTOM_THRESHOLD_PX),
       });
 
     return () => {
@@ -349,7 +357,7 @@ export function useConversationVirtualizer({
   }, [scrollContainerRef, virtualizer, rows]);
 
   const checkIsAtBottom = useCallback((): boolean => {
-    return virtualizer.isAtEnd(NEAR_BOTTOM_THRESHOLD_PX);
+    return virtualizer.isAtEnd(AUTO_FOLLOW_BOTTOM_THRESHOLD_PX);
   }, [virtualizer]);
 
   const releaseBottomLock = useCallback(() => {}, []);

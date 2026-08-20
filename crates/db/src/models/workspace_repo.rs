@@ -6,7 +6,7 @@ use sqlx::{FromRow, SqlitePool};
 use ts_rs::TS;
 use uuid::Uuid;
 
-use super::repo::Repo;
+use super::{repo::Repo, repo_dev_server_script::RepoDevServerScript};
 
 pub fn branch_names_conflict_as_self_target(
     source_branch: &str,
@@ -153,8 +153,7 @@ impl WorkspaceRepo {
         pool: &SqlitePool,
         workspace_id: Uuid,
     ) -> Result<Vec<Repo>, sqlx::Error> {
-        sqlx::query_as!(
-            Repo,
+        let rows = sqlx::query!(
             r#"SELECT r.id as "id!: Uuid",
                       r.path,
                       r.name,
@@ -176,7 +175,34 @@ impl WorkspaceRepo {
             workspace_id
         )
         .fetch_all(pool)
-        .await
+        .await?;
+
+        let scripts_by_repo = RepoDevServerScript::find_by_repo_ids(
+            pool,
+            &rows.iter().map(|row| row.id).collect::<Vec<_>>(),
+        )
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(|row| Repo {
+                id: row.id,
+                path: PathBuf::from(row.path),
+                name: row.name,
+                display_name: row.display_name,
+                setup_script: row.setup_script,
+                cleanup_script: row.cleanup_script,
+                archive_script: row.archive_script,
+                copy_files: row.copy_files,
+                parallel_setup_script: row.parallel_setup_script,
+                dev_server_script: row.dev_server_script,
+                dev_server_scripts: scripts_by_repo.get(&row.id).cloned().unwrap_or_default(),
+                default_target_branch: row.default_target_branch,
+                default_working_dir: row.default_working_dir,
+                created_at: row.created_at,
+                updated_at: row.updated_at,
+            })
+            .collect())
     }
 
     pub async fn find_repos_with_target_branch_for_workspace(
@@ -210,6 +236,12 @@ impl WorkspaceRepo {
         .fetch_all(pool)
         .await?;
 
+        let scripts_by_repo = RepoDevServerScript::find_by_repo_ids(
+            pool,
+            &rows.iter().map(|row| row.id).collect::<Vec<_>>(),
+        )
+        .await?;
+
         Ok(rows
             .into_iter()
             .map(|row| RepoWithTargetBranch {
@@ -224,6 +256,7 @@ impl WorkspaceRepo {
                     copy_files: row.copy_files,
                     parallel_setup_script: row.parallel_setup_script,
                     dev_server_script: row.dev_server_script,
+                    dev_server_scripts: scripts_by_repo.get(&row.id).cloned().unwrap_or_default(),
                     default_target_branch: row.default_target_branch,
                     default_working_dir: row.default_working_dir,
                     created_at: row.created_at,

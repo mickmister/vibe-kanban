@@ -721,6 +721,11 @@ impl Codex {
         env.clone()
             .with_profile(&self.cmd)
             .apply_to_command(&mut process);
+        // VK runs short-lived Codex app-server children and relies on OTEL/stderr
+        // for diagnostics. SQLite-backed Codex logs are non-critical and can
+        // contend heavily on hosts with many sessions, so force them off for
+        // VK-spawned Codex processes even if profile env overrides are present.
+        process.env("CODEX_SQLITE_LOGS", "off");
 
         let mut child = {
             let _span = tracing::debug_span!(
