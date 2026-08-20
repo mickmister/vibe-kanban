@@ -133,6 +133,7 @@ mod direct_branch_tests {
             copy_files: None,
             parallel_setup_script: false,
             dev_server_script: None,
+            dev_server_scripts: Vec::new(),
             default_target_branch: None,
             default_working_dir: None,
             created_at: Utc::now(),
