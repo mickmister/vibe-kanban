@@ -45,6 +45,7 @@ use services::services::{
     approvals::{Approvals, executor_approvals::ExecutorApprovalBridge},
     config::{Config, DEFAULT_COMMIT_REMINDER_PROMPT},
     container::{ContainerError, ContainerRef, ContainerService},
+    conversation_preview,
     diff_stream::{self, DiffStreamHandle},
     file::FileService,
     notification::NotificationService,
@@ -54,6 +55,7 @@ use services::services::{
 };
 use tokio::{sync::RwLock, task::JoinHandle};
 use tokio_util::io::ReaderStream;
+use tracing::Instrument;
 use utils::{
     log_msg::LogMsg,
     msg_store::MsgStore,
@@ -149,11 +151,46 @@ impl LocalContainerService {
             WorkspaceError::RepoAlreadyAttached => {
                 ContainerError::Other(anyhow!("Repository already attached to workspace"))
             }
+            WorkspaceError::RepoNameAlreadyAttached { repo_name } => {
+                ContainerError::Other(anyhow!(
+                    "Repository name '{}' is already attached to workspace",
+                    repo_name
+                ))
+            }
             WorkspaceError::BranchNotFound { repo_name, branch } => ContainerError::Other(anyhow!(
                 "Branch '{}' does not exist in repository '{}'",
                 branch,
                 repo_name
             )),
+            WorkspaceError::DirectCheckoutBranchRequired { repo_name } => {
+                ContainerError::Other(anyhow!(
+                    "Direct checkout mode requires an existing local branch in repository '{}'",
+                    repo_name
+                ))
+            }
+            WorkspaceError::DirectCheckoutBranchNotLocal { repo_name, branch } => {
+                ContainerError::Other(anyhow!(
+                    "Direct checkout branch '{}' in repository '{}' must be a local branch",
+                    branch,
+                    repo_name
+                ))
+            }
+            WorkspaceError::DirectCheckoutBranchAlreadyCheckedOut {
+                repo_name,
+                branch,
+                path,
+            } => ContainerError::Other(anyhow!(
+                "Direct checkout branch '{}' in repository '{}' is already checked out at {}",
+                branch,
+                repo_name,
+                path.display()
+            )),
+            WorkspaceError::DirectCheckoutBranchMatchesTarget { repo_name } => {
+                ContainerError::Other(anyhow!(
+                    "Direct checkout branch and target/base branch must be different for repository '{}'",
+                    repo_name
+                ))
+            }
             WorkspaceError::PartialCreation(msg) => ContainerError::Other(anyhow!(msg)),
         }
     }
@@ -172,22 +209,25 @@ impl LocalContainerService {
 
         let repositories =
             WorkspaceRepo::find_repos_for_workspace(&self.db.pool, workspace_id).await?;
-        let target_branches: HashMap<_, _> = workspace_repos
-            .iter()
-            .map(|wr| (wr.repo_id, wr.target_branch.clone()))
-            .collect();
+        let workspace_repos_by_id: HashMap<_, _> =
+            workspace_repos.iter().map(|wr| (wr.repo_id, wr)).collect();
 
         let workspace_inputs: Vec<RepoWorkspaceInput> = repositories
             .iter()
             .map(|repo| {
-                let target_branch = target_branches.get(&repo.id).cloned().ok_or_else(|| {
+                let workspace_repo = workspace_repos_by_id.get(&repo.id).ok_or_else(|| {
                     ContainerError::Other(anyhow!(
                         "Missing target branch mapping for repo {} in workspace {}",
                         repo.id,
                         workspace_id
                     ))
                 })?;
-                Ok(RepoWorkspaceInput::new(repo.clone(), target_branch))
+                Ok(RepoWorkspaceInput::new(
+                    repo.clone(),
+                    workspace_repo.target_branch.clone(),
+                    workspace_repo.create_branch,
+                    workspace_repo.checkout_branch.clone(),
+                ))
             })
             .collect::<Result<_, ContainerError>>()?;
 
@@ -894,21 +934,28 @@ impl LocalContainerService {
             .await
             .ok_or_else(|| ContainerError::Other(anyhow!("MsgStore not found for execution")))?;
         let out = child.inner().stdout.take().expect("no stdout");
-        let err = child.inner().stderr.take().expect("no stderr");
+        let err = child.inner().stderr.take();
 
         // Map stdout bytes -> LogMsg::Stdout
         let out = ReaderStream::new(out)
             .map_ok(|chunk| LogMsg::Stdout(String::from_utf8_lossy(&chunk).into_owned()));
 
-        // Map stderr bytes -> LogMsg::Stderr
-        let err = ReaderStream::new(err)
-            .map_ok(|chunk| LogMsg::Stderr(String::from_utf8_lossy(&chunk).into_owned()));
+        if let Some(err) = err {
+            // Map stderr bytes -> LogMsg::Stderr
+            let err = ReaderStream::new(err)
+                .map_ok(|chunk| LogMsg::Stderr(String::from_utf8_lossy(&chunk).into_owned()));
 
-        // If you have a JSON Patch source, map it to LogMsg::JsonPatch too, then select all three.
+            // If you have a JSON Patch source, map it to LogMsg::JsonPatch too, then select all three.
 
-        // Merge and forward into the store
-        let merged = select(out, err); // Stream<Item = Result<LogMsg, io::Error>>
-        store.clone().spawn_forwarder(merged);
+            // Merge and forward into the store
+            let merged = select(out, err); // Stream<Item = Result<LogMsg, io::Error>>
+            store.clone().spawn_forwarder(merged);
+        } else {
+            // Some executors intentionally discard child stderr to avoid pipe
+            // backpressure or exposing internal diagnostics. Continue forwarding
+            // stdout in those cases.
+            store.clone().spawn_forwarder(out);
+        }
         Ok(())
     }
 
@@ -967,6 +1014,17 @@ impl LocalContainerService {
                 } else {
                     tracing::debug!("No assistant message found for execution {}", exec_id);
                 }
+            }
+
+            if let Err(error) =
+                conversation_preview::refresh_execution_process_preview(&self.db.pool, *exec_id)
+                    .await
+            {
+                tracing::warn!(
+                    "Failed to refresh conversation preview for execution {}: {}",
+                    exec_id,
+                    error
+                );
             }
         }
 
@@ -1168,6 +1226,15 @@ impl LocalContainerService {
             &action,
             &ExecutionProcessRunReason::CodingAgent,
         )
+        .instrument(tracing::debug_span!(
+            target: "perf.agent_startup",
+            "agent.turn",
+            workspace_id = %ctx.workspace.id,
+            session_id = %ctx.session.id,
+            executor = %executor_profile_id.executor,
+            queued = true,
+            execution_process_id = tracing::field::Empty,
+        ))
         .await
     }
 }
@@ -1367,6 +1434,18 @@ impl ContainerService for LocalContainerService {
         Ok(true)
     }
 
+    #[tracing::instrument(
+        name = "agent.turn.start_execution_inner",
+        target = "perf.agent_startup",
+        level = "debug",
+        skip(self, workspace, execution_process, executor_action),
+        fields(
+            workspace_id = %workspace.id,
+            session_id = %execution_process.session_id,
+            execution_process_id = %execution_process.id,
+            executor = ?executor_action.base_executor(),
+        )
+    )]
     async fn start_execution_inner(
         &self,
         workspace: &Workspace,
@@ -1424,7 +1503,14 @@ impl ContainerService for LocalContainerService {
         // Create the child and stream, add to execution tracker with timeout
         let mut spawned = tokio::time::timeout(
             Duration::from_secs(30),
-            executor_action.spawn(&current_dir, approvals_service, &env),
+            executor_action
+                .spawn(&current_dir, approvals_service, &env)
+                .instrument(tracing::debug_span!(
+                    target: "perf.agent_startup",
+                    "agent.turn.executor_spawn",
+                    execution_process_id = %execution_process.id,
+                    executor = ?executor_action.base_executor(),
+                )),
         )
         .await
         .map_err(|_| {
@@ -1539,10 +1625,8 @@ impl ContainerService for LocalContainerService {
     {
         let workspace_repos =
             WorkspaceRepo::find_by_workspace_id(&self.db.pool, workspace.id).await?;
-        let target_branches: HashMap<_, _> = workspace_repos
-            .iter()
-            .map(|wr| (wr.repo_id, wr.target_branch.clone()))
-            .collect();
+        let workspace_repos_by_id: HashMap<_, _> =
+            workspace_repos.iter().map(|wr| (wr.repo_id, wr)).collect();
 
         let repositories =
             WorkspaceRepo::find_repos_for_workspace(&self.db.pool, workspace.id).await?;
@@ -1555,15 +1639,16 @@ impl ContainerService for LocalContainerService {
 
         for repo in repositories {
             let worktree_path = workspace_root.join(&repo.name);
-            let branch = &workspace.branch;
-
-            let Some(target_branch) = target_branches.get(&repo.id) else {
+            let Some(workspace_repo) = workspace_repos_by_id.get(&repo.id) else {
                 tracing::warn!(
-                    "Skipping diff stream for repo {}: no target branch configured",
+                    "Skipping diff stream for repo {}: no workspace repo configured",
                     repo.name
                 );
                 continue;
             };
+
+            let branch = workspace_repo.branch_name(&workspace.branch);
+            let target_branch = &workspace_repo.target_branch;
 
             let base_commit = match self
                 .git()
@@ -1606,7 +1691,7 @@ impl ContainerService for LocalContainerService {
                     workspace_id = %workspace.id,
                     stats_only,
                     repo_count,
-                    target_branch_count = target_branches.len(),
+                    target_branch_count = workspace_repos_by_id.len(),
                     created_stream_count = 0,
                     rss_mb = utils::process_diag::bytes_to_mb(snapshot.rss_bytes),
                     vm_size_mb = utils::process_diag::bytes_to_mb(snapshot.virtual_bytes),
@@ -1626,7 +1711,7 @@ impl ContainerService for LocalContainerService {
                 workspace_id = %workspace.id,
                 stats_only,
                 repo_count,
-                target_branch_count = target_branches.len(),
+                target_branch_count = workspace_repos_by_id.len(),
                 created_stream_count = streams.len(),
                 rss_mb = utils::process_diag::bytes_to_mb(snapshot.rss_bytes),
                 vm_size_mb = utils::process_diag::bytes_to_mb(snapshot.virtual_bytes),

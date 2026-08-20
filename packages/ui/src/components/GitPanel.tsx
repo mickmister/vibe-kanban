@@ -1,4 +1,4 @@
-import { GitBranchIcon } from '@phosphor-icons/react';
+import { GitBranchIcon, PlusIcon } from '@phosphor-icons/react';
 import { useTranslation } from 'react-i18next';
 import { cn } from '../lib/cn';
 import { RepoCard, type RepoAction } from './RepoCard';
@@ -26,6 +26,8 @@ interface GitPanelProps {
   repos: RepoInfo[];
   repoSelectedActions?: Record<string, RepoAction>;
   workingBranchName: string;
+  workingBranchEditable?: boolean;
+  workingBranchHelp?: string;
   onWorkingBranchNameChange: (name: string) => void;
   onActionsClick?: (repoId: string, action: RepoAction) => void;
   onRepoActionChange?: (repoId: string, action: RepoAction) => void;
@@ -40,11 +42,14 @@ export function GitPanel({
   repos,
   repoSelectedActions,
   workingBranchName,
+  workingBranchEditable = true,
+  workingBranchHelp,
   onWorkingBranchNameChange,
   onActionsClick,
   onRepoActionChange,
   onPushClick,
   onMoreClick,
+  onAddRepo,
   className,
   error,
 }: GitPanelProps) {
@@ -86,6 +91,16 @@ export function GitPanel({
             onMoreClick={() => onMoreClick?.(repo.id)}
           />
         ))}
+        {onAddRepo && (
+          <button
+            type="button"
+            onClick={onAddRepo}
+            className="bg-primary flex w-full items-center gap-base rounded-sm p-base my-base text-left text-low transition-colors hover:bg-tertiary hover:text-base"
+          >
+            <PlusIcon className="size-icon-md shrink-0" weight="bold" />
+            <span className="font-medium">{t('gitPanel.addRepo')}</span>
+          </button>
+        )}
         <div className="bg-primary flex flex-col gap-base w-full p-base rounded-sm my-base">
           <div className="flex gap-base items-center">
             <GitBranchIcon className="size-icon-md text-base" weight="fill" />
@@ -93,12 +108,25 @@ export function GitPanel({
               {t('common:sections.workingBranch')}
             </p>
           </div>
-          <InputField
-            variant="editable"
-            value={workingBranchName}
-            onChange={onWorkingBranchNameChange}
-            placeholder={t('gitPanel.advanced.placeholder')}
-          />
+          {workingBranchEditable ? (
+            <InputField
+              variant="editable"
+              value={workingBranchName}
+              onChange={onWorkingBranchNameChange}
+              placeholder={t('gitPanel.advanced.placeholder')}
+            />
+          ) : (
+            <div className="bg-secondary border border-border rounded-sm px-base py-half">
+              <span className="block truncate text-sm text-normal">
+                {workingBranchName || t('gitPanel.advanced.placeholder')}
+              </span>
+              {workingBranchHelp && (
+                <p className="mt-quarter text-xs text-low">
+                  {workingBranchHelp}
+                </p>
+              )}
+            </div>
+          )}
         </div>
       </div>
     </div>
