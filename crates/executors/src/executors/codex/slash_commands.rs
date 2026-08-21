@@ -1,6 +1,8 @@
 use std::path::{Path, PathBuf};
 
-use codex_app_server_protocol::{ConfigEdit, JSONRPCNotification, MergeStrategy};
+use codex_app_server_protocol::{
+    ConfigEdit, JSONRPCNotification, JSONRPCResponse, MergeStrategy, RequestId,
+};
 use codex_protocol::{
     config_types::ServiceTier,
     protocol::{AgentMessageEvent, ErrorEvent, EventMsg},
@@ -164,9 +166,15 @@ impl Codex {
                         let fork_response = client
                             .thread_fork(fork_params_from(old_thread_id, thread_start_params))
                             .await?;
-                        let thread_id = fork_response.thread.id;
+                        let thread_id = fork_response.thread.id.clone();
                         tracing::debug!("forked thread for compact, new thread_id={thread_id}");
                         client.thread_compact_start(thread_id).await?;
+                        log_jsonrpc_response(
+                            client.log_writer(),
+                            "vk-compact-thread-fork",
+                            &fork_response,
+                        )
+                        .await?;
                     }
                     CodexSlashCommand::Status => {
                         let message =
@@ -337,6 +345,21 @@ pub async fn log_event_raw(log_writer: &LogWriter, message: String) -> Result<()
         }),
     )
     .await
+}
+
+async fn log_jsonrpc_response<T: serde::Serialize>(
+    log_writer: &LogWriter,
+    id: &str,
+    result: &T,
+) -> Result<(), ExecutorError> {
+    let response = JSONRPCResponse {
+        id: RequestId::String(id.to_string()),
+        result: serde_json::to_value(result)
+            .map_err(|err| ExecutorError::Io(std::io::Error::other(err.to_string())))?,
+    };
+    let raw = serde_json::to_string(&response)
+        .map_err(|err| ExecutorError::Io(std::io::Error::other(err.to_string())))?;
+    log_writer.log_raw(&raw).await
 }
 
 async fn fetch_status_message(
