@@ -229,8 +229,10 @@ export function WorkspacesLayout() {
   );
 
   // ── Mobile layout ──────────────────────────────────────────────────
-  // Uses `hidden` CSS class (NOT conditional rendering) to preserve
-  // WebSocket connections and scroll positions across tab switches.
+  // Most mobile tabs stay mounted while hidden to preserve WebSocket
+  // connections and scroll positions across tab switches. The Changes tab is
+  // intentionally mounted only while active because rendering diffs starts
+  // expensive worker/highlighter work even when CSS-hidden.
   if (isMobile) {
     const mobileContent = (
       <ReviewProvider workspaceId={selectedWorkspace?.id}>
@@ -283,7 +285,7 @@ export function WorkspacesLayout() {
                 mobileTab !== 'changes' && 'hidden'
               )}
             >
-              {selectedWorkspace?.id && (
+              {mobileTab === 'changes' && selectedWorkspace?.id && (
                 <ChangesPanelContainer
                   className=""
                   workspaceId={selectedWorkspace.id}

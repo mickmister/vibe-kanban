@@ -50,7 +50,7 @@ import { stripLineEnding, splitLines } from '@/shared/lib/string';
 import { ReviewCommentRenderer } from './ReviewCommentRenderer';
 import { GitHubCommentRenderer } from './GitHubCommentRenderer';
 import { CommentWidgetLine } from './CommentWidgetLine';
-import type { Diff, DiffChangeKind } from 'shared/types';
+import type { Diff } from 'shared/types';
 
 function workerFactory() {
   return new Worker(WorkerUrl, { type: 'module' });
@@ -61,27 +61,6 @@ const HIGHLIGHTER_OPTIONS = {
   theme: { dark: 'github-dark', light: 'github-light' } as const,
   langs: [] as string[],
 };
-
-const COLLAPSE_BY_CHANGE_TYPE: Record<DiffChangeKind, boolean> = {
-  added: false,
-  deleted: true,
-  modified: false,
-  renamed: true,
-  copied: true,
-  permissionChange: true,
-};
-
-const COLLAPSE_MAX_LINES = 800;
-
-function shouldAutoCollapse(diff: Diff): boolean {
-  const totalLines = (diff.additions ?? 0) + (diff.deletions ?? 0);
-  if (diff.change === 'renamed') {
-    return totalLines === 0 || totalLines > COLLAPSE_MAX_LINES;
-  }
-  if (COLLAPSE_BY_CHANGE_TYPE[diff.change]) return true;
-  if (totalLines > COLLAPSE_MAX_LINES) return true;
-  return false;
-}
 
 const IS_MOBILE = isRealMobileDevice();
 const NOOP = () => {};
@@ -603,24 +582,15 @@ export const ChangesPanelContainer = memo(function ChangesPanelContainer({
 }: ChangesPanelContainerProps) {
   const diffs = useDiffs();
   const { registerScrollToFile } = useChangesView();
-  const [processedPaths] = useState(() => new Set<string>());
   const [mountedCount, setMountedCount] = useState(0);
   const rafRef = useRef<number | null>(null);
 
   const diffItems = useMemo(() => {
-    const sorted = sortDiffs(diffs);
-    return sorted.map((diff) => {
-      const path = diff.newPath || diff.oldPath || '';
-
-      let initialExpanded = true;
-      if (!processedPaths.has(path)) {
-        processedPaths.add(path);
-        initialExpanded = !shouldAutoCollapse(diff);
-      }
-
-      return { diff, initialExpanded };
-    });
-  }, [diffs, processedPaths]);
+    return sortDiffs(diffs).map((diff) => ({
+      diff,
+      initialExpanded: false,
+    }));
+  }, [diffs]);
 
   useEffect(() => {
     if (diffItems.length === 0) {
