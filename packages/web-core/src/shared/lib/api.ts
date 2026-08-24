@@ -111,6 +111,14 @@ import { resolveHostRequestScope } from '@/shared/lib/hostRequestScope';
 import { makeRequest as makeRemoteRequest } from '@/shared/lib/remoteApi';
 import { makeLocalApiRequest } from '@/shared/lib/localApiTransport';
 
+type CreateFollowUpAttemptWithResetOverride = CreateFollowUpAttempt & {
+  stop_other_sessions_for_git_reset?: boolean | null;
+};
+
+type ResetProcessRequestWithResetOverride = ResetProcessRequest & {
+  stop_other_sessions_for_git_reset?: boolean | null;
+};
+
 export class ApiError<E = unknown> extends Error {
   public status?: number;
   public error_data?: E;
@@ -359,7 +367,7 @@ export const sessionsApi = {
 
   followUp: async (
     sessionId: string,
-    data: CreateFollowUpAttempt
+    data: CreateFollowUpAttemptWithResetOverride
   ): Promise<ExecutionProcess> => {
     const response = await makeRequest(`/api/sessions/${sessionId}/follow-up`, {
       method: 'POST',
@@ -381,12 +389,22 @@ export const sessionsApi = {
 
   reset: async (
     sessionId: string,
-    data: ResetProcessRequest
+    data: ResetProcessRequestWithResetOverride
   ): Promise<void> => {
     const response = await makeRequest(`/api/sessions/${sessionId}/reset`, {
       method: 'POST',
       body: JSON.stringify(data),
     });
+    return handleApiResponse<void>(response);
+  },
+
+  stopExecution: async (sessionId: string): Promise<void> => {
+    const response = await makeRequest(
+      `/api/sessions/${sessionId}/execution/stop`,
+      {
+        method: 'POST',
+      }
+    );
     return handleApiResponse<void>(response);
   },
 
@@ -475,16 +493,6 @@ export const workspacesApi = {
       sessionsApi.getByWorkspace(workspaceId),
     ]);
     return createWorkspaceWithSession(workspace, sessions[0]);
-  },
-
-  stop: async (workspaceId: string): Promise<void> => {
-    const response = await makeRequest(
-      `/api/workspaces/${workspaceId}/execution/stop`,
-      {
-        method: 'POST',
-      }
-    );
-    return handleApiResponse<void>(response);
   },
 
   delete: async (
