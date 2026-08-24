@@ -33,11 +33,9 @@ use executors::{
         script::{ScriptContext, ScriptRequest, ScriptRequestLanguage},
         session_command::CodingAgentSessionCommandRequest,
     },
-<<<<<<< HEAD
-    executors::{BaseCodingAgent, ExecutorError, StandardCodingAgentExecutor},
-=======
-    executors::{ExecutorError, StandardCodingAgentExecutor, qa_mock::QaMockExecutor},
->>>>>>> 2a65548022970333e0548dc9e213dd005ccfbc21
+    executors::{
+        BaseCodingAgent, ExecutorError, StandardCodingAgentExecutor, qa_mock::QaMockExecutor,
+    },
     logs::{
         NormalizedEntry, NormalizedEntryError, NormalizedEntryType,
         utils::{
@@ -1043,27 +1041,6 @@ pub trait ContainerService {
             }
         }
 
-<<<<<<< HEAD
-        if let Ok(processes) = ExecutionProcess::find_by_session_id(pool, session_id, false).await {
-            for process in processes {
-                if process.status == ExecutionProcessStatus::Running
-                    && process.run_reason != ExecutionProcessRunReason::DevServer
-                {
-                    self.stop_execution(&process, ExecutionProcessStatus::Killed)
-                        .await
-                        .unwrap_or_else(|e| {
-                            tracing::debug!(
-                                "Failed to stop execution process {} while resetting session {}: {}",
-                                process.id,
-                                session_id,
-                                e
-                            );
-                        });
-                }
-            }
-        }
-=======
->>>>>>> 2a65548022970333e0548dc9e213dd005ccfbc21
         ExecutionProcess::drop_at_and_after(pool, session_id, target_process_id).await?;
         Session::recompute_context_reset_boundary(pool, session_id).await?;
 
@@ -1826,25 +1803,7 @@ mod tests {
     struct TestContainerService {
         db: DBService,
         git: GitService,
-<<<<<<< HEAD
         config: Arc<RwLock<Config>>,
-        notifications: NotificationService,
-        msg_stores: Arc<RwLock<HashMap<Uuid, Arc<MsgStore>>>>,
-        stopped_processes: Arc<Mutex<Vec<Uuid>>>,
-        container_ref: String,
-    }
-
-    impl TestContainerService {
-        fn new(db: DBService, container_ref: String) -> Self {
-            let config = Arc::new(RwLock::new(Config::default()));
-            Self {
-                db,
-                git: GitService::new(),
-                notifications: NotificationService::new(config.clone()),
-                config,
-                msg_stores: Arc::new(RwLock::new(HashMap::new())),
-                stopped_processes: Arc::new(Mutex::new(Vec::new())),
-=======
         notifications: NotificationService,
         msg_stores: Arc<RwLock<HashMap<Uuid, Arc<MsgStore>>>>,
         stopped_processes: Arc<Mutex<Vec<Uuid>>>,
@@ -1861,14 +1820,15 @@ mod tests {
 
     impl TestContainerService {
         fn new(db: DBService, container_ref: String) -> Self {
+            let config = Arc::new(RwLock::new(Config::default()));
             Self {
                 db,
                 git: GitService::new(),
-                notifications: NotificationService::new(Arc::new(RwLock::new(Config::default()))),
+                notifications: NotificationService::new(config.clone()),
+                config,
                 msg_stores: Arc::new(RwLock::new(HashMap::new())),
                 stopped_processes: Arc::new(Mutex::new(Vec::new())),
                 events: Arc::new(Mutex::new(Vec::new())),
->>>>>>> 2a65548022970333e0548dc9e213dd005ccfbc21
                 container_ref,
             }
         }
@@ -1876,13 +1836,10 @@ mod tests {
         async fn stopped_processes(&self) -> Vec<Uuid> {
             self.stopped_processes.lock().await.clone()
         }
-<<<<<<< HEAD
-=======
 
         async fn events(&self) -> Vec<TestContainerEvent> {
             self.events.lock().await.clone()
         }
->>>>>>> 2a65548022970333e0548dc9e213dd005ccfbc21
     }
 
     #[async_trait]
@@ -1899,13 +1856,10 @@ mod tests {
             &self.git
         }
 
-<<<<<<< HEAD
         fn config(&self) -> &Arc<RwLock<Config>> {
             &self.config
         }
 
-=======
->>>>>>> 2a65548022970333e0548dc9e213dd005ccfbc21
         fn notification_service(&self) -> &NotificationService {
             &self.notifications
         }
@@ -1940,24 +1894,18 @@ mod tests {
             &self,
             _workspace: &Workspace,
         ) -> Result<ContainerRef, ContainerError> {
-<<<<<<< HEAD
-=======
             self.events
                 .lock()
                 .await
                 .push(TestContainerEvent::EnsureContainerExists);
->>>>>>> 2a65548022970333e0548dc9e213dd005ccfbc21
             Ok(self.container_ref.clone())
         }
 
         async fn is_container_clean(&self, _workspace: &Workspace) -> Result<bool, ContainerError> {
-<<<<<<< HEAD
-=======
             self.events
                 .lock()
                 .await
                 .push(TestContainerEvent::IsContainerClean);
->>>>>>> 2a65548022970333e0548dc9e213dd005ccfbc21
             Ok(true)
         }
 
@@ -1975,13 +1923,10 @@ mod tests {
             execution_process: &ExecutionProcess,
             status: ExecutionProcessStatus,
         ) -> Result<(), ContainerError> {
-<<<<<<< HEAD
-=======
             self.events
                 .lock()
                 .await
                 .push(TestContainerEvent::StopExecution(execution_process.id));
->>>>>>> 2a65548022970333e0548dc9e213dd005ccfbc21
             self.stopped_processes
                 .lock()
                 .await
@@ -2074,11 +2019,6 @@ mod tests {
         Ok(process_id)
     }
 
-<<<<<<< HEAD
-    #[tokio::test]
-    async fn reset_session_to_process_stops_only_processes_in_target_session()
-    -> Result<(), Box<dyn std::error::Error>> {
-=======
     struct TwoSessionResetFixture {
         _temp_dir: tempfile::TempDir,
         pool: SqlitePool,
@@ -2091,7 +2031,6 @@ mod tests {
 
     async fn two_session_reset_fixture()
     -> Result<TwoSessionResetFixture, Box<dyn std::error::Error>> {
->>>>>>> 2a65548022970333e0548dc9e213dd005ccfbc21
         let (temp_dir, pool) = test_pool().await?;
         let workspace_id =
             insert_workspace(&pool, temp_dir.path().to_string_lossy().as_ref()).await?;
@@ -2117,11 +2056,7 @@ mod tests {
         .await?;
 
         let now = chrono::Utc::now();
-<<<<<<< HEAD
-        let target_process = insert_process(
-=======
         let target_process_id = insert_process(
->>>>>>> 2a65548022970333e0548dc9e213dd005ccfbc21
             &pool,
             session_a.id,
             ExecutionProcessRunReason::CodingAgent,
@@ -2129,11 +2064,7 @@ mod tests {
             now,
         )
         .await?;
-<<<<<<< HEAD
-        let session_a_running_process = insert_process(
-=======
         let session_a_running_process_id = insert_process(
->>>>>>> 2a65548022970333e0548dc9e213dd005ccfbc21
             &pool,
             session_a.id,
             ExecutionProcessRunReason::CodingAgent,
@@ -2141,11 +2072,7 @@ mod tests {
             now + chrono::Duration::milliseconds(1),
         )
         .await?;
-<<<<<<< HEAD
-        let session_b_running_process = insert_process(
-=======
         let session_b_running_process_id = insert_process(
->>>>>>> 2a65548022970333e0548dc9e213dd005ccfbc21
             &pool,
             session_b.id,
             ExecutionProcessRunReason::CodingAgent,
@@ -2159,26 +2086,6 @@ mod tests {
             temp_dir.path().to_string_lossy().to_string(),
         );
 
-<<<<<<< HEAD
-        service
-            .reset_session_to_process(session_a.id, target_process, false, false)
-            .await?;
-
-        assert_eq!(
-            service.stopped_processes().await,
-            vec![session_a_running_process]
-        );
-
-        let session_a_process = ExecutionProcess::find_by_id(&pool, session_a_running_process)
-            .await?
-            .expect("session A running process should still exist");
-        assert_eq!(session_a_process.status, ExecutionProcessStatus::Killed);
-        assert!(session_a_process.dropped);
-
-        let session_b_process = ExecutionProcess::find_by_id(&pool, session_b_running_process)
-            .await?
-            .expect("session B running process should still exist");
-=======
         Ok(TwoSessionResetFixture {
             _temp_dir: temp_dir,
             pool,
@@ -2222,14 +2129,11 @@ mod tests {
             ExecutionProcess::find_by_id(&fixture.pool, fixture.session_b_running_process_id)
                 .await?
                 .expect("session B running process should still exist");
->>>>>>> 2a65548022970333e0548dc9e213dd005ccfbc21
         assert_eq!(session_b_process.status, ExecutionProcessStatus::Running);
         assert!(!session_b_process.dropped);
 
         Ok(())
     }
-<<<<<<< HEAD
-=======
 
     #[tokio::test]
     async fn reset_session_to_process_rejects_git_reset_while_other_session_runs_without_override()
@@ -2323,5 +2227,4 @@ mod tests {
 
         Ok(())
     }
->>>>>>> 2a65548022970333e0548dc9e213dd005ccfbc21
 }

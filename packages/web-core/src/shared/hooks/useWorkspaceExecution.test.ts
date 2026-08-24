@@ -1,5 +1,11 @@
-<<<<<<< HEAD
-import { describe, expect, it } from 'vitest';
+/**
+ * @vitest-environment jsdom
+ */
+
+import React, { act, useEffect, useRef } from 'react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { createRoot } from 'react-dom/client';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   ExecutionProcessStatus,
   type ExecutionProcess,
@@ -8,7 +14,28 @@ import {
 import {
   getStopExecutionMutationKey,
   getStoppableExecutionProcesses,
+  useWorkspaceExecution,
 } from './useWorkspaceExecution';
+import {
+  ExecutionProcessesContext,
+  type ExecutionProcessesContextType,
+} from './useExecutionProcessesContext';
+import { sessionsApi } from '@/shared/lib/api';
+
+vi.mock('@/shared/lib/api', () => ({
+  executionProcessesApi: {
+    getDetails: vi.fn(),
+  },
+  sessionsApi: {
+    stopExecution: vi.fn().mockResolvedValue(undefined),
+  },
+}));
+
+const stopExecutionMock = vi.mocked(sessionsApi.stopExecution);
+
+(
+  globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }
+).IS_REACT_ACT_ENVIRONMENT = true;
 
 const process = (
   id: string,
@@ -28,6 +55,10 @@ const process = (
   completed_at: null,
   created_at: '2026-06-17T00:00:00.000Z',
   updated_at: '2026-06-17T00:00:00.000Z',
+});
+
+afterEach(() => {
+  vi.clearAllMocks();
 });
 
 describe('getStoppableExecutionProcesses', () => {
@@ -68,42 +99,6 @@ describe('getStoppableExecutionProcesses', () => {
       'running-archive',
     ]);
   });
-=======
-/**
- * @vitest-environment jsdom
- */
-
-import React, { act, useEffect, useRef } from 'react';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { createRoot } from 'react-dom/client';
-import { afterEach, describe, expect, it, vi } from 'vitest';
-import { getStopExecutionMutationKey } from './useWorkspaceExecution';
-import { useWorkspaceExecution } from './useWorkspaceExecution';
-import {
-  ExecutionProcessesContext,
-  type ExecutionProcessesContextType,
-} from './useExecutionProcessesContext';
-import { sessionsApi } from '@/shared/lib/api';
-import type { ExecutionProcess } from 'shared/types';
-
-vi.mock('@/shared/lib/api', () => ({
-  executionProcessesApi: {
-    getDetails: vi.fn(),
-  },
-  sessionsApi: {
-    stopExecution: vi.fn().mockResolvedValue(undefined),
-  },
-}));
-
-const stopExecutionMock = vi.mocked(sessionsApi.stopExecution);
-
-(
-  globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }
-).IS_REACT_ACT_ENVIRONMENT = true;
-
-afterEach(() => {
-  vi.clearAllMocks();
->>>>>>> 2a65548022970333e0548dc9e213dd005ccfbc21
 });
 
 describe('getStopExecutionMutationKey', () => {
@@ -113,10 +108,6 @@ describe('getStopExecutionMutationKey', () => {
       'workspace-1',
       'session-1',
     ]);
-<<<<<<< HEAD
-  });
-});
-=======
     expect(getStopExecutionMutationKey('workspace-1', 'session-2')).toEqual([
       'stopSessionExecution',
       'workspace-1',
@@ -210,4 +201,3 @@ async function renderAndStop(
   });
   container.remove();
 }
->>>>>>> 2a65548022970333e0548dc9e213dd005ccfbc21

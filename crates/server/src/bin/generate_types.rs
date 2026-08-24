@@ -240,12 +240,9 @@ fn generate_types_content() -> String {
         db::models::agent_message_queue::QueuedFollowUpData::decl(),
         git::ConflictOp::decl(),
         executors::actions::ExecutorAction::decl(),
-<<<<<<< HEAD
         executors::actions::ExecutorActionProvenance::decl(),
         executors::actions::ExecutorActionProvenanceKind::decl(),
-=======
         executors::actions::ExecutorActionLogNormalizer::decl(),
->>>>>>> 2a65548022970333e0548dc9e213dd005ccfbc21
         executors::mcp_config::McpConfig::decl(),
         executors::actions::ExecutorActionType::decl(),
         executors::profile::ExecutorConfig::decl(),

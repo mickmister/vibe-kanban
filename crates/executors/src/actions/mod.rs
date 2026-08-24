@@ -62,10 +62,8 @@ pub struct ExecutorActionProvenance {
 pub struct ExecutorAction {
     pub typ: ExecutorActionType,
     pub next_action: Option<Box<ExecutorAction>>,
-<<<<<<< HEAD
     #[serde(default)]
     pub provenance: Option<ExecutorActionProvenance>,
-=======
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub log_normalizer: Option<ExecutorActionLogNormalizer>,
@@ -78,7 +76,6 @@ pub enum ExecutorActionLogNormalizer {
     #[default]
     SelectedExecutor,
     QaMockClaude,
->>>>>>> 2a65548022970333e0548dc9e213dd005ccfbc21
 }
 
 impl ExecutorAction {
@@ -86,8 +83,8 @@ impl ExecutorAction {
         Self {
             typ,
             next_action,
-<<<<<<< HEAD
             provenance: None,
+            log_normalizer: None,
         }
     }
 
@@ -100,9 +97,7 @@ impl ExecutorAction {
             typ,
             next_action,
             provenance,
-=======
             log_normalizer: None,
->>>>>>> 2a65548022970333e0548dc9e213dd005ccfbc21
         }
     }
     pub fn append_action(mut self, action: ExecutorAction) -> Self {
@@ -302,83 +297,6 @@ impl Executable for ExecutorAction {
         approvals: Arc<dyn ExecutorApprovalService>,
         env: &ExecutionEnv,
     ) -> Result<SpawnedChild, ExecutorError> {
-        if self.should_use_qa_mock_for_spawn() {
-            match self.typ() {
-                ExecutorActionType::CodingAgentInitialRequest(request) => {
-                    let effective_dir = request.effective_dir(current_dir);
-                    tracing::info!(
-                        "QA mode enabled for persisted action: using mock executor instead of real agent"
-                    );
-                    let executor = crate::executors::qa_mock::QaMockExecutor;
-                    return executor
-                        .spawn_mock(&effective_dir, &request.prompt, env)
-                        .await;
-                }
-                ExecutorActionType::CodingAgentFollowUpRequest(request) => {
-                    let effective_dir = request.effective_dir(current_dir);
-                    tracing::info!(
-                        "QA mode enabled for persisted action: using mock executor for follow-up"
-                    );
-                    let executor = crate::executors::qa_mock::QaMockExecutor;
-                    return executor
-                        .spawn_follow_up_mock(
-                            &effective_dir,
-                            &request.prompt,
-                            &request.session_id,
-                            request.reset_to_message_id.as_deref(),
-                            env,
-                        )
-                        .await;
-                }
-                ExecutorActionType::CodingAgentSessionCommandRequest(request) => {
-                    if let Some(message) = request.static_message() {
-                        return session_command::spawn_static_session_command_reply(message).await;
-                    }
-
-                    let effective_dir = request.effective_dir(current_dir);
-                    let session_id = request.session_id.as_deref().ok_or_else(|| {
-                        ExecutorError::Io(std::io::Error::other(
-                            "No active session for session command",
-                        ))
-                    })?;
-                    let prompt = request.prompt();
-                    tracing::info!(
-                        "QA mode enabled for persisted action: using mock executor for session command"
-                    );
-                    let executor = crate::executors::qa_mock::QaMockExecutor;
-                    return executor
-                        .spawn_follow_up_mock(&effective_dir, &prompt, session_id, None, env)
-                        .await;
-                }
-                ExecutorActionType::ReviewRequest(request) => {
-                    let effective_dir = request.effective_dir(current_dir);
-                    tracing::info!(
-                        "QA mode enabled for persisted action: using mock executor for review"
-                    );
-                    let executor = crate::executors::qa_mock::QaMockExecutor;
-                    return match request.session_id.as_deref() {
-                        Some(session_id) => {
-                            executor
-                                .spawn_follow_up_mock(
-                                    &effective_dir,
-                                    &request.prompt,
-                                    session_id,
-                                    None,
-                                    env,
-                                )
-                                .await
-                        }
-                        None => {
-                            executor
-                                .spawn_mock(&effective_dir, &request.prompt, env)
-                                .await
-                        }
-                    };
-                }
-                ExecutorActionType::ScriptRequest(_) => {}
-            }
-        }
-
         self.typ.spawn(current_dir, approvals, env).await
     }
 }

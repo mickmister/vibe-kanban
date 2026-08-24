@@ -614,17 +614,13 @@ export type QueuedFollowUpData = { message: string, session_command: SessionComm
 
 export type ConflictOp = "rebase" | "merge" | "cherry_pick" | "revert";
 
-<<<<<<< HEAD
-export type ExecutorAction = { typ: ExecutorActionType, next_action: ExecutorAction | null, provenance: ExecutorActionProvenance | null, };
+export type ExecutorAction = { typ: ExecutorActionType, next_action: ExecutorAction | null, provenance: ExecutorActionProvenance | null, log_normalizer?: ExecutorActionLogNormalizer, };
 
 export type ExecutorActionProvenance = { kind: ExecutorActionProvenanceKind, label: string, workflow_run_id: string | null, workflow_name: string | null, workflow_design_id: string | null, workflow_version: bigint | null, };
 
 export enum ExecutorActionProvenanceKind { user = "user", workflow = "workflow", agent = "agent", system = "system" }
-=======
-export type ExecutorAction = { typ: ExecutorActionType, next_action: ExecutorAction | null, log_normalizer?: ExecutorActionLogNormalizer, };
 
 export enum ExecutorActionLogNormalizer { selected_executor = "selected_executor", qa_mock_claude = "qa_mock_claude" }
->>>>>>> 2a65548022970333e0548dc9e213dd005ccfbc21
 
 export type McpConfig = { servers: { [key in string]?: JsonValue }, servers_path: Array<string>, template: JsonValue, preconfigured: JsonValue, is_toml_config: boolean, };
 

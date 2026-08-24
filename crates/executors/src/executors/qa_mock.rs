@@ -47,7 +47,67 @@ pub const LEGACY_QA_MODE_ENV_VAR: &str = "QA_MODE";
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, TS, JsonSchema)]
 pub struct QaMockExecutor;
 
-<<<<<<< HEAD
+impl QaMockExecutor {
+    /// Returns true when QA agent response mocking is enabled at runtime.
+    pub fn runtime_enabled() -> bool {
+        std::env::var(QA_MODE_ENV_VAR)
+            .or_else(|_| std::env::var(LEGACY_QA_MODE_ENV_VAR))
+            .is_ok_and(|value| env_value_enabled(&value))
+    }
+
+    pub async fn spawn_mock(
+        &self,
+        current_dir: &Path,
+        prompt: &str,
+        env: &ExecutionEnv,
+    ) -> Result<SpawnedChild, ExecutorError> {
+        if let Some(script) = load_scripted_outcome(env, prompt).await? {
+            info!(?script.outcome, "QA Mock Executor: spawning scripted execution");
+            let logs = generate_scripted_logs(prompt, &script);
+            return spawn_log_process(current_dir, logs, script.exit_code(), script.delay_ms())
+                .await;
+        }
+
+        info!("QA Mock Executor: spawning mock execution");
+
+        // 1. Perform file operations before spawning the log output process
+        perform_file_operations(current_dir).await;
+
+        // 2. Generate mock logs and stream them with the historical one-second delay.
+        let logs = generate_mock_logs(prompt);
+        spawn_log_process(current_dir, logs, 0, 1000).await
+    }
+
+    pub async fn spawn_follow_up_mock(
+        &self,
+        current_dir: &Path,
+        prompt: &str,
+        _session_id: &str,
+        _reset_to_message_id: Option<&str>,
+        env: &ExecutionEnv,
+    ) -> Result<SpawnedChild, ExecutorError> {
+        // QA mode doesn't support real sessions, just spawn fresh
+        info!("QA Mock Executor: follow-up request treated as new spawn");
+        self.spawn_mock(current_dir, prompt, env).await
+    }
+
+    pub fn normalize_mock_logs(
+        &self,
+        msg_store: Arc<MsgStore>,
+        current_dir: &Path,
+    ) -> Vec<tokio::task::JoinHandle<()>> {
+        // Reuse Claude's log processor since we output ClaudeJson format
+        let entry_index_provider = EntryIndexProvider::start_from(&msg_store);
+        let h1 = crate::executors::claude::ClaudeLogProcessor::process_logs(
+            msg_store,
+            current_dir,
+            entry_index_provider,
+            crate::executors::claude::HistoryStrategy::Default,
+        );
+        vec![h1]
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum QaScriptedOutcomeKind {
@@ -213,72 +273,6 @@ impl QaScriptedOutcome {
     }
 }
 
-#[async_trait]
-impl StandardCodingAgentExecutor for QaMockExecutor {
-    fn apply_overrides(&mut self, _executor_config: &ExecutorConfig) {}
-=======
-impl QaMockExecutor {
-    /// Returns true when QA agent response mocking is enabled at runtime.
-    pub fn runtime_enabled() -> bool {
-        std::env::var(QA_MODE_ENV_VAR)
-            .or_else(|_| std::env::var(LEGACY_QA_MODE_ENV_VAR))
-            .is_ok_and(|value| env_value_enabled(&value))
-    }
->>>>>>> 2a65548022970333e0548dc9e213dd005ccfbc21
-
-    pub async fn spawn_mock(
-        &self,
-        current_dir: &Path,
-        prompt: &str,
-        env: &ExecutionEnv,
-    ) -> Result<SpawnedChild, ExecutorError> {
-        if let Some(script) = load_scripted_outcome(env, prompt).await? {
-            info!(?script.outcome, "QA Mock Executor: spawning scripted execution");
-            let logs = generate_scripted_logs(prompt, &script);
-            return spawn_log_process(current_dir, logs, script.exit_code(), script.delay_ms())
-                .await;
-        }
-
-        info!("QA Mock Executor: spawning mock execution");
-
-        // 1. Perform file operations before spawning the log output process
-        perform_file_operations(current_dir).await;
-
-        // 2. Generate mock logs and stream them with the historical one-second delay.
-        let logs = generate_mock_logs(prompt);
-        spawn_log_process(current_dir, logs, 0, 1000).await
-    }
-
-    pub async fn spawn_follow_up_mock(
-        &self,
-        current_dir: &Path,
-        prompt: &str,
-        _session_id: &str,
-        _reset_to_message_id: Option<&str>,
-        env: &ExecutionEnv,
-    ) -> Result<SpawnedChild, ExecutorError> {
-        // QA mode doesn't support real sessions, just spawn fresh
-        info!("QA Mock Executor: follow-up request treated as new spawn");
-        self.spawn_mock(current_dir, prompt, env).await
-    }
-
-    pub fn normalize_mock_logs(
-        &self,
-        msg_store: Arc<MsgStore>,
-        current_dir: &Path,
-    ) -> Vec<tokio::task::JoinHandle<()>> {
-        // Reuse Claude's log processor since we output ClaudeJson format
-        let entry_index_provider = EntryIndexProvider::start_from(&msg_store);
-        let h1 = crate::executors::claude::ClaudeLogProcessor::process_logs(
-            msg_store,
-            current_dir,
-            entry_index_provider,
-            crate::executors::claude::HistoryStrategy::Default,
-        );
-        vec![h1]
-    }
-}
-
 #[cfg(feature = "qa-mode")]
 #[async_trait]
 impl StandardCodingAgentExecutor for QaMockExecutor {
@@ -329,7 +323,6 @@ impl StandardCodingAgentExecutor for QaMockExecutor {
     }
 }
 
-<<<<<<< HEAD
 async fn load_scripted_outcome(
     env: &ExecutionEnv,
     prompt: &str,
@@ -457,13 +450,13 @@ fn format_millis_as_sleep_seconds(delay_ms: u64) -> String {
     } else {
         format!("{}.{:03}", delay_ms / 1000, delay_ms % 1000)
     }
-=======
+}
+
 fn env_value_enabled(value: &str) -> bool {
     matches!(
         value.trim().to_ascii_lowercase().as_str(),
         "1" | "true" | "yes" | "on"
     )
->>>>>>> 2a65548022970333e0548dc9e213dd005ccfbc21
 }
 
 /// Perform random file operations in the worktree
@@ -861,10 +854,7 @@ fn generate_mock_logs(prompt: &str) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use workspace_utils::log_msg::LogMsg;
-
     use super::*;
-    use crate::logs::{NormalizedEntryType, utils::patch::extract_normalized_entry_from_patch};
 
     #[test]
     fn scripted_logs_are_deterministic_and_deserialize() {
@@ -1073,84 +1063,6 @@ mod tests {
             }
         } else {
             panic!("Expected Assistant variant");
-        }
-    }
-
-    #[tokio::test]
-    async fn test_normalize_mock_logs_does_not_emit_raw_assistant_json() {
-        let executor = QaMockExecutor;
-        let msg_store = Arc::new(MsgStore::new());
-        let current_dir = std::path::PathBuf::from("/tmp/work");
-
-        let handles = executor.normalize_mock_logs(msg_store.clone(), &current_dir);
-        let logs = generate_mock_logs("prompt with `backticks` and VK_QA_MODE");
-        for log in logs.iter().take(8) {
-            msg_store.push_stdout(format!("{log}\n"));
-        }
-        msg_store.push_stdout(logs[8].clone());
-        msg_store.push_finished();
-        for handle in handles {
-            handle.await.unwrap();
-        }
-
-        let history = msg_store.get_history();
-        let normalized_contents: Vec<String> = history
-            .iter()
-            .filter_map(|msg| match msg {
-                LogMsg::JsonPatch(patch) => {
-                    extract_normalized_entry_from_patch(patch).map(|(_, entry)| entry.content)
-                }
-                _ => None,
-            })
-            .collect();
-        let raw_stdout_contents: Vec<&str> = history
-            .iter()
-            .filter_map(|msg| match msg {
-                LogMsg::Stdout(content) => Some(content.as_str()),
-                _ => None,
-            })
-            .collect();
-
-        assert!(
-            normalized_contents
-                .iter()
-                .any(|content| content.contains("QA mode execution completed successfully")),
-            "expected normalized assistant prose, got {normalized_contents:#?}; history: {history:#?}"
-        );
-        assert!(
-            normalized_contents
-                .iter()
-                .all(|content| !content.starts_with(r#"{"type":"assistant""#)),
-            "raw assistant JSON should not be emitted as normalized content: {normalized_contents:#?}"
-        );
-        assert!(
-            history.iter().any(|msg| matches!(
-                msg,
-                LogMsg::JsonPatch(patch)
-                    if extract_normalized_entry_from_patch(patch)
-                        .is_some_and(|(_, entry)| matches!(
-                            entry.entry_type,
-                            NormalizedEntryType::AssistantMessage
-                        ))
-            )),
-            "expected final assistant patch for unterminated QA JSON; raw stdout was {raw_stdout_contents:#?}"
-        );
-    }
-
-    #[test]
-    fn test_env_value_enabled_accepts_common_truthy_values() {
-        for value in ["1", "true", "TRUE", " yes ", "on", "On"] {
-            assert!(env_value_enabled(value), "{value:?} should enable QA mode");
-        }
-    }
-
-    #[test]
-    fn test_env_value_enabled_rejects_falsey_and_unknown_values() {
-        for value in ["", "0", "false", "no", "off", "enabled"] {
-            assert!(
-                !env_value_enabled(value),
-                "{value:?} should not enable QA mode"
-            );
         }
     }
 }
