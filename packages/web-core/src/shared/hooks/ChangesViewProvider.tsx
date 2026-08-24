@@ -15,6 +15,19 @@ interface ChangesViewProviderProps {
   children: React.ReactNode;
 }
 
+interface SelectedScrollRequest {
+  path: string;
+  lineNumber?: number;
+  key: string;
+}
+
+function getSelectedScrollRequestKey(
+  path: string,
+  lineNumber?: number
+): string {
+  return `${path}\u0000${lineNumber ?? ''}`;
+}
+
 export function ChangesViewProvider({ children }: ChangesViewProviderProps) {
   const diffPaths = useDiffPaths();
   const [selectedFilePath, setSelectedFilePath] = useState<string | null>(null);
@@ -26,43 +39,79 @@ export function ChangesViewProvider({ children }: ChangesViewProviderProps) {
   );
 
   const scrollToFileCallbackRef = useRef<ScrollToFileCallback | null>(null);
+  const selectedScrollRequestRef = useRef<SelectedScrollRequest | null>(null);
+  const replayedScrollRequestKeyRef = useRef<string | null>(null);
   const diffPathsRef = useRef(diffPaths);
   diffPathsRef.current = diffPaths;
 
-  const registerScrollToFile = useCallback(
-    (callback: ScrollToFileCallback | null) => {
-      scrollToFileCallbackRef.current = callback;
+  const rememberSelectedFile = useCallback(
+    (path: string, lineNumber?: number) => {
+      selectedScrollRequestRef.current = {
+        path,
+        lineNumber,
+        key: getSelectedScrollRequestKey(path, lineNumber),
+      };
+      replayedScrollRequestKeyRef.current = null;
+      setSelectedFilePath(path);
+      setSelectedLineNumber(lineNumber ?? null);
+      useFileInViewStore.getState().setFileInView(path);
     },
     []
   );
 
-  const selectFile = useCallback((path: string, lineNumber?: number) => {
-    setSelectedFilePath(path);
-    setSelectedLineNumber(lineNumber ?? null);
-    useFileInViewStore.getState().setFileInView(path);
-  }, []);
+  const registerScrollToFile = useCallback(
+    (callback: ScrollToFileCallback | null) => {
+      scrollToFileCallbackRef.current = callback;
+
+      if (!callback) return;
+
+      const request = selectedScrollRequestRef.current;
+      if (!request || replayedScrollRequestKeyRef.current === request.key) {
+        return;
+      }
+
+      replayedScrollRequestKeyRef.current = request.key;
+      callback(request.path, request.lineNumber);
+    },
+    []
+  );
+
+  const selectFile = useCallback(
+    (path: string, lineNumber?: number) => {
+      rememberSelectedFile(path, lineNumber);
+    },
+    [rememberSelectedFile]
+  );
 
   const scrollToFile = useCallback(
     (path: string, lineNumber?: number) => {
-      setSelectedFilePath(path);
-      setSelectedLineNumber(lineNumber ?? null);
-      useFileInViewStore.getState().setFileInView(path);
+      rememberSelectedFile(path, lineNumber);
 
       if (scrollToFileCallbackRef.current) {
+        const request = selectedScrollRequestRef.current;
+        if (request) {
+          replayedScrollRequestKeyRef.current = request.key;
+        }
         scrollToFileCallbackRef.current(path, lineNumber);
-      } else {
-        selectFile(path, lineNumber);
       }
     },
-    [selectFile]
+    [rememberSelectedFile]
   );
 
   const viewFileInChanges = useCallback(
     (filePath: string) => {
+      rememberSelectedFile(filePath);
       setRightMainPanelMode(RIGHT_MAIN_PANEL_MODES.CHANGES);
-      setSelectedFilePath(filePath);
+
+      if (scrollToFileCallbackRef.current) {
+        const request = selectedScrollRequestRef.current;
+        if (request) {
+          replayedScrollRequestKeyRef.current = request.key;
+        }
+        scrollToFileCallbackRef.current(filePath);
+      }
     },
-    [setRightMainPanelMode]
+    [rememberSelectedFile, setRightMainPanelMode]
   );
 
   const findMatchingDiffPath = useCallback((text: string): string | null => {

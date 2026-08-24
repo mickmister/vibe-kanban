@@ -307,7 +307,7 @@ const DiffFileItem = memo(function DiffFileItem({
 }: DiffFileItemProps) {
   const { t } = useTranslation('common');
   const filePath = diff.newPath || diff.oldPath || '';
-  const expandKey = `diff:${filePath}`;
+  const expandKey = `diff:${workspaceId}:${filePath}`;
 
   const expanded = useUiPreferencesStore(
     (s) => s.expanded[expandKey] ?? initialExpanded
@@ -766,7 +766,7 @@ export const ChangesPanelContainer = memo(function ChangesPanelContainer({
 
   const handleScrollToFile = useCallback(
     (path: string, lineNumber?: number) => {
-      const expandKey = `diff:${path}`;
+      const expandKey = `diff:${workspaceId}:${path}`;
       const expandedState = useUiPreferencesStore.getState().expanded;
       if (!(expandedState[expandKey] ?? false)) {
         useUiPreferencesStore.getState().setExpanded(expandKey, true);
@@ -815,7 +815,7 @@ export const ChangesPanelContainer = memo(function ChangesPanelContainer({
           });
       });
     },
-    [diffItems.length, beginProgrammaticScroll, onScrollComplete]
+    [workspaceId, diffItems.length, beginProgrammaticScroll, onScrollComplete]
   );
 
   useEffect(() => {
