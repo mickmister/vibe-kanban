@@ -12,6 +12,7 @@ import {
 import { useFileInViewStore } from '@/shared/stores/useFileInViewStore';
 
 interface ChangesViewProviderProps {
+  workspaceId?: string;
   children: React.ReactNode;
 }
 
@@ -28,7 +29,10 @@ function getSelectedScrollRequestKey(
   return `${path}\u0000${lineNumber ?? ''}`;
 }
 
-export function ChangesViewProvider({ children }: ChangesViewProviderProps) {
+export function ChangesViewProvider({
+  workspaceId,
+  children,
+}: ChangesViewProviderProps) {
   const diffPaths = useDiffPaths();
   const [selectedFilePath, setSelectedFilePath] = useState<string | null>(null);
   const [selectedLineNumber, setSelectedLineNumber] = useState<number | null>(
@@ -101,7 +105,9 @@ export function ChangesViewProvider({ children }: ChangesViewProviderProps) {
   const viewFileInChanges = useCallback(
     (filePath: string) => {
       rememberSelectedFile(filePath);
-      setRightMainPanelMode(RIGHT_MAIN_PANEL_MODES.CHANGES);
+      if (workspaceId) {
+        setRightMainPanelMode(RIGHT_MAIN_PANEL_MODES.CHANGES, workspaceId);
+      }
 
       if (scrollToFileCallbackRef.current) {
         const request = selectedScrollRequestRef.current;
@@ -111,7 +117,7 @@ export function ChangesViewProvider({ children }: ChangesViewProviderProps) {
         scrollToFileCallbackRef.current(filePath);
       }
     },
-    [rememberSelectedFile, setRightMainPanelMode]
+    [rememberSelectedFile, setRightMainPanelMode, workspaceId]
   );
 
   const findMatchingDiffPath = useCallback((text: string): string | null => {

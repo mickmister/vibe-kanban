@@ -10,6 +10,10 @@ import {
   useChangesView,
   type ScrollToFileCallback,
 } from '@/shared/hooks/useChangesView';
+import {
+  RIGHT_MAIN_PANEL_MODES,
+  useUiPreferencesStore,
+} from '@/shared/stores/useUiPreferencesStore';
 
 (
   globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }
@@ -17,6 +21,11 @@ import {
 
 afterEach(() => {
   vi.clearAllMocks();
+  useUiPreferencesStore.setState({
+    mobileActiveTab: 'chat',
+    workspacePanelStates: {},
+    isLeftSidebarVisible: true,
+  });
 });
 
 describe('ChangesViewProvider', () => {
@@ -68,7 +77,9 @@ describe('ChangesViewProvider', () => {
   it('replays a file opened from chat after the changes panel mounts', async () => {
     mockMatchMedia(true);
 
-    const { getApi, unmount } = await renderProviderProbe();
+    const { getApi, unmount } = await renderProviderProbe({
+      workspaceId: 'workspace-1',
+    });
     const scrollToFile = vi.fn<ScrollToFileCallback>();
 
     await act(async () => {
@@ -83,6 +94,29 @@ describe('ChangesViewProvider', () => {
 
     expect(scrollToFile).toHaveBeenCalledTimes(1);
     expect(scrollToFile).toHaveBeenCalledWith('src/from-chat.ts', undefined);
+    expect(
+      useUiPreferencesStore.getState().getWorkspacePanelState('workspace-1')
+        .rightMainPanelMode
+    ).toBe(RIGHT_MAIN_PANEL_MODES.CHANGES);
+    expect(useUiPreferencesStore.getState().mobileActiveTab).toBe('changes');
+
+    await unmount();
+  });
+
+  it('does not switch panels when opening a file without a workspace id', async () => {
+    mockMatchMedia(true);
+
+    const { getApi, unmount } = await renderProviderProbe();
+
+    await act(async () => {
+      getApi().viewFileInChanges('src/from-chat.ts');
+    });
+
+    expect(
+      useUiPreferencesStore.getState().getWorkspacePanelState('workspace-1')
+        .rightMainPanelMode
+    ).not.toBe(RIGHT_MAIN_PANEL_MODES.CHANGES);
+    expect(useUiPreferencesStore.getState().mobileActiveTab).toBe('chat');
 
     await unmount();
   });
@@ -104,7 +138,9 @@ function mockMatchMedia(matches: boolean) {
   });
 }
 
-async function renderProviderProbe() {
+async function renderProviderProbe({
+  workspaceId,
+}: { workspaceId?: string } = {}) {
   const container = document.createElement('div');
   document.body.appendChild(container);
   const root = createRoot(container);
@@ -117,7 +153,7 @@ async function renderProviderProbe() {
 
   await act(async () => {
     root.render(
-      <ChangesViewProvider>
+      <ChangesViewProvider workspaceId={workspaceId}>
         <Probe />
       </ChangesViewProvider>
     );
