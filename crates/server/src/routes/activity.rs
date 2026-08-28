@@ -1853,10 +1853,10 @@ mod tests {
         assert_eq!(replay.status, WorkflowCallbackStatus::Delivered);
         assert_eq!(replay.delivered_ref.as_deref(), Some("vk:opaque"));
 
-        let failed = WorkflowCallbackRegistryItem::update_status(
+        let stale_failed = WorkflowCallbackRegistryItem::update_status(
             &db.pool,
             &UpdateWorkflowCallbackRegistryStatus {
-                callback_key: input.callback_key,
+                callback_key: input.callback_key.clone(),
                 status: WorkflowCallbackStatus::Failed,
                 delivered_ref: None,
                 error_message: Some("webhook /Users/me queue_item raw XML".to_string()),
@@ -1864,13 +1864,14 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(failed.status, WorkflowCallbackStatus::Failed);
+        assert_eq!(stale_failed.status, WorkflowCallbackStatus::Delivered);
+        assert_eq!(stale_failed.delivered_ref.as_deref(), Some("vk:opaque"));
 
         let snapshot = build_activity_v1_snapshot(&db, &ActivityV1Filters::default())
             .await
             .unwrap();
         let callback = &snapshot.workspaces[0].sessions[0].callbacks[0];
-        assert_eq!(callback.status, ActivityV1CallbackStatus::Failed);
+        assert_eq!(callback.status, ActivityV1CallbackStatus::Delivered);
         let serialized = serde_json::to_string(callback)
             .unwrap()
             .to_ascii_lowercase();
@@ -1878,5 +1879,175 @@ mod tests {
         assert!(!serialized.contains("/users/"));
         assert!(!serialized.contains("queue_item"));
         assert!(!serialized.contains("raw xml"));
+    }
+
+    #[tokio::test]
+    async fn workflow_callback_registry_rejects_mismatched_idempotency_replay() {
+        use db::models::workflow_callback_registry::{
+            UpsertWorkflowCallbackRegistryItem, WorkflowCallbackKind, WorkflowCallbackRegistryItem,
+        };
+
+        let db = test_db().await;
+        let workspace_id = Uuid::new_v4();
+        let other_workspace_id = Uuid::new_v4();
+        let session_id = Uuid::new_v4();
+        let other_session_id = Uuid::new_v4();
+        sqlx::query("INSERT INTO sessions (id, workspace_id) VALUES (?1, ?2), (?3, ?4)")
+            .bind(session_id)
+            .bind(workspace_id)
+            .bind(other_session_id)
+            .bind(other_workspace_id)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        let input = UpsertWorkflowCallbackRegistryItem {
+            callback_key: "workflow-completion:run-1:session-1".to_string(),
+            workspace_id,
+            target_session_id: session_id,
+            kind: WorkflowCallbackKind::WorkflowCompletion,
+            workflow_run_id: "run-1".to_string(),
+            workflow_name: Some("Workflow".to_string()),
+            workflow_design_id: Some("design-1".to_string()),
+            workflow_version: Some(1),
+        };
+        WorkflowCallbackRegistryItem::upsert_pending(&db.pool, &input)
+            .await
+            .unwrap();
+
+        let mut mismatched_run = input.clone();
+        mismatched_run.workflow_run_id = "run-2".to_string();
+        let err = WorkflowCallbackRegistryItem::upsert_pending(&db.pool, &mismatched_run)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("different workflow callback"));
+
+        let mut mismatched_workspace = input.clone();
+        mismatched_workspace.workspace_id = other_workspace_id;
+        let err = WorkflowCallbackRegistryItem::upsert_pending(&db.pool, &mismatched_workspace)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("different workflow callback"));
+
+        let mut mismatched_session = input.clone();
+        mismatched_session.target_session_id = other_session_id;
+        let err = WorkflowCallbackRegistryItem::upsert_pending(&db.pool, &mismatched_session)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("different workflow callback"));
+
+        let stored = WorkflowCallbackRegistryItem::find_by_key(&db.pool, &input.callback_key)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.workflow_run_id, "run-1");
+        assert_eq!(stored.workspace_id, workspace_id);
+        assert_eq!(stored.target_session_id, session_id);
+    }
+
+    #[tokio::test]
+    async fn workflow_callback_registry_keeps_failed_and_superseded_terminal() {
+        use db::models::workflow_callback_registry::{
+            UpdateWorkflowCallbackRegistryStatus, UpsertWorkflowCallbackRegistryItem,
+            WorkflowCallbackKind, WorkflowCallbackRegistryItem, WorkflowCallbackStatus,
+        };
+
+        let db = test_db().await;
+        let workspace_id = Uuid::new_v4();
+        let session_id = Uuid::new_v4();
+        sqlx::query("INSERT INTO sessions (id, workspace_id) VALUES (?1, ?2)")
+            .bind(session_id)
+            .bind(workspace_id)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        let input = UpsertWorkflowCallbackRegistryItem {
+            callback_key: "workflow-completion:run-terminal:session-1".to_string(),
+            workspace_id,
+            target_session_id: session_id,
+            kind: WorkflowCallbackKind::WorkflowCompletion,
+            workflow_run_id: "run-terminal".to_string(),
+            workflow_name: Some("Workflow".to_string()),
+            workflow_design_id: Some("design-1".to_string()),
+            workflow_version: Some(1),
+        };
+        WorkflowCallbackRegistryItem::upsert_pending(&db.pool, &input)
+            .await
+            .unwrap();
+        let failed = WorkflowCallbackRegistryItem::update_status(
+            &db.pool,
+            &UpdateWorkflowCallbackRegistryStatus {
+                callback_key: input.callback_key.clone(),
+                status: WorkflowCallbackStatus::Failed,
+                delivered_ref: None,
+                error_message: Some("first failure".to_string()),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(failed.status, WorkflowCallbackStatus::Failed);
+
+        let stale_pending = WorkflowCallbackRegistryItem::update_status(
+            &db.pool,
+            &UpdateWorkflowCallbackRegistryStatus {
+                callback_key: input.callback_key.clone(),
+                status: WorkflowCallbackStatus::Pending,
+                delivered_ref: None,
+                error_message: None,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(stale_pending.status, WorkflowCallbackStatus::Failed);
+        assert_eq!(
+            stale_pending.error_message.as_deref(),
+            Some("first failure")
+        );
+
+        let stale_delivered = WorkflowCallbackRegistryItem::update_status(
+            &db.pool,
+            &UpdateWorkflowCallbackRegistryStatus {
+                callback_key: input.callback_key.clone(),
+                status: WorkflowCallbackStatus::Delivered,
+                delivered_ref: Some("vk:late".to_string()),
+                error_message: None,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(stale_delivered.status, WorkflowCallbackStatus::Failed);
+        assert_eq!(stale_delivered.delivered_ref, None);
+
+        let superseded_input = UpsertWorkflowCallbackRegistryItem {
+            callback_key: "workflow-completion:run-superseded:session-1".to_string(),
+            workflow_run_id: "run-superseded".to_string(),
+            ..input
+        };
+        WorkflowCallbackRegistryItem::upsert_pending(&db.pool, &superseded_input)
+            .await
+            .unwrap();
+        WorkflowCallbackRegistryItem::update_status(
+            &db.pool,
+            &UpdateWorkflowCallbackRegistryStatus {
+                callback_key: superseded_input.callback_key.clone(),
+                status: WorkflowCallbackStatus::Superseded,
+                delivered_ref: None,
+                error_message: None,
+            },
+        )
+        .await
+        .unwrap();
+        let stale = WorkflowCallbackRegistryItem::update_status(
+            &db.pool,
+            &UpdateWorkflowCallbackRegistryStatus {
+                callback_key: superseded_input.callback_key,
+                status: WorkflowCallbackStatus::Delivered,
+                delivered_ref: Some("vk:late".to_string()),
+                error_message: None,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(stale.status, WorkflowCallbackStatus::Superseded);
+        assert_eq!(stale.delivered_ref, None);
     }
 }

@@ -69,25 +69,11 @@ impl WorkflowCallbackRegistryItem {
         let id = Uuid::new_v4();
         let now = Utc::now();
         sqlx::query(
-            r#"INSERT INTO workflow_callback_registry (
+            r#"INSERT OR IGNORE INTO workflow_callback_registry (
                 id, callback_key, workspace_id, target_session_id, kind, status,
                 workflow_run_id, workflow_name, workflow_design_id, workflow_version,
                 created_at, updated_at
-            ) VALUES (?1, ?2, ?3, ?4, ?5, 'pending', ?6, ?7, ?8, ?9, ?10, ?10)
-            ON CONFLICT(callback_key) DO UPDATE SET
-                workspace_id = excluded.workspace_id,
-                target_session_id = excluded.target_session_id,
-                kind = excluded.kind,
-                workflow_run_id = excluded.workflow_run_id,
-                workflow_name = excluded.workflow_name,
-                workflow_design_id = excluded.workflow_design_id,
-                workflow_version = excluded.workflow_version,
-                status = CASE
-                    WHEN workflow_callback_registry.status IN ('delivered', 'failed', 'superseded')
-                    THEN workflow_callback_registry.status
-                    ELSE 'pending'
-                END,
-                updated_at = ?10"#,
+            ) VALUES (?1, ?2, ?3, ?4, ?5, 'pending', ?6, ?7, ?8, ?9, ?10, ?10)"#,
         )
         .bind(id)
         .bind(&input.callback_key)
@@ -101,24 +87,34 @@ impl WorkflowCallbackRegistryItem {
         .bind(now)
         .execute(pool)
         .await?;
-        Self::find_by_key(pool, &input.callback_key)
+        let existing = Self::find_by_key(pool, &input.callback_key)
             .await?
-            .ok_or(sqlx::Error::RowNotFound)
+            .ok_or(sqlx::Error::RowNotFound)?;
+        if !existing.matches_identity(input) {
+            return Err(sqlx::Error::Protocol(
+                "Callback key already exists for a different workflow callback.".to_string(),
+            ));
+        }
+        Ok(existing)
     }
 
     pub async fn update_status(
         pool: &SqlitePool,
         input: &UpdateWorkflowCallbackRegistryStatus,
     ) -> Result<Self, sqlx::Error> {
+        let existing = Self::find_by_key(pool, &input.callback_key)
+            .await?
+            .ok_or(sqlx::Error::RowNotFound)?;
+        if existing.status.is_terminal() || input.status == WorkflowCallbackStatus::Pending {
+            return Ok(existing);
+        }
+
         let now = Utc::now();
         sqlx::query(
             r#"UPDATE workflow_callback_registry
-               SET status = CASE
-                       WHEN status = 'delivered' AND ?2 = 'delivered' THEN status
-                       ELSE ?2
-                   END,
-                   delivered_ref = COALESCE(?3, delivered_ref),
-                   error_message = ?4,
+               SET status = ?2,
+                   delivered_ref = CASE WHEN ?2 = 'delivered' THEN COALESCE(?3, delivered_ref) ELSE delivered_ref END,
+                   error_message = CASE WHEN ?2 = 'failed' THEN ?4 ELSE NULL END,
                    updated_at = ?5
                WHERE callback_key = ?1"#,
         )
@@ -178,5 +174,26 @@ impl WorkflowCallbackRegistryItem {
             query = query.bind(session_id);
         }
         query.bind(limit).fetch_all(pool).await
+    }
+
+    fn matches_identity(&self, input: &UpsertWorkflowCallbackRegistryItem) -> bool {
+        self.workspace_id == input.workspace_id
+            && self.target_session_id == input.target_session_id
+            && self.kind == input.kind
+            && self.workflow_run_id == input.workflow_run_id
+            && self.workflow_name == input.workflow_name
+            && self.workflow_design_id == input.workflow_design_id
+            && self.workflow_version == input.workflow_version
+    }
+}
+
+impl WorkflowCallbackStatus {
+    fn is_terminal(self) -> bool {
+        matches!(
+            self,
+            WorkflowCallbackStatus::Delivered
+                | WorkflowCallbackStatus::Failed
+                | WorkflowCallbackStatus::Superseded
+        )
     }
 }
