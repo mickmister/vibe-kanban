@@ -246,6 +246,10 @@ export enum ActivityV1CallbackStatus { waiting = "waiting", delivered = "deliver
 
 export type ActivityV1Link = { rel: string, href: string, };
 
+export type ActivityV1WsEvent = { schema_version: string, event_id: string, cursor: string, event_type: ActivityV1WsEventType, generated_at: string, snapshot: ActivityV1Snapshot | null, reason: string | null, };
+
+export enum ActivityV1WsEventType { snapshot = "snapshot", refresh_snapshot = "refresh_snapshot", heartbeat = "heartbeat" }
+
 export type UpsertWorkflowCallbackRequest = { callback_key: string, workspace_id: string, target_session_id: string, kind: WorkflowCallbackKind, workflow_run_id: string, workflow_name: string | null, workflow_design_id: string | null, workflow_version: bigint | null, };
 
 export type UpdateWorkflowCallbackStatusRequest = { status: WorkflowCallbackStatus, delivered_ref: string | null, error_message: string | null, };
