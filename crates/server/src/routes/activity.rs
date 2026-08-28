@@ -1,4 +1,7 @@
-use std::collections::{BTreeMap, HashMap};
+use std::{
+    collections::{BTreeMap, HashMap},
+    time::Duration,
+};
 
 use axum::{
     Json, Router,
@@ -231,6 +234,40 @@ pub struct ActivityV1Link {
     pub href: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ActivityV1WsEvent {
+    pub schema_version: String,
+    pub event_id: String,
+    pub cursor: String,
+    pub event_type: ActivityV1WsEventType,
+    pub generated_at: DateTime<Utc>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub snapshot: Option<ActivityV1Snapshot>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+#[ts(use_ts_enum)]
+#[ts(export)]
+pub enum ActivityV1WsEventType {
+    Snapshot,
+    RefreshSnapshot,
+    Heartbeat,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct ActivityV1WsQuery {
+    #[serde(default)]
+    pub workspace_id: Option<Uuid>,
+    #[serde(default)]
+    pub session_id: Option<Uuid>,
+    #[serde(default)]
+    pub cursor: Option<String>,
+}
+
 #[derive(Debug, Clone, Deserialize, TS)]
 #[ts(export)]
 pub struct UpsertWorkflowCallbackRequest {
@@ -394,6 +431,7 @@ pub fn router(deployment: &DeploymentImpl) -> Router<DeploymentImpl> {
             post(update_workflow_callback_status),
         )
         .route("/activity/ws", get(stream_activity_ws))
+        .route("/activity/v1/ws", get(stream_activity_v1_ws))
         .with_state(deployment.clone())
 }
 
@@ -443,6 +481,7 @@ async fn upsert_workflow_callback(
     let item = WorkflowCallbackRegistryItem::upsert_pending(&deployment.db().pool, &input)
         .await
         .map_err(|error| ApiError::BadRequest(error.to_string()))?;
+    deployment.queued_message_service().notify();
     Ok(axum::Json(ApiResponse::success(item)))
 }
 
@@ -467,7 +506,167 @@ async fn update_workflow_callback_status(
     let item = WorkflowCallbackRegistryItem::update_status(&deployment.db().pool, &input)
         .await
         .map_err(|error| ApiError::BadRequest(error.to_string()))?;
+    deployment.queued_message_service().notify();
     Ok(axum::Json(ApiResponse::success(item)))
+}
+
+async fn stream_activity_v1_ws(
+    ws: SignedWsUpgrade,
+    Query(query): Query<ActivityV1WsQuery>,
+    State(deployment): State<DeploymentImpl>,
+) -> impl IntoResponse {
+    ws.on_upgrade(move |socket| async move {
+        if let Err(error) = handle_activity_v1_ws(socket, deployment, query).await {
+            tracing::warn!("activity v1 WS closed: {}", error);
+        }
+    })
+}
+
+async fn handle_activity_v1_ws(
+    mut socket: MaybeSignedWebSocket,
+    deployment: DeploymentImpl,
+    query: ActivityV1WsQuery,
+) -> anyhow::Result<()> {
+    let filters = ActivityV1Filters {
+        workspace_id: query.workspace_id,
+        session_id: query.session_id,
+    };
+    if query
+        .cursor
+        .as_deref()
+        .is_some_and(|cursor| !cursor.is_empty())
+    {
+        send_activity_v1_refresh_snapshot(&mut socket).await?;
+    }
+    send_activity_v1_snapshot(&mut socket, deployment.db(), &filters).await?;
+
+    let mut db_events = deployment.events().msg_store().get_receiver();
+    let queue_notifier = deployment.queued_message_service().notifier();
+    let mut heartbeat = tokio::time::interval(activity_v1_heartbeat_interval());
+    heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
+    loop {
+        tokio::select! {
+            _ = heartbeat.tick() => {
+                if send_activity_v1_heartbeat(&mut socket).await.is_err() {
+                    break;
+                }
+            }
+            event = db_events.recv() => {
+                match event {
+                    Ok(msg) if activity_relevant_msg(&msg) => {
+                        if send_activity_v1_snapshot(&mut socket, deployment.db(), &filters).await.is_err() {
+                            break;
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                        if send_activity_v1_refresh_snapshot(&mut socket).await.is_err()
+                            || send_activity_v1_snapshot(&mut socket, deployment.db(), &filters).await.is_err()
+                        {
+                            break;
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
+            _ = queue_notifier.notified() => {
+                if send_activity_v1_snapshot(&mut socket, deployment.db(), &filters).await.is_err() {
+                    break;
+                }
+            }
+            inbound = socket.recv() => {
+                match inbound {
+                    Ok(Some(Message::Close(_))) => break,
+                    Ok(Some(_)) => {}
+                    Ok(None) => break,
+                    Err(_) => break,
+                }
+            }
+        }
+    }
+
+    let _ = socket.close().await;
+    Ok(())
+}
+
+async fn send_activity_v1_snapshot(
+    socket: &mut MaybeSignedWebSocket,
+    db: &DBService,
+    filters: &ActivityV1Filters,
+) -> anyhow::Result<()> {
+    let snapshot = build_activity_v1_snapshot(db, filters).await?;
+    send_activity_v1_event(socket, activity_v1_snapshot_event(snapshot)).await
+}
+
+async fn send_activity_v1_refresh_snapshot(
+    socket: &mut MaybeSignedWebSocket,
+) -> anyhow::Result<()> {
+    send_activity_v1_event(socket, activity_v1_refresh_snapshot_event()).await
+}
+
+async fn send_activity_v1_heartbeat(socket: &mut MaybeSignedWebSocket) -> anyhow::Result<()> {
+    send_activity_v1_event(socket, activity_v1_heartbeat_event()).await
+}
+
+async fn send_activity_v1_event(
+    socket: &mut MaybeSignedWebSocket,
+    event: ActivityV1WsEvent,
+) -> anyhow::Result<()> {
+    socket
+        .send(Message::Text(serde_json::to_string(&event)?.into()))
+        .await?;
+    Ok(())
+}
+
+fn activity_v1_snapshot_event(snapshot: ActivityV1Snapshot) -> ActivityV1WsEvent {
+    let generated_at = snapshot.generated_at;
+    ActivityV1WsEvent {
+        schema_version: "activity.v1.ws".to_string(),
+        event_id: activity_v1_cursor("snapshot", generated_at),
+        cursor: activity_v1_cursor("snapshot", generated_at),
+        event_type: ActivityV1WsEventType::Snapshot,
+        generated_at,
+        snapshot: Some(snapshot),
+        reason: None,
+    }
+}
+
+fn activity_v1_refresh_snapshot_event() -> ActivityV1WsEvent {
+    let generated_at = Utc::now();
+    ActivityV1WsEvent {
+        schema_version: "activity.v1.ws".to_string(),
+        event_id: activity_v1_cursor("refresh", generated_at),
+        cursor: activity_v1_cursor("refresh", generated_at),
+        event_type: ActivityV1WsEventType::RefreshSnapshot,
+        generated_at,
+        snapshot: None,
+        reason: Some(
+            "Replay is not available for this activity cursor. Refresh the activity snapshot."
+                .to_string(),
+        ),
+    }
+}
+
+fn activity_v1_heartbeat_event() -> ActivityV1WsEvent {
+    let generated_at = Utc::now();
+    ActivityV1WsEvent {
+        schema_version: "activity.v1.ws".to_string(),
+        event_id: activity_v1_cursor("heartbeat", generated_at),
+        cursor: activity_v1_cursor("heartbeat", generated_at),
+        event_type: ActivityV1WsEventType::Heartbeat,
+        generated_at,
+        snapshot: None,
+        reason: None,
+    }
+}
+
+fn activity_v1_cursor(prefix: &str, generated_at: DateTime<Utc>) -> String {
+    format!("{prefix}:{}", generated_at.timestamp_millis())
+}
+
+fn activity_v1_heartbeat_interval() -> Duration {
+    Duration::from_secs(15)
 }
 
 async fn stream_activity_ws(
@@ -1230,6 +1429,7 @@ fn scrub_product_text(value: &str, fallback: &str, max_chars: usize) -> String {
         ("queue item", "pending work"),
         ("webhook", "connection"),
         ("hmac", "signature"),
+        ("trigger", "automation event"),
         ("delivery id", "delivery"),
         ("delivery_id", "delivery"),
         ("execution process id", "run"),
@@ -1364,7 +1564,9 @@ mod tests {
 
     use super::{
         ActivitySessionStatus, ActivityV1CallbackStatus, ActivityV1Filters,
-        ActivityV1SessionStatus, build_activity_snapshot, build_activity_v1_snapshot,
+        ActivityV1SessionStatus, ActivityV1WsEventType, activity_v1_heartbeat_event,
+        activity_v1_refresh_snapshot_event, activity_v1_snapshot_event, build_activity_snapshot,
+        build_activity_v1_snapshot,
     };
 
     async fn test_db() -> DBService {
@@ -1656,6 +1858,84 @@ mod tests {
                 "activity v1 payload leaked forbidden term: {forbidden}\n{serialized}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn activity_v1_ws_snapshot_event_uses_product_safe_contract() {
+        let db = test_db().await;
+        let workspace_id = Uuid::new_v4();
+        let session_id = Uuid::new_v4();
+        let now = Utc.with_ymd_and_hms(2026, 8, 28, 12, 0, 0).unwrap();
+        sqlx::query("INSERT INTO sessions (id, workspace_id) VALUES (?1, ?2)")
+            .bind(session_id)
+            .bind(workspace_id)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            r#"INSERT INTO workflow_callback_registry
+               (id, callback_key, workspace_id, target_session_id, kind, status, workflow_run_id, workflow_name, workflow_design_id, workflow_version, error_message, created_at, updated_at)
+               VALUES (?1, 'workflow-completion:run-ws:session-a', ?2, ?3, 'workflow_completion', 'failed', 'run-ws', 'Webhook /tmp/raw XML workflow', 'design-a', 3, 'queue_item /Users/me shell bd show git status provider diagnostics trigger delivery ID execution process ID', ?4, ?4)"#,
+        )
+        .bind(Uuid::new_v4())
+        .bind(workspace_id)
+        .bind(session_id)
+        .bind(now)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+
+        let snapshot = build_activity_v1_snapshot(&db, &ActivityV1Filters::default())
+            .await
+            .unwrap();
+        let event = activity_v1_snapshot_event(snapshot);
+        assert_eq!(event.schema_version, "activity.v1.ws");
+        assert_eq!(event.event_type, ActivityV1WsEventType::Snapshot);
+        assert!(event.cursor.starts_with("snapshot:"));
+        assert!(event.snapshot.is_some());
+
+        let serialized = serde_json::to_string(&event).unwrap().to_ascii_lowercase();
+        for forbidden in [
+            "/users/",
+            "/tmp/",
+            "webhook",
+            "queue_item",
+            "bd show",
+            "git status",
+            "shell",
+            "provider diagnostics",
+            "trigger",
+            "delivery id",
+            "execution process id",
+            "raw xml",
+        ] {
+            assert!(
+                !serialized.contains(forbidden),
+                "activity v1 websocket event leaked forbidden term: {forbidden}
+{serialized}"
+            );
+        }
+    }
+
+    #[test]
+    fn activity_v1_ws_heartbeat_and_reconnect_events_are_versioned() {
+        let heartbeat = activity_v1_heartbeat_event();
+        assert_eq!(heartbeat.schema_version, "activity.v1.ws");
+        assert_eq!(heartbeat.event_type, ActivityV1WsEventType::Heartbeat);
+        assert!(heartbeat.snapshot.is_none());
+        assert!(heartbeat.cursor.starts_with("heartbeat:"));
+
+        let refresh = activity_v1_refresh_snapshot_event();
+        assert_eq!(refresh.schema_version, "activity.v1.ws");
+        assert_eq!(refresh.event_type, ActivityV1WsEventType::RefreshSnapshot);
+        assert!(refresh.snapshot.is_none());
+        assert_eq!(
+            refresh.reason.as_deref(),
+            Some(
+                "Replay is not available for this activity cursor. Refresh the activity snapshot."
+            )
+        );
+        assert!(refresh.cursor.starts_with("refresh:"));
     }
 
     #[tokio::test]

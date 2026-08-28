@@ -85,6 +85,8 @@ fn generate_types_content() -> String {
         server::routes::activity::ActivityV1CallbackKind::decl(),
         server::routes::activity::ActivityV1CallbackStatus::decl(),
         server::routes::activity::ActivityV1Link::decl(),
+        server::routes::activity::ActivityV1WsEvent::decl(),
+        server::routes::activity::ActivityV1WsEventType::decl(),
         server::routes::activity::UpsertWorkflowCallbackRequest::decl(),
         server::routes::activity::UpdateWorkflowCallbackStatusRequest::decl(),
         db::models::workflow_callback_registry::WorkflowCallbackKind::decl(),
