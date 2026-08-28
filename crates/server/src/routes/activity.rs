@@ -1,10 +1,10 @@
 use std::collections::{BTreeMap, HashMap};
 
 use axum::{
-    Router,
-    extract::{Query, State, ws::Message},
+    Json, Router,
+    extract::{Path, Query, State, ws::Message},
     response::IntoResponse,
-    routing::get,
+    routing::{get, post},
 };
 use chrono::{DateTime, Utc};
 use db::{
@@ -12,6 +12,10 @@ use db::{
     models::{
         agent_message_queue::{AgentMessageQueueStatus, AgentMessageSource, QueuedFollowUpData},
         execution_process::{ExecutionProcessRunReason, ExecutionProcessStatus},
+        workflow_callback_registry::{
+            UpdateWorkflowCallbackRegistryStatus, UpsertWorkflowCallbackRegistryItem,
+            WorkflowCallbackKind, WorkflowCallbackRegistryItem, WorkflowCallbackStatus,
+        },
     },
 };
 use deployment::Deployment;
@@ -227,6 +231,37 @@ pub struct ActivityV1Link {
     pub href: String,
 }
 
+#[derive(Debug, Clone, Deserialize, TS)]
+#[ts(export)]
+pub struct UpsertWorkflowCallbackRequest {
+    pub callback_key: String,
+    pub workspace_id: Uuid,
+    pub target_session_id: Uuid,
+    #[serde(default = "default_workflow_callback_kind")]
+    pub kind: WorkflowCallbackKind,
+    pub workflow_run_id: String,
+    #[serde(default)]
+    pub workflow_name: Option<String>,
+    #[serde(default)]
+    pub workflow_design_id: Option<String>,
+    #[serde(default)]
+    pub workflow_version: Option<i64>,
+}
+
+#[derive(Debug, Clone, Deserialize, TS)]
+#[ts(export)]
+pub struct UpdateWorkflowCallbackStatusRequest {
+    pub status: WorkflowCallbackStatus,
+    #[serde(default)]
+    pub delivered_ref: Option<String>,
+    #[serde(default)]
+    pub error_message: Option<String>,
+}
+
+fn default_workflow_callback_kind() -> WorkflowCallbackKind {
+    WorkflowCallbackKind::WorkflowCompletion
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct ActivityV1Filters {
     pub workspace_id: Option<Uuid>,
@@ -350,6 +385,14 @@ pub fn router(deployment: &DeploymentImpl) -> Router<DeploymentImpl> {
     Router::new()
         .route("/activity", get(get_activity_snapshot))
         .route("/activity/v1", get(get_activity_v1_snapshot))
+        .route(
+            "/activity/v1/workflow-callbacks",
+            post(upsert_workflow_callback),
+        )
+        .route(
+            "/activity/v1/workflow-callbacks/{callback_key}/status",
+            post(update_workflow_callback_status),
+        )
         .route("/activity/ws", get(stream_activity_ws))
         .with_state(deployment.clone())
 }
@@ -368,6 +411,63 @@ async fn get_activity_v1_snapshot(
     let filters = ActivityV1Filters::from_query(&query);
     let snapshot = build_activity_v1_snapshot(deployment.db(), &filters).await?;
     Ok(axum::Json(ApiResponse::success(snapshot)))
+}
+
+async fn upsert_workflow_callback(
+    State(deployment): State<DeploymentImpl>,
+    Json(payload): Json<UpsertWorkflowCallbackRequest>,
+) -> Result<axum::Json<ApiResponse<WorkflowCallbackRegistryItem>>, ApiError> {
+    validate_callback_key(&payload.callback_key)?;
+    validate_callback_ref(&payload.workflow_run_id, "workflow_run_id")?;
+    if let Some(design_id) = &payload.workflow_design_id {
+        validate_callback_ref(design_id, "workflow_design_id")?;
+    }
+    ensure_session_in_workspace(
+        &deployment.db().pool,
+        payload.target_session_id,
+        payload.workspace_id,
+    )
+    .await?;
+    let input = UpsertWorkflowCallbackRegistryItem {
+        callback_key: payload.callback_key,
+        workspace_id: payload.workspace_id,
+        target_session_id: payload.target_session_id,
+        kind: payload.kind,
+        workflow_run_id: payload.workflow_run_id,
+        workflow_name: payload
+            .workflow_name
+            .map(|value| scrub_product_text(&value, "Workflow", 160)),
+        workflow_design_id: payload.workflow_design_id,
+        workflow_version: payload.workflow_version,
+    };
+    let item = WorkflowCallbackRegistryItem::upsert_pending(&deployment.db().pool, &input)
+        .await
+        .map_err(|error| ApiError::BadRequest(error.to_string()))?;
+    Ok(axum::Json(ApiResponse::success(item)))
+}
+
+async fn update_workflow_callback_status(
+    Path(callback_key): Path<String>,
+    State(deployment): State<DeploymentImpl>,
+    Json(payload): Json<UpdateWorkflowCallbackStatusRequest>,
+) -> Result<axum::Json<ApiResponse<WorkflowCallbackRegistryItem>>, ApiError> {
+    validate_callback_key(&callback_key)?;
+    let input = UpdateWorkflowCallbackRegistryStatus {
+        callback_key,
+        status: payload.status,
+        delivered_ref: payload
+            .delivered_ref
+            .as_deref()
+            .map(|value| scrub_identifier(value, 160)),
+        error_message: payload
+            .error_message
+            .as_deref()
+            .map(|value| scrub_product_text(value, "Callback status changed", 300)),
+    };
+    let item = WorkflowCallbackRegistryItem::update_status(&deployment.db().pool, &input)
+        .await
+        .map_err(|error| ApiError::BadRequest(error.to_string()))?;
+    Ok(axum::Json(ApiResponse::success(item)))
 }
 
 async fn stream_activity_ws(
@@ -473,10 +573,39 @@ async fn build_activity_v1_snapshot_from_pool(
     filters: &ActivityV1Filters,
 ) -> Result<ActivityV1Snapshot, sqlx::Error> {
     let legacy = build_activity_snapshot_from_pool(pool).await?;
+    let registry_rows = WorkflowCallbackRegistryItem::list_recent(
+        pool,
+        filters.workspace_id,
+        filters.session_id,
+        100,
+    )
+    .await?;
+    let registered_keys = registry_rows
+        .iter()
+        .map(|row| (row.workflow_run_id.clone(), row.target_session_id))
+        .collect::<std::collections::BTreeSet<_>>();
     let callback_rows = load_workflow_callback_rows(pool, filters).await?;
     let mut callbacks_by_session = BTreeMap::<(Uuid, Uuid), Vec<ActivityV1Callback>>::new();
 
+    for row in registry_rows {
+        let workspace_id = row.workspace_id;
+        let session_id = row.target_session_id;
+        callbacks_by_session
+            .entry((workspace_id, session_id))
+            .or_default()
+            .push(callback_from_registry(row));
+    }
+
     for (index, row) in callback_rows.into_iter().enumerate() {
+        if row
+            .data
+            .provenance
+            .as_ref()
+            .and_then(|provenance| provenance.workflow_run_id.as_ref())
+            .is_some_and(|run_id| registered_keys.contains(&(run_id.clone(), row.session_id)))
+        {
+            continue;
+        }
         if let Some(callback) = workflow_callback_from_row(row, index) {
             if filters
                 .workspace_id
@@ -654,6 +783,62 @@ async fn build_activity_v1_snapshot_from_pool(
         summary,
         workspaces,
     })
+}
+
+fn callback_from_registry(row: WorkflowCallbackRegistryItem) -> ActivityV1Callback {
+    let status = match row.status {
+        WorkflowCallbackStatus::Pending => ActivityV1CallbackStatus::Waiting,
+        WorkflowCallbackStatus::Delivered => ActivityV1CallbackStatus::Delivered,
+        WorkflowCallbackStatus::Failed => ActivityV1CallbackStatus::Failed,
+        WorkflowCallbackStatus::Superseded => ActivityV1CallbackStatus::Cancelled,
+    };
+    let summary_text = match status {
+        ActivityV1CallbackStatus::Waiting => "Workflow completion response pending".to_string(),
+        ActivityV1CallbackStatus::Delivered => "Workflow completion response delivered".to_string(),
+        ActivityV1CallbackStatus::Failed => {
+            if let Some(message) = &row.error_message {
+                format!(
+                    "Workflow completion response needs attention: {}",
+                    scrub_product_text(message, "Delivery failed", 180)
+                )
+            } else {
+                "Workflow completion response needs attention".to_string()
+            }
+        }
+        ActivityV1CallbackStatus::Cancelled => {
+            "Workflow completion response was superseded".to_string()
+        }
+    };
+    let workflow_run_id = scrub_identifier(&row.workflow_run_id, 160);
+    let mut links = vec![ActivityV1Link {
+        rel: "session".to_string(),
+        href: format!("/api/sessions/{}", row.target_session_id),
+    }];
+    links.push(ActivityV1Link {
+        rel: "workflow_run".to_string(),
+        href: format!("/dashboard/workflows/{workflow_run_id}"),
+    });
+    ActivityV1Callback {
+        callback_id: scrub_identifier(&row.callback_key, 220),
+        kind: ActivityV1CallbackKind::WorkflowCompletion,
+        status,
+        summary_text,
+        workflow: Some(ActivityV1WorkflowRef {
+            run_id: Some(workflow_run_id),
+            name: row
+                .workflow_name
+                .as_deref()
+                .map(|value| scrub_product_text(value, "Workflow", 120)),
+            design_id: row
+                .workflow_design_id
+                .as_deref()
+                .map(|value| scrub_identifier(value, 160)),
+            version: row.workflow_version,
+        }),
+        links,
+        created_at: row.created_at,
+        updated_at: row.updated_at,
+    }
 }
 
 fn add_summary(target: &mut ActivityV1Summary, source: &ActivityV1Summary) {
@@ -1119,6 +1304,57 @@ fn looks_like_local_path(part: &str) -> bool {
         || trimmed.starts_with("/var/folders/")
 }
 
+fn validate_callback_key(value: &str) -> Result<(), ApiError> {
+    let valid = !value.is_empty()
+        && value.len() <= 220
+        && value
+            .chars()
+            .all(|ch| matches!(ch, 'A'..='Z' | 'a'..='z' | '0'..='9' | ':' | '.' | '_' | '-'));
+    if valid {
+        Ok(())
+    } else {
+        Err(ApiError::BadRequest(
+            "Callback key must be a stable opaque identifier.".to_string(),
+        ))
+    }
+}
+
+fn validate_callback_ref(value: &str, field: &str) -> Result<(), ApiError> {
+    let valid = !value.is_empty()
+        && value.len() <= 180
+        && value
+            .chars()
+            .all(|ch| matches!(ch, 'A'..='Z' | 'a'..='z' | '0'..='9' | ':' | '.' | '_' | '-'));
+    if valid {
+        Ok(())
+    } else {
+        Err(ApiError::BadRequest(format!(
+            "{field} must be a stable opaque identifier."
+        )))
+    }
+}
+
+async fn ensure_session_in_workspace(
+    pool: &SqlitePool,
+    session_id: Uuid,
+    workspace_id: Uuid,
+) -> Result<(), ApiError> {
+    let found: Option<Uuid> = sqlx::query_scalar("SELECT workspace_id FROM sessions WHERE id = ?1")
+        .bind(session_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(|error| ApiError::BadRequest(error.to_string()))?;
+    match found {
+        Some(found_workspace_id) if found_workspace_id == workspace_id => Ok(()),
+        Some(_) => Err(ApiError::BadRequest(
+            "Callback target session does not belong to the requested workspace.".to_string(),
+        )),
+        None => Err(ApiError::BadRequest(
+            "Callback target session was not found.".to_string(),
+        )),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use chrono::{TimeZone, Utc};
@@ -1177,6 +1413,26 @@ mod tests {
                 attempt_count INTEGER NOT NULL DEFAULT 0,
                 last_error TEXT,
                 queued_at TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )"#,
+        )
+        .await
+        .unwrap();
+        pool.execute(
+            r#"CREATE TABLE workflow_callback_registry (
+                id BLOB PRIMARY KEY,
+                callback_key TEXT NOT NULL UNIQUE,
+                workspace_id BLOB NOT NULL,
+                target_session_id BLOB NOT NULL,
+                kind TEXT NOT NULL,
+                status TEXT NOT NULL,
+                workflow_run_id TEXT NOT NULL,
+                workflow_name TEXT,
+                workflow_design_id TEXT,
+                workflow_version INTEGER,
+                delivered_ref TEXT,
+                error_message TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             )"#,
@@ -1480,5 +1736,147 @@ mod tests {
                 .as_deref(),
             Some("run-a")
         );
+    }
+
+    #[tokio::test]
+    async fn activity_v1_snapshot_prefers_stable_registry_callback_ids() {
+        let db = test_db().await;
+        let workspace_id = Uuid::new_v4();
+        let session_id = Uuid::new_v4();
+        let now = Utc.with_ymd_and_hms(2026, 8, 28, 12, 0, 0).unwrap();
+        sqlx::query("INSERT INTO sessions (id, workspace_id) VALUES (?1, ?2)")
+            .bind(session_id)
+            .bind(workspace_id)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            r#"INSERT INTO workflow_callback_registry
+               (id, callback_key, workspace_id, target_session_id, kind, status, workflow_run_id, workflow_name, workflow_design_id, workflow_version, created_at, updated_at)
+               VALUES (?1, 'workflow-completion:run-stable:session-a', ?2, ?3, 'workflow_completion', 'pending', 'run-stable', 'Stable Workflow', 'design-a', 3, ?4, ?4)"#,
+        )
+        .bind(Uuid::new_v4())
+        .bind(workspace_id)
+        .bind(session_id)
+        .bind(now)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        let data = serde_json::json!({
+            "message": "Callback body",
+            "provenance": {
+                "kind": "workflow",
+                "label": "Workflow completion response",
+                "workflow_run_id": "run-stable",
+                "workflow_name": "Stable Workflow",
+                "workflow_design_id": "design-a",
+                "workflow_version": 3
+            }
+        });
+        sqlx::query(
+            r#"INSERT INTO agent_message_queue
+               (id, session_id, workspace_id, status, source, priority, data, attempt_count, queued_at, created_at, updated_at)
+               VALUES (?1, ?2, ?3, 'queued', 'workflow', 60, ?4, 0, ?5, ?5, ?5)"#,
+        )
+        .bind(Uuid::new_v4())
+        .bind(session_id)
+        .bind(workspace_id)
+        .bind(data.to_string())
+        .bind(now)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+
+        let snapshot = build_activity_v1_snapshot(&db, &ActivityV1Filters::default())
+            .await
+            .unwrap();
+        let callbacks = &snapshot.workspaces[0].sessions[0].callbacks;
+        assert_eq!(callbacks.len(), 1);
+        assert_eq!(
+            callbacks[0].callback_id,
+            "workflow-completion:run-stable:session-a"
+        );
+        assert_eq!(callbacks[0].status, ActivityV1CallbackStatus::Waiting);
+    }
+
+    #[tokio::test]
+    async fn workflow_callback_registry_upsert_and_status_are_idempotent() {
+        use db::models::workflow_callback_registry::{
+            UpdateWorkflowCallbackRegistryStatus, UpsertWorkflowCallbackRegistryItem,
+            WorkflowCallbackKind, WorkflowCallbackRegistryItem, WorkflowCallbackStatus,
+        };
+
+        let db = test_db().await;
+        let workspace_id = Uuid::new_v4();
+        let session_id = Uuid::new_v4();
+        sqlx::query("INSERT INTO sessions (id, workspace_id) VALUES (?1, ?2)")
+            .bind(session_id)
+            .bind(workspace_id)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        let input = UpsertWorkflowCallbackRegistryItem {
+            callback_key: "workflow-completion:run-1:session-1".to_string(),
+            workspace_id,
+            target_session_id: session_id,
+            kind: WorkflowCallbackKind::WorkflowCompletion,
+            workflow_run_id: "run-1".to_string(),
+            workflow_name: Some("Workflow".to_string()),
+            workflow_design_id: Some("design-1".to_string()),
+            workflow_version: Some(1),
+        };
+        let first = WorkflowCallbackRegistryItem::upsert_pending(&db.pool, &input)
+            .await
+            .unwrap();
+        let second = WorkflowCallbackRegistryItem::upsert_pending(&db.pool, &input)
+            .await
+            .unwrap();
+        assert_eq!(first.id, second.id);
+        assert_eq!(second.status, WorkflowCallbackStatus::Pending);
+
+        let delivered = WorkflowCallbackRegistryItem::update_status(
+            &db.pool,
+            &UpdateWorkflowCallbackRegistryStatus {
+                callback_key: input.callback_key.clone(),
+                status: WorkflowCallbackStatus::Delivered,
+                delivered_ref: Some("vk:opaque".to_string()),
+                error_message: None,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(delivered.status, WorkflowCallbackStatus::Delivered);
+
+        let replay = WorkflowCallbackRegistryItem::upsert_pending(&db.pool, &input)
+            .await
+            .unwrap();
+        assert_eq!(replay.status, WorkflowCallbackStatus::Delivered);
+        assert_eq!(replay.delivered_ref.as_deref(), Some("vk:opaque"));
+
+        let failed = WorkflowCallbackRegistryItem::update_status(
+            &db.pool,
+            &UpdateWorkflowCallbackRegistryStatus {
+                callback_key: input.callback_key,
+                status: WorkflowCallbackStatus::Failed,
+                delivered_ref: None,
+                error_message: Some("webhook /Users/me queue_item raw XML".to_string()),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(failed.status, WorkflowCallbackStatus::Failed);
+
+        let snapshot = build_activity_v1_snapshot(&db, &ActivityV1Filters::default())
+            .await
+            .unwrap();
+        let callback = &snapshot.workspaces[0].sessions[0].callbacks[0];
+        assert_eq!(callback.status, ActivityV1CallbackStatus::Failed);
+        let serialized = serde_json::to_string(callback)
+            .unwrap()
+            .to_ascii_lowercase();
+        assert!(!serialized.contains("webhook"));
+        assert!(!serialized.contains("/users/"));
+        assert!(!serialized.contains("queue_item"));
+        assert!(!serialized.contains("raw xml"));
     }
 }

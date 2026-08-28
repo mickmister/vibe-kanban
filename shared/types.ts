@@ -246,6 +246,16 @@ export enum ActivityV1CallbackStatus { waiting = "waiting", delivered = "deliver
 
 export type ActivityV1Link = { rel: string, href: string, };
 
+export type UpsertWorkflowCallbackRequest = { callback_key: string, workspace_id: string, target_session_id: string, kind: WorkflowCallbackKind, workflow_run_id: string, workflow_name: string | null, workflow_design_id: string | null, workflow_version: bigint | null, };
+
+export type UpdateWorkflowCallbackStatusRequest = { status: WorkflowCallbackStatus, delivered_ref: string | null, error_message: string | null, };
+
+export enum WorkflowCallbackKind { workflow_completion = "workflow_completion" }
+
+export enum WorkflowCallbackStatus { pending = "pending", delivered = "delivered", failed = "failed", superseded = "superseded" }
+
+export type WorkflowCallbackRegistryItem = { id: string, callback_key: string, workspace_id: string, target_session_id: string, kind: WorkflowCallbackKind, status: WorkflowCallbackStatus, workflow_run_id: string, workflow_name: string | null, workflow_design_id: string | null, workflow_version: bigint | null, delivered_ref: string | null, error_message: string | null, created_at: string, updated_at: string, };
+
 export type AgentResponse = { execution_process_id: string, session_id: string, workspace_id: string, status: ExecutionProcessStatus, completed_at: string | null, coding_agent_turn_id: string | null, agent_session_id: string | null, agent_message_id: string | null, content: string | null, truncated: boolean, max_chars: number, source_kind: AgentResponseSourceKind, prompt_preview: string | null, prompt_truncated: boolean, prompt_max_chars: number, prompt_source_kind: AgentPromptSourceKind, };
 
 export type AgentResponseSourceKind = "coding_agent_turn_summary";
