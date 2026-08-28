@@ -1,8 +1,8 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use axum::{
     Router,
-    extract::{State, ws::Message},
+    extract::{Query, State, ws::Message},
     response::IntoResponse,
     routing::get,
 };
@@ -10,7 +10,7 @@ use chrono::{DateTime, Utc};
 use db::{
     DBService,
     models::{
-        agent_message_queue::AgentMessageQueueStatus,
+        agent_message_queue::{AgentMessageQueueStatus, AgentMessageSource, QueuedFollowUpData},
         execution_process::{ExecutionProcessRunReason, ExecutionProcessStatus},
     },
 };
@@ -101,6 +101,151 @@ pub struct ActivityCallbackSummary {
     pub waiting_count: usize,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ActivityV1Snapshot {
+    pub schema_version: String,
+    pub generated_at: DateTime<Utc>,
+    pub scope: ActivityV1Scope,
+    pub summary: ActivityV1Summary,
+    pub workspaces: Vec<ActivityV1Workspace>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ActivityV1Scope {
+    pub workspace_id: Option<Uuid>,
+    pub session_id: Option<Uuid>,
+    pub user_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS, Default)]
+#[ts(export)]
+pub struct ActivityV1Summary {
+    pub active_turn_count: usize,
+    pub pending_turn_count: usize,
+    pub callback_waiting_count: usize,
+    pub recent_callback_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ActivityV1Workspace {
+    pub subject: ActivityV1Subject,
+    pub summary: ActivityV1Summary,
+    pub sessions: Vec<ActivityV1Session>,
+    pub links: Vec<ActivityV1Link>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ActivityV1Session {
+    pub subject: ActivityV1Subject,
+    pub status: ActivityV1SessionStatus,
+    pub summary_text: String,
+    pub summary: ActivityV1Summary,
+    pub callbacks: Vec<ActivityV1Callback>,
+    pub links: Vec<ActivityV1Link>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ActivityV1Callback {
+    pub callback_id: String,
+    pub kind: ActivityV1CallbackKind,
+    pub status: ActivityV1CallbackStatus,
+    pub summary_text: String,
+    pub workflow: Option<ActivityV1WorkflowRef>,
+    pub links: Vec<ActivityV1Link>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ActivityV1WorkflowRef {
+    pub run_id: Option<String>,
+    pub name: Option<String>,
+    pub design_id: Option<String>,
+    pub version: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ActivityV1Subject {
+    pub kind: ActivityV1SubjectKind,
+    pub id: String,
+    pub workspace_id: Option<Uuid>,
+    pub session_id: Option<Uuid>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+#[ts(use_ts_enum)]
+#[ts(export)]
+pub enum ActivityV1SubjectKind {
+    Workspace,
+    Session,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+#[ts(use_ts_enum)]
+#[ts(export)]
+pub enum ActivityV1SessionStatus {
+    Idle,
+    Pending,
+    Active,
+    WaitingForCallback,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+#[ts(use_ts_enum)]
+#[ts(export)]
+pub enum ActivityV1CallbackKind {
+    WorkflowCompletion,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+#[ts(use_ts_enum)]
+#[ts(export)]
+pub enum ActivityV1CallbackStatus {
+    Waiting,
+    Delivered,
+    Failed,
+    Cancelled,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ActivityV1Link {
+    pub rel: String,
+    pub href: String,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ActivityV1Filters {
+    pub workspace_id: Option<Uuid>,
+    pub session_id: Option<Uuid>,
+}
+
+impl ActivityV1Filters {
+    fn from_query(query: &HashMap<String, String>) -> Self {
+        Self {
+            workspace_id: query
+                .get("workspace_id")
+                .and_then(|value| Uuid::parse_str(value).ok()),
+            session_id: query
+                .get("session_id")
+                .and_then(|value| Uuid::parse_str(value).ok()),
+        }
+    }
+}
+
 #[derive(Debug)]
 struct RunningProcessRow {
     workspace_id: Uuid,
@@ -118,6 +263,18 @@ struct QueueRow {
     session_id: Uuid,
     queue_item_id: Uuid,
     status: AgentMessageQueueStatus,
+    updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug)]
+struct QueueActivityRow {
+    workspace_id: Uuid,
+    session_id: Uuid,
+    status: AgentMessageQueueStatus,
+    source: AgentMessageSource,
+    data: QueuedFollowUpData,
+    queued_at: DateTime<Utc>,
+    created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
 }
 
@@ -192,6 +349,7 @@ struct WorkspaceAccumulator {
 pub fn router(deployment: &DeploymentImpl) -> Router<DeploymentImpl> {
     Router::new()
         .route("/activity", get(get_activity_snapshot))
+        .route("/activity/v1", get(get_activity_v1_snapshot))
         .route("/activity/ws", get(stream_activity_ws))
         .with_state(deployment.clone())
 }
@@ -200,6 +358,15 @@ async fn get_activity_snapshot(
     State(deployment): State<DeploymentImpl>,
 ) -> Result<axum::Json<ApiResponse<ActivitySnapshot>>, ApiError> {
     let snapshot = build_activity_snapshot(deployment.db()).await?;
+    Ok(axum::Json(ApiResponse::success(snapshot)))
+}
+
+async fn get_activity_v1_snapshot(
+    Query(query): Query<HashMap<String, String>>,
+    State(deployment): State<DeploymentImpl>,
+) -> Result<axum::Json<ApiResponse<ActivityV1Snapshot>>, ApiError> {
+    let filters = ActivityV1Filters::from_query(&query);
+    let snapshot = build_activity_v1_snapshot(deployment.db(), &filters).await?;
     Ok(axum::Json(ApiResponse::success(snapshot)))
 }
 
@@ -292,6 +459,244 @@ fn activity_relevant_msg(msg: &LogMsg) -> bool {
 
 pub async fn build_activity_snapshot(db: &DBService) -> Result<ActivitySnapshot, sqlx::Error> {
     build_activity_snapshot_from_pool(&db.pool).await
+}
+
+pub async fn build_activity_v1_snapshot(
+    db: &DBService,
+    filters: &ActivityV1Filters,
+) -> Result<ActivityV1Snapshot, sqlx::Error> {
+    build_activity_v1_snapshot_from_pool(&db.pool, filters).await
+}
+
+async fn build_activity_v1_snapshot_from_pool(
+    pool: &SqlitePool,
+    filters: &ActivityV1Filters,
+) -> Result<ActivityV1Snapshot, sqlx::Error> {
+    let legacy = build_activity_snapshot_from_pool(pool).await?;
+    let callback_rows = load_workflow_callback_rows(pool, filters).await?;
+    let mut callbacks_by_session = BTreeMap::<(Uuid, Uuid), Vec<ActivityV1Callback>>::new();
+
+    for (index, row) in callback_rows.into_iter().enumerate() {
+        if let Some(callback) = workflow_callback_from_row(row, index) {
+            if filters
+                .workspace_id
+                .is_some_and(|workspace_id| callback.0 != workspace_id)
+                || filters
+                    .session_id
+                    .is_some_and(|session_id| callback.1 != session_id)
+            {
+                continue;
+            }
+            callbacks_by_session
+                .entry((callback.0, callback.1))
+                .or_default()
+                .push(callback.2);
+        }
+    }
+
+    let mut summary = ActivityV1Summary::default();
+    let mut workspaces = Vec::new();
+    for workspace in legacy.workspaces.into_iter() {
+        if filters
+            .workspace_id
+            .is_some_and(|workspace_id| workspace.workspace_id != workspace_id)
+        {
+            continue;
+        }
+
+        let mut workspace_summary = ActivityV1Summary::default();
+        let mut sessions = Vec::new();
+        for session in workspace.sessions.into_iter() {
+            if filters
+                .session_id
+                .is_some_and(|session_id| session.session_id != session_id)
+            {
+                continue;
+            }
+            let callbacks = callbacks_by_session
+                .remove(&(session.workspace_id, session.session_id))
+                .unwrap_or_default();
+            let callback_waiting_count = callbacks
+                .iter()
+                .filter(|callback| callback.status == ActivityV1CallbackStatus::Waiting)
+                .count();
+            let recent_callback_count = callbacks.len();
+            let active_turn_count = session.active_turn_count;
+            let pending_turn_count = session.queue.count;
+            let session_summary = ActivityV1Summary {
+                active_turn_count,
+                pending_turn_count,
+                callback_waiting_count,
+                recent_callback_count,
+            };
+            add_summary(&mut workspace_summary, &session_summary);
+            let status = if active_turn_count > 0 {
+                ActivityV1SessionStatus::Active
+            } else if callback_waiting_count > 0 {
+                ActivityV1SessionStatus::WaitingForCallback
+            } else if pending_turn_count > 0 {
+                ActivityV1SessionStatus::Pending
+            } else {
+                ActivityV1SessionStatus::Idle
+            };
+            sessions.push(ActivityV1Session {
+                subject: ActivityV1Subject {
+                    kind: ActivityV1SubjectKind::Session,
+                    id: session.session_id.to_string(),
+                    workspace_id: Some(session.workspace_id),
+                    session_id: Some(session.session_id),
+                },
+                status,
+                summary_text: session_summary_text(&session_summary),
+                summary: session_summary,
+                callbacks,
+                links: vec![ActivityV1Link {
+                    rel: "session".to_string(),
+                    href: format!("/api/sessions/{}", session.session_id),
+                }],
+                updated_at: session.updated_at,
+            });
+        }
+
+        if sessions.is_empty() {
+            continue;
+        }
+        add_summary(&mut summary, &workspace_summary);
+        workspaces.push(ActivityV1Workspace {
+            subject: ActivityV1Subject {
+                kind: ActivityV1SubjectKind::Workspace,
+                id: workspace.workspace_id.to_string(),
+                workspace_id: Some(workspace.workspace_id),
+                session_id: None,
+            },
+            summary: workspace_summary,
+            sessions,
+            links: vec![ActivityV1Link {
+                rel: "workspace".to_string(),
+                href: format!("/api/workspaces/{}", workspace.workspace_id),
+            }],
+            updated_at: workspace.updated_at,
+        });
+    }
+
+    for ((workspace_id, session_id), callbacks) in callbacks_by_session {
+        if filters
+            .workspace_id
+            .is_some_and(|filter_workspace_id| workspace_id != filter_workspace_id)
+            || filters
+                .session_id
+                .is_some_and(|filter_session_id| session_id != filter_session_id)
+        {
+            continue;
+        }
+        let callback_waiting_count = callbacks
+            .iter()
+            .filter(|callback| callback.status == ActivityV1CallbackStatus::Waiting)
+            .count();
+        let session_summary = ActivityV1Summary {
+            active_turn_count: 0,
+            pending_turn_count: 0,
+            callback_waiting_count,
+            recent_callback_count: callbacks.len(),
+        };
+        add_summary(&mut summary, &session_summary);
+        let updated_at = callbacks
+            .iter()
+            .map(|callback| callback.updated_at)
+            .max()
+            .unwrap_or_else(Utc::now);
+        let session = ActivityV1Session {
+            subject: ActivityV1Subject {
+                kind: ActivityV1SubjectKind::Session,
+                id: session_id.to_string(),
+                workspace_id: Some(workspace_id),
+                session_id: Some(session_id),
+            },
+            status: if callback_waiting_count > 0 {
+                ActivityV1SessionStatus::WaitingForCallback
+            } else {
+                ActivityV1SessionStatus::Idle
+            },
+            summary_text: session_summary_text(&session_summary),
+            summary: session_summary.clone(),
+            callbacks,
+            links: vec![ActivityV1Link {
+                rel: "session".to_string(),
+                href: format!("/api/sessions/{session_id}"),
+            }],
+            updated_at,
+        };
+        workspaces.push(ActivityV1Workspace {
+            subject: ActivityV1Subject {
+                kind: ActivityV1SubjectKind::Workspace,
+                id: workspace_id.to_string(),
+                workspace_id: Some(workspace_id),
+                session_id: None,
+            },
+            summary: session_summary,
+            sessions: vec![session],
+            links: vec![ActivityV1Link {
+                rel: "workspace".to_string(),
+                href: format!("/api/workspaces/{workspace_id}"),
+            }],
+            updated_at,
+        });
+    }
+
+    Ok(ActivityV1Snapshot {
+        schema_version: "activity.v1".to_string(),
+        generated_at: legacy.generated_at,
+        scope: ActivityV1Scope {
+            workspace_id: filters.workspace_id,
+            session_id: filters.session_id,
+            user_id: None,
+        },
+        summary,
+        workspaces,
+    })
+}
+
+fn add_summary(target: &mut ActivityV1Summary, source: &ActivityV1Summary) {
+    target.active_turn_count += source.active_turn_count;
+    target.pending_turn_count += source.pending_turn_count;
+    target.callback_waiting_count += source.callback_waiting_count;
+    target.recent_callback_count += source.recent_callback_count;
+}
+
+fn session_summary_text(summary: &ActivityV1Summary) -> String {
+    if summary.active_turn_count > 0 {
+        return format!(
+            "{} active turn{}",
+            summary.active_turn_count,
+            plural(summary.active_turn_count)
+        );
+    }
+    if summary.callback_waiting_count > 0 {
+        return format!(
+            "{} callback{} waiting",
+            summary.callback_waiting_count,
+            plural(summary.callback_waiting_count)
+        );
+    }
+    if summary.pending_turn_count > 0 {
+        return format!(
+            "{} pending turn{}",
+            summary.pending_turn_count,
+            plural(summary.pending_turn_count)
+        );
+    }
+    if summary.recent_callback_count > 0 {
+        return format!(
+            "{} recent callback{}",
+            summary.recent_callback_count,
+            plural(summary.recent_callback_count)
+        );
+    }
+    "No current activity".to_string()
+}
+
+fn plural(count: usize) -> &'static str {
+    if count == 1 { "" } else { "s" }
 }
 
 async fn build_activity_snapshot_from_pool(
@@ -464,6 +869,256 @@ async fn load_pending_queue_items(pool: &SqlitePool) -> Result<Vec<QueueRow>, sq
         .collect()
 }
 
+async fn load_workflow_callback_rows(
+    pool: &SqlitePool,
+    filters: &ActivityV1Filters,
+) -> Result<Vec<QueueActivityRow>, sqlx::Error> {
+    let mut query = String::from(
+        r#"SELECT
+             session_id,
+             workspace_id,
+             status,
+             source,
+             data,
+             queued_at,
+             created_at,
+             updated_at
+           FROM agent_message_queue
+           WHERE source = 'workflow'
+             AND status IN ('queued','leased','starting','running','completed','failed','cancelled')"#,
+    );
+    if filters.workspace_id.is_some() {
+        query.push_str(" AND workspace_id = ?");
+    }
+    if filters.session_id.is_some() {
+        query.push_str(" AND session_id = ?");
+    }
+    query.push_str(" ORDER BY updated_at DESC LIMIT 50");
+
+    let mut query = sqlx::query(&query);
+    if let Some(workspace_id) = filters.workspace_id {
+        query = query.bind(workspace_id);
+    }
+    if let Some(session_id) = filters.session_id {
+        query = query.bind(session_id);
+    }
+
+    let rows = query.fetch_all(pool).await?;
+    rows.into_iter()
+        .map(|row| {
+            let data_json: String = row.try_get("data")?;
+            let data =
+                serde_json::from_str(&data_json).map_err(|source| sqlx::Error::ColumnDecode {
+                    index: "data".to_string(),
+                    source: Box::new(source),
+                })?;
+            Ok(QueueActivityRow {
+                workspace_id: row.try_get("workspace_id")?,
+                session_id: row.try_get("session_id")?,
+                status: row.try_get("status")?,
+                source: row.try_get("source")?,
+                data,
+                queued_at: row.try_get("queued_at")?,
+                created_at: row.try_get("created_at")?,
+                updated_at: row.try_get("updated_at")?,
+            })
+        })
+        .collect()
+}
+
+fn workflow_callback_from_row(
+    row: QueueActivityRow,
+    index: usize,
+) -> Option<(Uuid, Uuid, ActivityV1Callback)> {
+    if row.source != AgentMessageSource::Workflow {
+        return None;
+    }
+    let provenance = row.data.provenance?;
+    let label = scrub_product_text(&provenance.label, "Workflow activity", 120);
+    let looks_like_completion =
+        label.to_ascii_lowercase().contains("completion") || provenance.workflow_run_id.is_some();
+    if !looks_like_completion {
+        return None;
+    }
+    let status = match row.status {
+        AgentMessageQueueStatus::Queued
+        | AgentMessageQueueStatus::Leased
+        | AgentMessageQueueStatus::Starting
+        | AgentMessageQueueStatus::Running => ActivityV1CallbackStatus::Waiting,
+        AgentMessageQueueStatus::Completed => ActivityV1CallbackStatus::Delivered,
+        AgentMessageQueueStatus::Failed => ActivityV1CallbackStatus::Failed,
+        AgentMessageQueueStatus::Cancelled => ActivityV1CallbackStatus::Cancelled,
+    };
+    let run_id = provenance
+        .workflow_run_id
+        .as_deref()
+        .map(|value| scrub_identifier(value, 160));
+    let workflow = ActivityV1WorkflowRef {
+        run_id: run_id.clone(),
+        name: provenance
+            .workflow_name
+            .as_deref()
+            .map(|value| scrub_product_text(value, "Workflow", 120)),
+        design_id: provenance
+            .workflow_design_id
+            .as_deref()
+            .map(|value| scrub_identifier(value, 160)),
+        version: provenance.workflow_version,
+    };
+    let summary_text = match status {
+        ActivityV1CallbackStatus::Waiting => "Workflow completion response pending".to_string(),
+        ActivityV1CallbackStatus::Delivered => "Workflow completion response delivered".to_string(),
+        ActivityV1CallbackStatus::Failed => {
+            "Workflow completion response needs attention".to_string()
+        }
+        ActivityV1CallbackStatus::Cancelled => {
+            "Workflow completion response was cancelled".to_string()
+        }
+    };
+    let mut links = vec![ActivityV1Link {
+        rel: "session".to_string(),
+        href: format!("/api/sessions/{}", row.session_id),
+    }];
+    if let Some(run_id) = &run_id {
+        links.push(ActivityV1Link {
+            rel: "workflow_run".to_string(),
+            href: format!("/dashboard/workflows/{run_id}"),
+        });
+    }
+    Some((
+        row.workspace_id,
+        row.session_id,
+        ActivityV1Callback {
+            callback_id: format!(
+                "workflow-completion:{}:{index}",
+                row.created_at.timestamp_millis()
+            ),
+            kind: ActivityV1CallbackKind::WorkflowCompletion,
+            status,
+            summary_text,
+            workflow: Some(workflow),
+            links,
+            created_at: row.created_at.max(row.queued_at),
+            updated_at: row.updated_at,
+        },
+    ))
+}
+
+fn scrub_identifier(value: &str, max_chars: usize) -> String {
+    if contains_unsafe_text(value) || looks_like_local_path(value) {
+        return "opaque-ref".to_string();
+    }
+    let cleaned: String = value
+        .chars()
+        .map(|ch| match ch {
+            'A'..='Z' | 'a'..='z' | '0'..='9' | ':' | '.' | '_' | '-' => ch,
+            _ => '-',
+        })
+        .take(max_chars)
+        .collect();
+    if cleaned.trim_matches('-').is_empty() {
+        "opaque-ref".to_string()
+    } else {
+        cleaned
+    }
+}
+
+fn scrub_product_text(value: &str, fallback: &str, max_chars: usize) -> String {
+    let mut text = value.trim().replace('\n', " ").replace('\r', " ");
+    if text.is_empty() {
+        return fallback.to_string();
+    }
+    text = text
+        .split_whitespace()
+        .map(|part| {
+            if looks_like_local_path(part) {
+                "workspace location".to_string()
+            } else {
+                part.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    for (needle, replacement) in [
+        ("queue_item", "pending work"),
+        ("queue-item", "pending work"),
+        ("queue item", "pending work"),
+        ("webhook", "connection"),
+        ("hmac", "signature"),
+        ("delivery id", "delivery"),
+        ("delivery_id", "delivery"),
+        ("execution process id", "run"),
+        ("execution_process_id", "run"),
+        ("execution process", "run"),
+        ("raw xml", "structured response"),
+        ("raw json", "structured response"),
+        ("workflowstepstate", "workflow state"),
+        ("runready", "ready"),
+        ("provider diagnostics", "status details"),
+        ("bd show", "task details"),
+        ("git ", "version-control "),
+        ("shell", "automation"),
+        ("prompt", "message"),
+    ] {
+        text = replace_case_insensitive(&text, needle, replacement);
+    }
+    let truncated: String = text.chars().take(max_chars).collect();
+    if truncated.trim().is_empty() {
+        fallback.to_string()
+    } else {
+        truncated
+    }
+}
+
+fn contains_unsafe_text(value: &str) -> bool {
+    let lower = value.to_ascii_lowercase();
+    [
+        "queue_item",
+        "queue-item",
+        "queue item",
+        "webhook",
+        "hmac",
+        "delivery id",
+        "delivery_id",
+        "execution process id",
+        "execution_process_id",
+        "raw xml",
+        "raw json",
+        "workflowstepstate",
+        "runready",
+        "provider diagnostics",
+        "bd show",
+        "git ",
+        "shell",
+        "prompt",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
+}
+
+fn replace_case_insensitive(input: &str, needle: &str, replacement: &str) -> String {
+    let mut output = String::new();
+    let lower_input = input.to_ascii_lowercase();
+    let lower_needle = needle.to_ascii_lowercase();
+    let mut index = 0;
+    while let Some(relative) = lower_input[index..].find(&lower_needle) {
+        let start = index + relative;
+        output.push_str(&input[index..start]);
+        output.push_str(replacement);
+        index = start + needle.len();
+    }
+    output.push_str(&input[index..]);
+    output
+}
+
+fn looks_like_local_path(part: &str) -> bool {
+    let trimmed = part.trim_matches(|ch: char| ch == ',' || ch == '.' || ch == ';' || ch == ':');
+    trimmed.starts_with("/Users/")
+        || trimmed.starts_with("/tmp/")
+        || trimmed.starts_with("/private/var/")
+        || trimmed.starts_with("/var/folders/")
+}
+
 #[cfg(test)]
 mod tests {
     use chrono::{TimeZone, Utc};
@@ -471,7 +1126,10 @@ mod tests {
     use sqlx::{Executor, sqlite::SqlitePoolOptions};
     use uuid::Uuid;
 
-    use super::{ActivitySessionStatus, build_activity_snapshot};
+    use super::{
+        ActivitySessionStatus, ActivityV1CallbackStatus, ActivityV1Filters,
+        ActivityV1SessionStatus, build_activity_snapshot, build_activity_v1_snapshot,
+    };
 
     async fn test_db() -> DBService {
         let pool = SqlitePoolOptions::new()
@@ -644,6 +1302,183 @@ mod tests {
         assert_eq!(
             session.running_execution_processes[0].execution_process_id,
             execution_id
+        );
+    }
+
+    #[tokio::test]
+    async fn activity_v1_snapshot_exposes_product_safe_callback_summaries() {
+        let db = test_db().await;
+        let workspace_id = Uuid::new_v4();
+        let session_id = Uuid::new_v4();
+        let queue_item_id = Uuid::new_v4();
+        let now = Utc.with_ymd_and_hms(2026, 8, 28, 12, 0, 0).unwrap();
+        let data = serde_json::json!({
+            "message": "Do not expose this prompt body with /Users/me/private raw XML webhook queue_item bd show git status shell provider diagnostics trigger delivery ID execution process ID.",
+            "session_command": null,
+            "provenance": {
+                "kind": "workflow",
+                "label": "Workflow completion response via webhook queue_item /Users/me/private",
+                "workflow_run_id": "run-abc",
+                "workflow_name": "Review /tmp/secret raw JSON",
+                "workflow_design_id": "design-1",
+                "workflow_version": 2
+            }
+        });
+
+        sqlx::query("INSERT INTO sessions (id, workspace_id) VALUES (?1, ?2)")
+            .bind(session_id)
+            .bind(workspace_id)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            r#"INSERT INTO agent_message_queue
+               (id, session_id, workspace_id, status, source, priority, data, attempt_count, queued_at, created_at, updated_at)
+               VALUES (?1, ?2, ?3, 'queued', 'workflow', 60, ?4, 0, ?5, ?5, ?5)"#,
+        )
+        .bind(queue_item_id)
+        .bind(session_id)
+        .bind(workspace_id)
+        .bind(data.to_string())
+        .bind(now)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+
+        let snapshot = build_activity_v1_snapshot(&db, &ActivityV1Filters::default())
+            .await
+            .unwrap();
+
+        assert_eq!(snapshot.schema_version, "activity.v1");
+        assert_eq!(snapshot.scope.workspace_id, None);
+        assert_eq!(snapshot.summary.pending_turn_count, 1);
+        assert_eq!(snapshot.summary.callback_waiting_count, 1);
+        assert_eq!(snapshot.workspaces.len(), 1);
+        let session = &snapshot.workspaces[0].sessions[0];
+        assert_eq!(session.status, ActivityV1SessionStatus::WaitingForCallback);
+        assert_eq!(session.callbacks.len(), 1);
+        assert_eq!(
+            session.callbacks[0].status,
+            ActivityV1CallbackStatus::Waiting
+        );
+        assert_eq!(
+            session.callbacks[0].summary_text,
+            "Workflow completion response pending"
+        );
+        assert_eq!(
+            session.callbacks[0]
+                .workflow
+                .as_ref()
+                .unwrap()
+                .name
+                .as_deref(),
+            Some("Review workspace location structured response")
+        );
+
+        let serialized = serde_json::to_string(&snapshot)
+            .unwrap()
+            .to_ascii_lowercase();
+        for forbidden in [
+            "do not expose this",
+            "/users/",
+            "/tmp/",
+            "webhook",
+            "queue_item",
+            "queue item",
+            "bd show",
+            "git status",
+            "shell",
+            "provider diagnostics",
+            "trigger",
+            "delivery id",
+            "execution process id",
+            "raw xml",
+            "raw json",
+        ] {
+            assert!(
+                !serialized.contains(forbidden),
+                "activity v1 payload leaked forbidden term: {forbidden}\n{serialized}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn activity_v1_snapshot_applies_workspace_and_session_scope() {
+        let db = test_db().await;
+        let workspace_a = Uuid::new_v4();
+        let workspace_b = Uuid::new_v4();
+        let session_a = Uuid::new_v4();
+        let session_b = Uuid::new_v4();
+        let now = Utc.with_ymd_and_hms(2026, 8, 28, 12, 0, 0).unwrap();
+        sqlx::query("INSERT INTO sessions (id, workspace_id) VALUES (?1, ?2), (?3, ?4)")
+            .bind(session_a)
+            .bind(workspace_a)
+            .bind(session_b)
+            .bind(workspace_b)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        for (queue_id, session_id, workspace_id, run_id) in [
+            (Uuid::new_v4(), session_a, workspace_a, "run-a"),
+            (Uuid::new_v4(), session_b, workspace_b, "run-b"),
+        ] {
+            let data = serde_json::json!({
+                "message": "Callback body",
+                "provenance": {
+                    "kind": "workflow",
+                    "label": "Workflow completion response",
+                    "workflow_run_id": run_id,
+                    "workflow_name": "Workflow",
+                    "workflow_design_id": "design",
+                    "workflow_version": 1
+                }
+            });
+            sqlx::query(
+                r#"INSERT INTO agent_message_queue
+                   (id, session_id, workspace_id, status, source, priority, data, attempt_count, queued_at, created_at, updated_at)
+                   VALUES (?1, ?2, ?3, 'completed', 'workflow', 60, ?4, 0, ?5, ?5, ?5)"#,
+            )
+            .bind(queue_id)
+            .bind(session_id)
+            .bind(workspace_id)
+            .bind(data.to_string())
+            .bind(now)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        }
+
+        let snapshot = build_activity_v1_snapshot(
+            &db,
+            &ActivityV1Filters {
+                workspace_id: Some(workspace_a),
+                session_id: Some(session_a),
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(snapshot.scope.workspace_id, Some(workspace_a));
+        assert_eq!(snapshot.scope.session_id, Some(session_a));
+        assert_eq!(snapshot.summary.recent_callback_count, 1);
+        assert_eq!(snapshot.workspaces.len(), 1);
+        assert_eq!(
+            snapshot.workspaces[0].subject.workspace_id,
+            Some(workspace_a)
+        );
+        assert_eq!(snapshot.workspaces[0].sessions.len(), 1);
+        assert_eq!(
+            snapshot.workspaces[0].sessions[0].subject.session_id,
+            Some(session_a)
+        );
+        assert_eq!(
+            snapshot.workspaces[0].sessions[0].callbacks[0]
+                .workflow
+                .as_ref()
+                .unwrap()
+                .run_id
+                .as_deref(),
+            Some("run-a")
         );
     }
 }

@@ -220,6 +220,32 @@ export type ActivityQueueSummary = { count: number, queued_count: number, leased
 
 export type ActivityCallbackSummary = { available: boolean, waiting_count: number, };
 
+export type ActivityV1Snapshot = { schema_version: string, generated_at: string, scope: ActivityV1Scope, summary: ActivityV1Summary, workspaces: Array<ActivityV1Workspace>, };
+
+export type ActivityV1Scope = { workspace_id: string | null, session_id: string | null, user_id: string | null, };
+
+export type ActivityV1Summary = { active_turn_count: number, pending_turn_count: number, callback_waiting_count: number, recent_callback_count: number, };
+
+export type ActivityV1Workspace = { subject: ActivityV1Subject, summary: ActivityV1Summary, sessions: Array<ActivityV1Session>, links: Array<ActivityV1Link>, updated_at: string, };
+
+export type ActivityV1Session = { subject: ActivityV1Subject, status: ActivityV1SessionStatus, summary_text: string, summary: ActivityV1Summary, callbacks: Array<ActivityV1Callback>, links: Array<ActivityV1Link>, updated_at: string, };
+
+export type ActivityV1Callback = { callback_id: string, kind: ActivityV1CallbackKind, status: ActivityV1CallbackStatus, summary_text: string, workflow: ActivityV1WorkflowRef | null, links: Array<ActivityV1Link>, created_at: string, updated_at: string, };
+
+export type ActivityV1WorkflowRef = { run_id: string | null, name: string | null, design_id: string | null, version: bigint | null, };
+
+export type ActivityV1Subject = { kind: ActivityV1SubjectKind, id: string, workspace_id: string | null, session_id: string | null, };
+
+export enum ActivityV1SubjectKind { workspace = "workspace", session = "session" }
+
+export enum ActivityV1SessionStatus { idle = "idle", pending = "pending", active = "active", waiting_for_callback = "waiting_for_callback" }
+
+export enum ActivityV1CallbackKind { workflow_completion = "workflow_completion" }
+
+export enum ActivityV1CallbackStatus { waiting = "waiting", delivered = "delivered", failed = "failed", cancelled = "cancelled" }
+
+export type ActivityV1Link = { rel: string, href: string, };
+
 export type AgentResponse = { execution_process_id: string, session_id: string, workspace_id: string, status: ExecutionProcessStatus, completed_at: string | null, coding_agent_turn_id: string | null, agent_session_id: string | null, agent_message_id: string | null, content: string | null, truncated: boolean, max_chars: number, source_kind: AgentResponseSourceKind, prompt_preview: string | null, prompt_truncated: boolean, prompt_max_chars: number, prompt_source_kind: AgentPromptSourceKind, };
 
 export type AgentResponseSourceKind = "coding_agent_turn_summary";
