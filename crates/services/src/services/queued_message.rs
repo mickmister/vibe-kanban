@@ -1,90 +1,219 @@
 use std::sync::Arc;
 
-use chrono::{DateTime, Utc};
-use dashmap::DashMap;
-use db::models::scratch::DraftFollowUpData;
+use db::{
+    DBService,
+    models::{
+        agent_message_queue::{
+            AgentMessageQueueItem, AgentMessageSource, CreateAgentMessageQueueItem,
+            QueuedFollowUpData,
+        },
+        session::Session,
+    },
+};
+use executors::actions::ExecutorActionProvenance;
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
+use tokio::sync::{Mutex, Notify};
 use ts_rs::TS;
 use uuid::Uuid;
 
-/// Represents a queued follow-up message for a session
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
-pub struct QueuedMessage {
-    /// The session this message is queued for
-    pub session_id: Uuid,
-    /// The follow-up data (message + variant)
-    pub data: DraftFollowUpData,
-    /// Timestamp when the message was queued
-    pub queued_at: DateTime<Utc>,
+const LEASE_SECONDS: i64 = 120;
+
+#[derive(Debug, Error)]
+pub enum QueueError {
+    #[error(transparent)]
+    Database(#[from] sqlx::Error),
+    #[error(
+        "session has no configured executor; start the session once before queueing follow-ups"
+    )]
+    SessionExecutorMissing,
 }
 
-/// Status of the queue for a session (for frontend display)
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[serde(tag = "status", rename_all = "snake_case")]
-pub enum QueueStatus {
-    /// No message queued
+pub struct QueueStatusSummary {
+    pub status: QueueStatusKind,
+    pub count: usize,
+    pub messages: Vec<AgentMessageQueueItem>,
+    pub message: Option<AgentMessageQueueItem>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(use_ts_enum)]
+pub enum QueueStatusKind {
     Empty,
-    /// Message is queued and waiting for execution to complete
-    Queued { message: QueuedMessage },
+    Queued,
 }
 
-/// In-memory service for managing queued follow-up messages.
-/// One queued message per session.
+pub type QueueStatus = QueueStatusSummary;
+pub type QueuedMessage = AgentMessageQueueItem;
+
 #[derive(Clone)]
 pub struct QueuedMessageService {
-    queue: Arc<DashMap<Uuid, QueuedMessage>>,
+    db: DBService,
+    notify: Arc<Notify>,
+    pump_lock: Arc<Mutex<()>>,
+    lease_owner: String,
 }
 
 impl QueuedMessageService {
-    pub fn new() -> Self {
+    pub fn new(db: DBService) -> Self {
         Self {
-            queue: Arc::new(DashMap::new()),
+            db,
+            notify: Arc::new(Notify::new()),
+            pump_lock: Arc::new(Mutex::new(())),
+            lease_owner: format!("vk-{}", Uuid::new_v4()),
         }
     }
-
-    /// Queue a message for a session. Replaces any existing queued message.
-    pub fn queue_message(&self, session_id: Uuid, data: DraftFollowUpData) -> QueuedMessage {
-        let queued = QueuedMessage {
-            session_id,
-            data,
-            queued_at: Utc::now(),
-        };
-        self.queue.insert(session_id, queued.clone());
-        queued
+    pub fn notify(&self) {
+        self.notify.notify_waiters();
+    }
+    pub fn notifier(&self) -> Arc<Notify> {
+        self.notify.clone()
+    }
+    pub fn pump_lock(&self) -> Arc<Mutex<()>> {
+        self.pump_lock.clone()
+    }
+    pub fn lease_owner(&self) -> &str {
+        &self.lease_owner
+    }
+    pub fn lease_duration(&self) -> chrono::Duration {
+        chrono::Duration::seconds(LEASE_SECONDS)
     }
 
-    /// Cancel/remove a queued message for a session
-    pub fn cancel_queued(&self, session_id: Uuid) -> Option<QueuedMessage> {
-        self.queue.remove(&session_id).map(|(_, v)| v)
-    }
-
-    /// Get the queued message for a session (if any)
-    pub fn get_queued(&self, session_id: Uuid) -> Option<QueuedMessage> {
-        self.queue.get(&session_id).map(|r| r.clone())
-    }
-
-    /// Take (remove and return) the queued message for a session.
-    /// Used by finalization flow to consume the queued message.
-    pub fn take_queued(&self, session_id: Uuid) -> Option<QueuedMessage> {
-        self.queue.remove(&session_id).map(|(_, v)| v)
-    }
-
-    /// Check if a session has a queued message
-    pub fn has_queued(&self, session_id: Uuid) -> bool {
-        self.queue.contains_key(&session_id)
-    }
-
-    /// Get queue status for frontend display
-    pub fn get_status(&self, session_id: Uuid) -> QueueStatus {
-        match self.get_queued(session_id) {
-            Some(msg) => QueueStatus::Queued { message: msg },
-            None => QueueStatus::Empty,
+    pub async fn queue_message(
+        &self,
+        session: &Session,
+        message: String,
+        session_command: Option<executors::actions::session_command::SessionCommand>,
+        source: AgentMessageSource,
+        priority: Option<i64>,
+        provenance: Option<ExecutorActionProvenance>,
+    ) -> Result<AgentMessageQueueItem, QueueError> {
+        if session.executor.as_deref().is_none_or(str::is_empty) {
+            return Err(QueueError::SessionExecutorMissing);
         }
+        let item = AgentMessageQueueItem::create(
+            &self.db.pool,
+            &CreateAgentMessageQueueItem {
+                session_id: session.id,
+                workspace_id: session.workspace_id,
+                source,
+                priority,
+                data: QueuedFollowUpData {
+                    message,
+                    session_command,
+                    provenance,
+                },
+            },
+            Uuid::new_v4(),
+        )
+        .await?;
+        self.notify();
+        Ok(item)
     }
-}
+    pub async fn cancel_queued(
+        &self,
+        session_id: Uuid,
+    ) -> Result<Vec<AgentMessageQueueItem>, QueueError> {
+        let v =
+            AgentMessageQueueItem::cancel_pending_for_session(&self.db.pool, session_id).await?;
+        self.notify();
+        Ok(v)
+    }
+    pub async fn cancel_queued_item(
+        &self,
+        session_id: Uuid,
+        item_id: Uuid,
+    ) -> Result<Option<AgentMessageQueueItem>, QueueError> {
+        let v = AgentMessageQueueItem::cancel_by_id(&self.db.pool, session_id, item_id).await?;
+        self.notify();
+        Ok(v)
+    }
+    pub async fn get_status(&self, session_id: Uuid) -> Result<QueueStatus, QueueError> {
+        Ok(Self::status_from_messages(
+            AgentMessageQueueItem::list_pending_for_session(&self.db.pool, session_id).await?,
+        ))
+    }
+    pub async fn has_queued(&self, session_id: Uuid) -> Result<bool, QueueError> {
+        Ok(
+            !AgentMessageQueueItem::list_pending_for_session(&self.db.pool, session_id)
+                .await?
+                .is_empty(),
+        )
+    }
+    pub async fn recover_stale(&self) -> Result<(), QueueError> {
+        AgentMessageQueueItem::recover_stale(&self.db.pool, self.lease_owner()).await?;
+        Ok(())
+    }
+    pub async fn lease_next_batch(
+        &self,
+        max_concurrent: usize,
+    ) -> Result<Vec<AgentMessageQueueItem>, QueueError> {
+        self.recover_stale().await?;
+        let running = AgentMessageQueueItem::count_running_coding_agents(&self.db.pool).await?;
+        let available = (max_concurrent as i64).saturating_sub(running);
+        Ok(AgentMessageQueueItem::lease_next_batch(
+            &self.db.pool,
+            self.lease_owner(),
+            available,
+            self.lease_duration(),
+        )
+        .await?)
+    }
+    pub async fn mark_starting(
+        &self,
+        item_id: Uuid,
+        execution_process_id: Uuid,
+    ) -> Result<bool, QueueError> {
+        Ok(
+            AgentMessageQueueItem::mark_starting(&self.db.pool, item_id, execution_process_id)
+                .await?,
+        )
+    }
+    pub async fn mark_running(
+        &self,
+        item_id: Uuid,
+        execution_process_id: Uuid,
+    ) -> Result<(), QueueError> {
+        Ok(
+            AgentMessageQueueItem::mark_running(&self.db.pool, item_id, execution_process_id)
+                .await?,
+        )
+    }
+    pub async fn mark_failed(&self, item_id: Uuid, error: &str) -> Result<(), QueueError> {
+        Ok(AgentMessageQueueItem::mark_failed(&self.db.pool, item_id, error).await?)
+    }
 
-impl Default for QueuedMessageService {
-    fn default() -> Self {
-        Self::new()
+    pub async fn requeue(&self, item_id: Uuid) -> Result<(), QueueError> {
+        Ok(AgentMessageQueueItem::requeue(&self.db.pool, item_id).await?)
+    }
+    pub async fn mark_terminal_for_execution_process(
+        &self,
+        execution_process_id: Uuid,
+        status: db::models::execution_process::ExecutionProcessStatus,
+    ) -> Result<(), QueueError> {
+        AgentMessageQueueItem::mark_terminal_for_execution_process(
+            &self.db.pool,
+            execution_process_id,
+            status,
+        )
+        .await?;
+        self.notify();
+        Ok(())
+    }
+
+    fn status_from_messages(messages: Vec<AgentMessageQueueItem>) -> QueueStatus {
+        let count = messages.len();
+        QueueStatusSummary {
+            status: if count == 0 {
+                QueueStatusKind::Empty
+            } else {
+                QueueStatusKind::Queued
+            },
+            message: messages.first().cloned(),
+            count,
+            messages,
+        }
     }
 }

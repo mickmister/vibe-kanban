@@ -11,8 +11,13 @@ use axum::{
     response::{IntoResponse, Json as ResponseJson},
     routing::{get, post},
 };
+use chrono::{DateTime, Utc};
 use db::models::{
-    execution_process::{ExecutionProcess, ExecutionProcessStatus},
+    coding_agent_turn::{
+        CODING_AGENT_PROMPT_PREVIEW_MAX_CHARS, CODING_AGENT_RESPONSE_SUMMARY_MAX_CHARS,
+        CodingAgentResponseRecord, CodingAgentTurn,
+    },
+    execution_process::{ExecutionProcess, ExecutionProcessError, ExecutionProcessStatus},
     execution_process_repo_state::ExecutionProcessRepoState,
 };
 use deployment::Deployment;
@@ -21,9 +26,11 @@ use futures_util::{
     future::{BoxFuture, Shared},
     stream::{self, BoxStream},
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use services::services::container::ContainerService;
 use tokio::sync::Mutex;
+use tracing::Instrument;
+use ts_rs::TS;
 use utils::{log_msg::LogMsg, msg_store::MsgStore, response::ApiResponse};
 use uuid::Uuid;
 
@@ -42,6 +49,86 @@ struct SessionExecutionProcessQuery {
     /// If true, include soft-deleted (dropped) processes in results/stream
     #[serde(default)]
     pub show_soft_deleted: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum AgentResponseSourceKind {
+    CodingAgentTurnSummary,
+}
+
+#[derive(Debug, Clone, Serialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum AgentPromptSourceKind {
+    CodingAgentTurnPrompt,
+}
+
+#[derive(Debug, Clone, Serialize, TS)]
+#[ts(export)]
+pub struct AgentResponse {
+    pub execution_process_id: Uuid,
+    pub session_id: Uuid,
+    pub workspace_id: Uuid,
+    pub status: ExecutionProcessStatus,
+    pub completed_at: Option<DateTime<Utc>>,
+    pub coding_agent_turn_id: Option<Uuid>,
+    pub agent_session_id: Option<String>,
+    pub agent_message_id: Option<String>,
+    pub content: Option<String>,
+    pub truncated: bool,
+    pub max_chars: usize,
+    pub source_kind: AgentResponseSourceKind,
+    pub prompt_preview: Option<String>,
+    pub prompt_truncated: bool,
+    pub prompt_max_chars: usize,
+    pub prompt_source_kind: AgentPromptSourceKind,
+}
+
+impl AgentResponse {
+    pub fn from_record(record: CodingAgentResponseRecord) -> Self {
+        let truncated = record
+            .summary
+            .as_deref()
+            .is_some_and(CodingAgentTurn::summary_is_truncated);
+        let (prompt_preview, prompt_truncated) = record
+            .prompt
+            .as_deref()
+            .map(truncate_prompt_preview)
+            .unwrap_or((None, false));
+
+        AgentResponse {
+            execution_process_id: record.execution_process_id,
+            session_id: record.session_id,
+            workspace_id: record.workspace_id,
+            status: record.status,
+            completed_at: record.completed_at,
+            coding_agent_turn_id: record.coding_agent_turn_id,
+            agent_session_id: record.agent_session_id,
+            agent_message_id: record.agent_message_id,
+            content: record.summary,
+            truncated,
+            max_chars: CODING_AGENT_RESPONSE_SUMMARY_MAX_CHARS,
+            source_kind: AgentResponseSourceKind::CodingAgentTurnSummary,
+            prompt_preview,
+            prompt_truncated,
+            prompt_max_chars: CODING_AGENT_PROMPT_PREVIEW_MAX_CHARS,
+            prompt_source_kind: AgentPromptSourceKind::CodingAgentTurnPrompt,
+        }
+    }
+}
+
+fn truncate_prompt_preview(prompt: &str) -> (Option<String>, bool) {
+    if prompt.chars().count() > CODING_AGENT_PROMPT_PREVIEW_MAX_CHARS {
+        let preview = prompt
+            .chars()
+            .take(CODING_AGENT_PROMPT_PREVIEW_MAX_CHARS)
+            .collect::<String>();
+        (Some(format!("{preview}...")), true)
+    } else {
+        (Some(prompt.to_string()), false)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -69,6 +156,23 @@ async fn get_execution_process_by_id(
     State(_deployment): State<DeploymentImpl>,
 ) -> Result<ResponseJson<ApiResponse<ExecutionProcess>>, ApiError> {
     Ok(ResponseJson(ApiResponse::success(execution_process)))
+}
+
+async fn get_execution_process_final_message(
+    Extension(execution_process): Extension<ExecutionProcess>,
+    State(deployment): State<DeploymentImpl>,
+) -> Result<ResponseJson<ApiResponse<AgentResponse>>, ApiError> {
+    let record = CodingAgentTurn::find_response_by_execution_process_id(
+        &deployment.db().pool,
+        execution_process.id,
+    )
+    .await?
+    .ok_or(ApiError::ExecutionProcess(
+        ExecutionProcessError::ExecutionProcessNotFound,
+    ))?;
+    Ok(ResponseJson(ApiResponse::success(
+        AgentResponse::from_record(record),
+    )))
 }
 
 async fn stream_raw_logs_ws(
@@ -171,7 +275,13 @@ async fn stream_normalized_logs_ws(
     Path(exec_id): Path<Uuid>,
 ) -> impl IntoResponse {
     ws.on_upgrade(move |socket| async move {
-        if let Some(store) = deployment.container().get_msg_store_by_id(&exec_id).await {
+        if let Some(store) = async { deployment.container().get_msg_store_by_id(&exec_id).await }
+            .instrument(tracing::debug_span!(
+                "normalized_logs.lookup_live_store",
+                execution_process_id = %exec_id,
+            ))
+            .await
+        {
             let stream = build_live_normalized_logs_stream(exec_id, store).await;
             if let Err(e) = handle_normalized_logs_ws(socket, stream).await {
                 tracing::warn!("normalized logs WS closed: {}", e);
@@ -202,12 +312,19 @@ async fn stream_normalized_logs_ws(
     })
 }
 
+#[tracing::instrument(level = "debug", skip(store), fields(execution_process_id = %exec_id))]
 async fn build_live_normalized_logs_stream(
     exec_id: Uuid,
     store: Arc<MsgStore>,
 ) -> BoxStream<'static, anyhow::Result<Message>> {
     let receiver = store.get_receiver();
     let messages = collect_live_normalized_log_messages(&store);
+    tracing::debug!(
+        execution_process_id = %exec_id,
+        history_message_count = messages.payloads.len(),
+        history_finished = messages.finished,
+        "normalized_logs.live_history_loaded"
+    );
     let history_stream = stream::iter(
         messages
             .payloads
@@ -255,6 +372,7 @@ async fn build_live_normalized_logs_stream(
         .boxed()
 }
 
+#[tracing::instrument(level = "debug", skip(deployment), fields(execution_process_id = %exec_id))]
 async fn get_historic_normalized_log_messages_single_flight(
     deployment: &DeploymentImpl,
     exec_id: Uuid,
@@ -266,6 +384,11 @@ async fn get_historic_normalized_log_messages_single_flight(
     .await
 }
 
+#[tracing::instrument(
+    level = "debug",
+    skip(future),
+    fields(execution_process_id = %exec_id, mode = ?mode)
+)]
 async fn get_normalized_log_messages_single_flight(
     mode: NormalizedLogReplayMode,
     exec_id: Uuid,
@@ -294,10 +417,11 @@ async fn get_normalized_log_messages_single_flight(
     result
 }
 
+#[tracing::instrument(level = "debug", skip(store))]
 fn collect_live_normalized_log_messages(store: &MsgStore) -> LiveNormalizedLogMessages {
     let history = store.get_history();
     let finished = history.iter().any(|msg| matches!(msg, LogMsg::Finished));
-    let payloads = history
+    let payloads: Vec<String> = history
         .into_iter()
         .take_while(|msg| !matches!(msg, LogMsg::Finished))
         .filter_map(|msg| match msg {
@@ -309,9 +433,16 @@ fn collect_live_normalized_log_messages(store: &MsgStore) -> LiveNormalizedLogMe
         })
         .collect();
 
+    tracing::debug!(
+        history_message_count = payloads.len(),
+        history_finished = finished,
+        "normalized_logs.live_history_collected"
+    );
+
     LiveNormalizedLogMessages { payloads, finished }
 }
 
+#[tracing::instrument(level = "debug", skip(deployment), fields(execution_process_id = %exec_id))]
 async fn collect_historic_normalized_log_messages(
     deployment: &DeploymentImpl,
     exec_id: Uuid,
@@ -340,9 +471,16 @@ async fn collect_historic_normalized_log_messages(
         }
     }
 
-    Some(Arc::new(messages))
+    let messages = Arc::new(messages);
+    tracing::debug!(
+        execution_process_id = %exec_id,
+        history_message_count = messages.len(),
+        "normalized_logs.historic_history_collected"
+    );
+    Some(messages)
 }
 
+#[tracing::instrument(level = "debug", skip(socket, stream))]
 async fn handle_normalized_logs_ws(
     mut socket: MaybeSignedWebSocket,
     stream: impl futures_util::Stream<Item = anyhow::Result<Message>> + Unpin + Send + 'static,
@@ -409,6 +547,11 @@ async fn stream_execution_processes_by_session_ws(
     })
 }
 
+#[tracing::instrument(
+    level = "debug",
+    skip(socket, deployment),
+    fields(session_id = %session_id, show_soft_deleted = show_soft_deleted)
+)]
 async fn handle_execution_processes_by_session_ws(
     mut socket: MaybeSignedWebSocket,
     deployment: DeploymentImpl,
@@ -464,6 +607,7 @@ async fn get_execution_process_repo_states(
 pub(super) fn router(deployment: &DeploymentImpl) -> Router<DeploymentImpl> {
     let workspace_id_router = Router::new()
         .route("/", get(get_execution_process_by_id))
+        .route("/final-message", get(get_execution_process_final_message))
         .route("/stop", post(stop_execution_process))
         .route("/repo-states", get(get_execution_process_repo_states))
         .route("/raw-logs/ws", get(stream_raw_logs_ws))
@@ -503,7 +647,7 @@ mod tests {
     use uuid::Uuid;
 
     use super::{
-        NormalizedLogReplayMode, build_live_normalized_logs_stream,
+        AgentResponse, NormalizedLogReplayMode, build_live_normalized_logs_stream,
         get_normalized_log_messages_single_flight,
     };
 
@@ -547,6 +691,80 @@ mod tests {
             .await
             .expect("stream end should not hang");
         assert!(end.is_none());
+    }
+
+    #[test]
+    fn agent_response_reports_summary_truncation_metadata() {
+        use db::models::{
+            coding_agent_turn::{
+                CODING_AGENT_PROMPT_PREVIEW_MAX_CHARS, CODING_AGENT_RESPONSE_SUMMARY_MAX_CHARS,
+                CodingAgentResponseRecord,
+            },
+            execution_process::ExecutionProcessStatus,
+        };
+
+        let content = format!("{}...", "x".repeat(CODING_AGENT_RESPONSE_SUMMARY_MAX_CHARS));
+        let response = AgentResponse::from_record(CodingAgentResponseRecord {
+            execution_process_id: uuid::Uuid::new_v4(),
+            session_id: uuid::Uuid::new_v4(),
+            workspace_id: uuid::Uuid::new_v4(),
+            status: ExecutionProcessStatus::Completed,
+            completed_at: None,
+            coding_agent_turn_id: Some(uuid::Uuid::new_v4()),
+            agent_session_id: Some("agent-session".to_string()),
+            agent_message_id: Some("agent-message".to_string()),
+            summary: Some(content.clone()),
+            prompt: Some("initial prompt".to_string()),
+        });
+
+        assert_eq!(response.content.as_deref(), Some(content.as_str()));
+        assert!(response.truncated);
+        assert_eq!(response.max_chars, CODING_AGENT_RESPONSE_SUMMARY_MAX_CHARS);
+        assert_eq!(response.prompt_preview.as_deref(), Some("initial prompt"));
+        assert!(!response.prompt_truncated);
+        assert_eq!(
+            response.prompt_max_chars,
+            CODING_AGENT_PROMPT_PREVIEW_MAX_CHARS
+        );
+    }
+
+    #[test]
+    fn agent_response_bounds_prompt_preview_without_exposing_full_prompt() {
+        use db::models::{
+            coding_agent_turn::{CODING_AGENT_PROMPT_PREVIEW_MAX_CHARS, CodingAgentResponseRecord},
+            execution_process::ExecutionProcessStatus,
+        };
+
+        let prompt = format!(
+            "{}SECRET_AFTER_BOUNDARY",
+            "p".repeat(CODING_AGENT_PROMPT_PREVIEW_MAX_CHARS)
+        );
+        let response = AgentResponse::from_record(CodingAgentResponseRecord {
+            execution_process_id: uuid::Uuid::new_v4(),
+            session_id: uuid::Uuid::new_v4(),
+            workspace_id: uuid::Uuid::new_v4(),
+            status: ExecutionProcessStatus::Completed,
+            completed_at: None,
+            coding_agent_turn_id: Some(uuid::Uuid::new_v4()),
+            agent_session_id: Some("agent-session".to_string()),
+            agent_message_id: Some("agent-message".to_string()),
+            summary: Some("done".to_string()),
+            prompt: Some(prompt),
+        });
+
+        let preview = response.prompt_preview.as_deref().expect("prompt preview");
+        assert!(response.prompt_truncated);
+        assert_eq!(
+            response.prompt_max_chars,
+            CODING_AGENT_PROMPT_PREVIEW_MAX_CHARS
+        );
+        assert!(preview.ends_with("..."));
+        assert!(!preview.contains("SECRET_AFTER_BOUNDARY"));
+
+        let serialized = serde_json::to_value(&response).expect("serializes response");
+        assert!(serialized.get("prompt").is_none());
+        assert_eq!(serialized["prompt_preview"], preview);
+        assert_eq!(serialized["prompt_truncated"], true);
     }
 
     #[tokio::test]

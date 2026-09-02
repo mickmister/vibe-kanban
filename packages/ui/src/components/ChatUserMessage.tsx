@@ -18,6 +18,7 @@ interface ChatUserMessageProps {
   onEdit?: () => void;
   onReset?: () => void;
   isGreyed?: boolean;
+  title?: string;
   renderMarkdown: (props: ChatUserMessageRenderProps) => ReactNode;
 }
 
@@ -30,6 +31,7 @@ export function ChatUserMessage({
   onEdit,
   onReset,
   isGreyed,
+  title,
   renderMarkdown,
 }: ChatUserMessageProps) {
   const { t } = useTranslation('tasks');
@@ -73,7 +75,7 @@ export function ChatUserMessage({
   return (
     <ChatEntryContainer
       variant="user"
-      title={t('conversation.you')}
+      title={title ?? t('conversation.you')}
       expanded={expanded}
       onToggle={onToggle}
       className={className}

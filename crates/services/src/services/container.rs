@@ -1,6 +1,7 @@
 use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
+    str::FromStr,
     sync::Arc,
 };
 
@@ -9,6 +10,7 @@ use async_trait::async_trait;
 use db::{
     DBService,
     models::{
+        agent_message_queue::{AgentMessageQueueItem, AgentMessageQueueStatus},
         coding_agent_turn::{CodingAgentTurn, CreateCodingAgentTurn},
         execution_process::{
             CreateExecutionProcess, ExecutionContext, ExecutionProcess, ExecutionProcessError,
@@ -23,17 +25,17 @@ use db::{
         workspace_repo::WorkspaceRepo,
     },
 };
-#[cfg(feature = "qa-mode")]
-use executors::executors::qa_mock::QaMockExecutor;
-#[cfg(not(feature = "qa-mode"))]
-use executors::profile::ExecutorConfigs;
 use executors::{
     actions::{
         ExecutorAction, ExecutorActionType,
+        coding_agent_follow_up::CodingAgentFollowUpRequest,
         coding_agent_initial::CodingAgentInitialRequest,
         script::{ScriptContext, ScriptRequest, ScriptRequestLanguage},
+        session_command::CodingAgentSessionCommandRequest,
     },
-    executors::{ExecutorError, StandardCodingAgentExecutor},
+    executors::{
+        BaseCodingAgent, ExecutorError, StandardCodingAgentExecutor, qa_mock::QaMockExecutor,
+    },
     logs::{
         NormalizedEntry, NormalizedEntryError, NormalizedEntryType,
         utils::{
@@ -41,7 +43,7 @@ use executors::{
             patch::{fix_patch_ops, is_add_or_replace, patch_entry_path},
         },
     },
-    profile::{ExecutorConfig, ExecutorProfileId},
+    profile::{ExecutorConfig, ExecutorConfigs, ExecutorProfileId},
 };
 use futures::{StreamExt, future, stream::BoxStream};
 use git::{GitService, GitServiceError};
@@ -57,7 +59,15 @@ use utils::{
 use uuid::Uuid;
 use worktree_manager::WorktreeError;
 
-use crate::services::{execution_process, notification::NotificationService};
+use crate::services::{
+    config::Config,
+    execution_process,
+    notification::NotificationService,
+    queued_message::{QueueError, QueuedMessageService},
+    webhook_notification::{
+        TerminalExecutionStatus, TerminalExecutionWebhookEvent, WebhookNotificationService,
+    },
+};
 pub type ContainerRef = String;
 
 #[derive(Debug, Error)]
@@ -76,6 +86,8 @@ pub enum ContainerError {
     Session(#[from] SessionError),
     #[error(transparent)]
     ExecutionProcess(#[from] ExecutionProcessError),
+    #[error(transparent)]
+    Queue(#[from] QueueError),
     #[error("Io error: {0}")]
     Io(#[from] std::io::Error),
     #[error("Failed to kill process: {0}")]
@@ -91,6 +103,8 @@ pub trait ContainerService {
     fn db(&self) -> &DBService;
 
     fn git(&self) -> &GitService;
+
+    fn config(&self) -> &Arc<RwLock<Config>>;
 
     fn notification_service(&self) -> &NotificationService;
 
@@ -186,6 +200,184 @@ pub trait ContainerService {
         }
     }
 
+    async fn try_start_queued_messages(
+        &self,
+        queue: &QueuedMessageService,
+    ) -> Result<(), ContainerError> {
+        let _guard = queue.pump_lock().lock_owned().await;
+        let max_concurrent = self.config().read().await.agent_queue_concurrency.max(1);
+
+        loop {
+            let items = queue.lease_next_batch(max_concurrent).await?;
+            if items.is_empty() {
+                return Ok(());
+            }
+
+            let mut started_any = false;
+            for item in items {
+                if ExecutionProcess::has_running_non_dev_server_processes_for_workspace(
+                    &self.db().pool,
+                    item.workspace_id,
+                )
+                .await?
+                {
+                    queue.requeue(item.id).await?;
+                    continue;
+                }
+
+                match self.start_queued_message(queue, &item).await {
+                    Ok(Some(_)) => started_any = true,
+                    Ok(None) => {}
+                    Err(error) => {
+                        let message = error.to_string();
+                        tracing::error!(
+                            queue_item_id = %item.id,
+                            ?error,
+                            "failed to start queued follow-up"
+                        );
+                        queue.mark_failed(item.id, &message).await?;
+                    }
+                }
+            }
+
+            if !started_any {
+                return Ok(());
+            }
+        }
+    }
+
+    async fn start_queued_message(
+        &self,
+        queue: &QueuedMessageService,
+        item: &AgentMessageQueueItem,
+    ) -> Result<Option<ExecutionProcess>, ContainerError> {
+        let session = Session::find_by_id(&self.db().pool, item.session_id)
+            .await?
+            .ok_or_else(|| ContainerError::Other(anyhow!("Session not found")))?;
+        let workspace = Workspace::find_by_id(&self.db().pool, session.workspace_id)
+            .await?
+            .ok_or_else(|| ContainerError::Other(anyhow!("Workspace not found")))?;
+        self.ensure_container_exists(&workspace).await?;
+
+        let executor_config = self.executor_config_for_session(&session).await?;
+        let latest_session_info =
+            CodingAgentTurn::find_latest_session_info(&self.db().pool, session.id).await?;
+        let repos = WorkspaceRepo::find_repos_for_workspace(&self.db().pool, workspace.id).await?;
+        let cleanup_action = self.cleanup_actions_for_repos(&repos);
+        let working_dir = session
+            .agent_working_dir
+            .as_ref()
+            .filter(|dir| !dir.is_empty())
+            .cloned();
+
+        let action_type = if let Some(command) = item.data.session_command.clone() {
+            let latest_session_info = if command.requires_provider_context(executor_config.executor)
+            {
+                latest_session_info
+            } else {
+                None
+            };
+            ExecutorActionType::CodingAgentSessionCommandRequest(CodingAgentSessionCommandRequest {
+                command,
+                prompt: item.data.message.clone(),
+                session_id: latest_session_info
+                    .as_ref()
+                    .map(|info| info.session_id.clone()),
+                executor_config: executor_config.clone(),
+                working_dir: working_dir.clone(),
+            })
+        } else if let Some(info) = latest_session_info {
+            ExecutorActionType::CodingAgentFollowUpRequest(CodingAgentFollowUpRequest {
+                prompt: item.data.message.clone(),
+                session_id: info.session_id,
+                reset_to_message_id: None,
+                executor_config: executor_config.clone(),
+                working_dir: working_dir.clone(),
+            })
+        } else {
+            ExecutorActionType::CodingAgentInitialRequest(CodingAgentInitialRequest {
+                prompt: item.data.message.clone(),
+                executor_config: executor_config.clone(),
+                working_dir,
+            })
+        };
+
+        let cleanup_action = if matches!(
+            &action_type,
+            ExecutorActionType::CodingAgentSessionCommandRequest(_)
+        ) {
+            None
+        } else {
+            cleanup_action
+        };
+        let action = ExecutorAction::new_with_provenance(
+            action_type,
+            cleanup_action.map(Box::new),
+            item.data.provenance.clone(),
+        );
+        let process_id = Uuid::new_v4();
+        if !queue.mark_starting(item.id, process_id).await? {
+            let current = AgentMessageQueueItem::find_by_id(&self.db().pool, item.id).await?;
+            if current
+                .as_ref()
+                .is_some_and(|item| item.status == AgentMessageQueueStatus::Cancelled)
+            {
+                tracing::debug!(queue_item_id = %item.id, "queued message was cancelled before start");
+            } else {
+                tracing::warn!(
+                    queue_item_id = %item.id,
+                    current_status = ?current.map(|item| item.status),
+                    "queued message lease was lost before start"
+                );
+            }
+            return Ok(None);
+        }
+
+        match self
+            .start_execution_with_id(
+                &workspace,
+                &session,
+                &action,
+                &ExecutionProcessRunReason::CodingAgent,
+                process_id,
+            )
+            .await
+        {
+            Ok(process) => {
+                queue.mark_running(item.id, process.id).await?;
+                Ok(Some(process))
+            }
+            Err(error) => {
+                queue.mark_failed(item.id, &error.to_string()).await?;
+                Err(error)
+            }
+        }
+    }
+
+    async fn executor_config_for_session(
+        &self,
+        session: &Session,
+    ) -> Result<ExecutorConfig, ContainerError> {
+        if let Some(profile) =
+            ExecutionProcess::latest_executor_profile_for_session(&self.db().pool, session.id)
+                .await?
+        {
+            return Ok(profile.into());
+        }
+
+        let executor = session.executor.as_deref().ok_or_else(|| {
+            ContainerError::Other(anyhow!(
+                "session has no configured executor; start the session once before queueing follow-ups"
+            ))
+        })?;
+        let base_agent = BaseCodingAgent::from_str(executor).map_err(|_| {
+            ContainerError::Other(anyhow!(
+                "Unknown executor configured for session: {executor}"
+            ))
+        })?;
+        Ok(ExecutorConfig::new(base_agent))
+    }
+
     async fn store_db_stream_handle(&self, id: Uuid, handle: JoinHandle<()>);
 
     async fn take_db_stream_handle(&self, id: &Uuid) -> Option<JoinHandle<()>>;
@@ -266,6 +458,41 @@ pub trait ContainerService {
         };
         self.notification_service()
             .notify(&title, &message, Some(ctx.workspace.id))
+            .await;
+    }
+
+    /// Emits generic refs-only workflow webhooks for terminal coding-agent executions.
+    ///
+    /// These webhooks are best-effort wakeups for external orchestrators. VK keeps no
+    /// durable outbound outbox here; downstream systems must use VK response-read APIs
+    /// and their own polling/idempotence as the source of truth.
+    async fn emit_terminal_execution_webhook(
+        &self,
+        ctx: &ExecutionContext,
+        queue_item_id: Option<Uuid>,
+    ) {
+        if !matches!(
+            ctx.execution_process.run_reason,
+            ExecutionProcessRunReason::CodingAgent
+        ) {
+            return;
+        }
+        let status = match ctx.execution_process.status {
+            ExecutionProcessStatus::Completed => TerminalExecutionStatus::Completed,
+            ExecutionProcessStatus::Failed => TerminalExecutionStatus::Failed,
+            ExecutionProcessStatus::Killed => TerminalExecutionStatus::Killed,
+            ExecutionProcessStatus::Running => return,
+        };
+        WebhookNotificationService::new(self.config().clone())
+            .emit_terminal_execution_event(TerminalExecutionWebhookEvent {
+                workspace_id: ctx.workspace.id,
+                session_id: ctx.session.id,
+                execution_process_id: ctx.execution_process.id,
+                status,
+                completed_at: ctx.execution_process.completed_at,
+                queue_item_id,
+                exit_code: ctx.execution_process.exit_code,
+            })
             .await;
     }
 
@@ -421,6 +648,7 @@ pub trait ContainerService {
                 language: ScriptRequestLanguage::Bash,
                 context: ScriptContext::CleanupScript,
                 working_dir: Some(first.name.clone()),
+                env: Default::default(),
             }),
             None,
         );
@@ -432,6 +660,7 @@ pub trait ContainerService {
                     language: ScriptRequestLanguage::Bash,
                     context: ScriptContext::CleanupScript,
                     working_dir: Some(repo.name.clone()),
+                    env: Default::default(),
                 }),
                 None,
             ));
@@ -458,6 +687,7 @@ pub trait ContainerService {
                 language: ScriptRequestLanguage::Bash,
                 context: ScriptContext::ArchiveScript,
                 working_dir: Some(first.name.clone()),
+                env: Default::default(),
             }),
             None,
         );
@@ -469,6 +699,7 @@ pub trait ContainerService {
                     language: ScriptRequestLanguage::Bash,
                     context: ScriptContext::ArchiveScript,
                     working_dir: Some(repo.name.clone()),
+                    env: Default::default(),
                 }),
                 None,
             ));
@@ -575,6 +806,7 @@ pub trait ContainerService {
                 language: ScriptRequestLanguage::Bash,
                 context: ScriptContext::SetupScript,
                 working_dir: Some(first.name.clone()),
+                env: Default::default(),
             }),
             None,
         );
@@ -586,6 +818,7 @@ pub trait ContainerService {
                     language: ScriptRequestLanguage::Bash,
                     context: ScriptContext::SetupScript,
                     working_dir: Some(repo.name.clone()),
+                    env: Default::default(),
                 }),
                 None,
             ));
@@ -602,6 +835,7 @@ pub trait ContainerService {
                     language: ScriptRequestLanguage::Bash,
                     context: ScriptContext::SetupScript,
                     working_dir: Some(repo.name.clone()),
+                    env: Default::default(),
                 }),
                 None,
             )
@@ -621,6 +855,7 @@ pub trait ContainerService {
                         language: ScriptRequestLanguage::Bash,
                         context: ScriptContext::SetupScript,
                         working_dir: Some(repo.name.clone()),
+                        env: Default::default(),
                     }),
                     Some(Box::new(chained)),
                 );
@@ -629,13 +864,101 @@ pub trait ContainerService {
         chained
     }
 
-    /// Reset a session to a specific process: restore worktrees, stop processes, drop later processes.
+    async fn stop_running_processes_for_session(
+        &self,
+        session_id: Uuid,
+        include_dev_server: bool,
+    ) -> Result<Vec<Uuid>, ContainerError> {
+        let processes =
+            ExecutionProcess::find_by_session_id(&self.db().pool, session_id, false).await?;
+        let mut stopped_processes = Vec::new();
+
+        for process in processes {
+            // Skip dev server processes unless explicitly included.
+            if !include_dev_server && process.run_reason == ExecutionProcessRunReason::DevServer {
+                continue;
+            }
+            if process.status == ExecutionProcessStatus::Running {
+                let process_id = process.id;
+                self.stop_execution(&process, ExecutionProcessStatus::Killed)
+                    .await
+                    .map_err(|e| {
+                        tracing::debug!(
+                            "Failed to stop execution process {} for session {}: {}",
+                            process_id,
+                            session_id,
+                            e
+                        );
+                        e
+                    })?;
+                stopped_processes.push(process_id);
+            }
+        }
+
+        Ok(stopped_processes)
+    }
+
+    async fn running_non_dev_server_processes_for_other_sessions(
+        &self,
+        workspace_id: Uuid,
+        target_session_id: Uuid,
+    ) -> Result<Vec<ExecutionProcess>, ContainerError> {
+        let sessions = Session::find_by_workspace_id(&self.db().pool, workspace_id).await?;
+        let mut running_processes = Vec::new();
+
+        for session in sessions {
+            if session.id == target_session_id {
+                continue;
+            }
+
+            let processes =
+                ExecutionProcess::find_by_session_id(&self.db().pool, session.id, false).await?;
+            running_processes.extend(processes.into_iter().filter(|process| {
+                process.status == ExecutionProcessStatus::Running
+                    && process.run_reason != ExecutionProcessRunReason::DevServer
+            }));
+        }
+
+        Ok(running_processes)
+    }
+
+    async fn stop_running_processes_for_other_sessions(
+        &self,
+        workspace_id: Uuid,
+        target_session_id: Uuid,
+    ) -> Result<Vec<Uuid>, ContainerError> {
+        let sibling_processes = self
+            .running_non_dev_server_processes_for_other_sessions(workspace_id, target_session_id)
+            .await?;
+        let mut stopped_processes = Vec::new();
+
+        for process in sibling_processes {
+            let process_id = process.id;
+            self.stop_execution(&process, ExecutionProcessStatus::Killed)
+                .await
+                .map_err(|e| {
+                    tracing::debug!(
+                        "Failed to stop sibling execution process {} for workspace {}: {}",
+                        process_id,
+                        workspace_id,
+                        e
+                    );
+                    e
+                })?;
+            stopped_processes.push(process_id);
+        }
+
+        Ok(stopped_processes)
+    }
+
+    /// Reset a session to a specific process: stop running processes, restore worktrees, drop later processes.
     async fn reset_session_to_process(
         &self,
         session_id: Uuid,
         target_process_id: Uuid,
         perform_git_reset: bool,
         force_when_dirty: bool,
+        stop_other_sessions_for_git_reset: bool,
     ) -> Result<(), ContainerError> {
         let pool = &self.db().pool;
 
@@ -654,6 +977,26 @@ pub trait ContainerService {
         let workspace = Workspace::find_by_id(pool, session.workspace_id)
             .await?
             .ok_or_else(|| ContainerError::Other(anyhow!("Workspace not found")))?;
+
+        if perform_git_reset {
+            let sibling_running_processes = self
+                .running_non_dev_server_processes_for_other_sessions(workspace.id, session_id)
+                .await?;
+
+            if !sibling_running_processes.is_empty() {
+                if stop_other_sessions_for_git_reset {
+                    self.stop_running_processes_for_other_sessions(workspace.id, session_id)
+                        .await?;
+                } else {
+                    return Err(ContainerError::Other(anyhow!(
+                        "Cannot reset worktree while another session is running. Retry without worktree reset, or choose the option to stop other running sessions before resetting."
+                    )));
+                }
+            }
+        }
+
+        self.stop_running_processes_for_session(session_id, false)
+            .await?;
 
         let repos = WorkspaceRepo::find_repos_for_workspace(pool, workspace.id).await?;
         let repo_states =
@@ -698,7 +1041,6 @@ pub trait ContainerService {
             }
         }
 
-        self.try_stop(&workspace, false).await;
         ExecutionProcess::drop_at_and_after(pool, session_id, target_process_id).await?;
         Session::recompute_context_reset_boundary(pool, session_id).await?;
 
@@ -713,30 +1055,9 @@ pub trait ContainerService {
         };
 
         for session in sessions {
-            if let Ok(processes) =
-                ExecutionProcess::find_by_session_id(&self.db().pool, session.id, false).await
-            {
-                for process in processes {
-                    // Skip dev server processes unless explicitly included
-                    if !include_dev_server
-                        && process.run_reason == ExecutionProcessRunReason::DevServer
-                    {
-                        continue;
-                    }
-                    if process.status == ExecutionProcessStatus::Running {
-                        self.stop_execution(&process, ExecutionProcessStatus::Killed)
-                            .await
-                            .unwrap_or_else(|e| {
-                                tracing::debug!(
-                                    "Failed to stop execution process {} for workspace {}: {}",
-                                    process.id,
-                                    workspace.id,
-                                    e
-                                );
-                            });
-                    }
-                }
-            }
+            let _ = self
+                .stop_running_processes_for_session(session.id, include_dev_server)
+                .await;
         }
     }
 
@@ -916,16 +1237,13 @@ pub trait ContainerService {
             // Spawn normalizer on populated store and collect JoinHandles
             let handles = match executor_action.typ() {
                 ExecutorActionType::CodingAgentInitialRequest(request) => {
-                    #[cfg(feature = "qa-mode")]
-                    {
+                    if executor_action.uses_qa_mock_log_normalizer() {
                         let executor = QaMockExecutor;
-                        executor.normalize_logs(
+                        executor.normalize_mock_logs(
                             temp_store.clone(),
                             &request.effective_dir(&current_dir),
                         )
-                    }
-                    #[cfg(not(feature = "qa-mode"))]
-                    {
+                    } else {
                         let executor = ExecutorConfigs::get_cached()
                             .get_coding_agent_or_default(&request.executor_config.profile_id());
                         executor.normalize_logs(
@@ -935,16 +1253,13 @@ pub trait ContainerService {
                     }
                 }
                 ExecutorActionType::CodingAgentFollowUpRequest(request) => {
-                    #[cfg(feature = "qa-mode")]
-                    {
+                    if executor_action.uses_qa_mock_log_normalizer() {
                         let executor = QaMockExecutor;
-                        executor.normalize_logs(
+                        executor.normalize_mock_logs(
                             temp_store.clone(),
                             &request.effective_dir(&current_dir),
                         )
-                    }
-                    #[cfg(not(feature = "qa-mode"))]
-                    {
+                    } else {
                         let executor = ExecutorConfigs::get_cached()
                             .get_coding_agent_or_default(&request.executor_config.profile_id());
                         executor.normalize_logs(
@@ -958,36 +1273,30 @@ pub trait ContainerService {
                         executors::actions::session_command::normalize_static_session_command_logs(
                             temp_store.clone(),
                         )
+                    } else if executor_action.uses_qa_mock_log_normalizer() {
+                        let executor = QaMockExecutor;
+                        executor.normalize_mock_logs(
+                            temp_store.clone(),
+                            &request.effective_dir(&current_dir),
+                        )
                     } else {
-                        #[cfg(feature = "qa-mode")]
-                        {
-                            let executor = QaMockExecutor;
-                            executor.normalize_logs(
-                                temp_store.clone(),
-                                &request.effective_dir(&current_dir),
-                            )
-                        }
-                        #[cfg(not(feature = "qa-mode"))]
-                        {
-                            let executor = ExecutorConfigs::get_cached()
-                                .get_coding_agent_or_default(&request.executor_config.profile_id());
-                            executor.normalize_logs(
-                                temp_store.clone(),
-                                &request.effective_dir(&current_dir),
-                            )
-                        }
+                        let executor = ExecutorConfigs::get_cached()
+                            .get_coding_agent_or_default(&request.executor_config.profile_id());
+                        executor.normalize_logs(
+                            temp_store.clone(),
+                            &request.effective_dir(&current_dir),
+                        )
                     }
                 }
-                #[cfg(feature = "qa-mode")]
-                ExecutorActionType::ReviewRequest(_request) => {
-                    let executor = QaMockExecutor;
-                    executor.normalize_logs(temp_store.clone(), &current_dir)
-                }
-                #[cfg(not(feature = "qa-mode"))]
                 ExecutorActionType::ReviewRequest(request) => {
-                    let executor = ExecutorConfigs::get_cached()
-                        .get_coding_agent_or_default(&request.executor_config.profile_id());
-                    executor.normalize_logs(temp_store.clone(), &current_dir)
+                    if executor_action.uses_qa_mock_log_normalizer() {
+                        let executor = QaMockExecutor;
+                        executor.normalize_mock_logs(temp_store.clone(), &current_dir)
+                    } else {
+                        let executor = ExecutorConfigs::get_cached()
+                            .get_coding_agent_or_default(&request.executor_config.profile_id());
+                        executor.normalize_logs(temp_store.clone(), &current_dir)
+                    }
                 }
                 _ => {
                     tracing::debug!(
@@ -1163,6 +1472,24 @@ pub trait ContainerService {
         executor_action: &ExecutorAction,
         run_reason: &ExecutionProcessRunReason,
     ) -> Result<ExecutionProcess, ContainerError> {
+        self.start_execution_with_id(
+            workspace,
+            session,
+            executor_action,
+            run_reason,
+            Uuid::new_v4(),
+        )
+        .await
+    }
+
+    async fn start_execution_with_id(
+        &self,
+        workspace: &Workspace,
+        session: &Session,
+        executor_action: &ExecutorAction,
+        run_reason: &ExecutionProcessRunReason,
+        process_id: Uuid,
+    ) -> Result<ExecutionProcess, ContainerError> {
         // Create new execution process record
         // Capture current HEAD per repository as the "before" commit for this execution
         let repositories =
@@ -1190,19 +1517,24 @@ pub trait ContainerService {
                 merge_commit: None,
             });
         }
+        let executor_action_for_process = executor_action
+            .clone()
+            .with_current_runtime_log_normalizer();
         let create_execution_process = CreateExecutionProcess {
             session_id: session.id,
-            executor_action: executor_action.clone(),
+            executor_action: executor_action_for_process.clone(),
             run_reason: run_reason.clone(),
         };
 
         let execution_process = ExecutionProcess::create(
             &self.db().pool,
             &create_execution_process,
-            Uuid::new_v4(),
+            process_id,
             &repo_states,
         )
         .await?;
+        let execution_process_id = execution_process.id.to_string();
+        tracing::Span::current().record("execution_process_id", execution_process_id.as_str());
         self.msg_stores()
             .write()
             .await
@@ -1217,7 +1549,7 @@ pub trait ContainerService {
             return Err(e.into());
         }
 
-        if let Some(prompt) = match executor_action.typ() {
+        if let Some(prompt) = match executor_action_for_process.typ() {
             ExecutorActionType::CodingAgentInitialRequest(coding_agent_request) => {
                 Some(coding_agent_request.prompt.clone())
             }
@@ -1255,7 +1587,7 @@ pub trait ContainerService {
         }
 
         let is_clear_session_command = matches!(
-            executor_action.typ(),
+            executor_action_for_process.typ(),
             ExecutorActionType::CodingAgentSessionCommandRequest(
                 executors::actions::session_command::CodingAgentSessionCommandRequest {
                     command: executors::actions::session_command::SessionCommand::Clear,
@@ -1265,7 +1597,7 @@ pub trait ContainerService {
         );
 
         if let Err(start_error) = self
-            .start_execution_inner(workspace, &execution_process, executor_action)
+            .start_execution_inner(workspace, &execution_process, &executor_action_for_process)
             .await
         {
             self.msg_stores()
@@ -1345,7 +1677,7 @@ pub trait ContainerService {
         // Start processing normalised logs for executor requests and follow ups
         let workspace_root = self.workspace_to_current_dir(workspace);
         #[cfg_attr(feature = "qa-mode", allow(unused_variables))]
-        if let Some((executor_profile_id, working_dir)) = match executor_action.typ() {
+        if let Some((executor_profile_id, working_dir)) = match executor_action_for_process.typ() {
             ExecutorActionType::CodingAgentInitialRequest(request) => Some((
                 request.executor_config.profile_id(),
                 request.effective_dir(&workspace_root),
@@ -1393,23 +1725,18 @@ pub trait ContainerService {
                     )));
                 }
             };
-            #[cfg(feature = "qa-mode")]
-            {
+            if executor_action_for_process.uses_qa_mock_log_normalizer() {
                 let executor = QaMockExecutor;
-                let _ = executor.normalize_logs(msg_store, &working_dir);
-            }
-            #[cfg(not(feature = "qa-mode"))]
+                let _ = executor.normalize_mock_logs(msg_store, &working_dir);
+            } else if let Some(executor) =
+                ExecutorConfigs::get_cached().get_coding_agent(&executor_profile_id)
             {
-                if let Some(executor) =
-                    ExecutorConfigs::get_cached().get_coding_agent(&executor_profile_id)
-                {
-                    let _ = executor.normalize_logs(msg_store, &working_dir);
-                } else {
-                    tracing::error!(
-                        "Failed to resolve profile '{:?}' for normalization",
-                        executor_profile_id
-                    );
-                }
+                let _ = executor.normalize_logs(msg_store, &working_dir);
+            } else {
+                tracing::error!(
+                    "Failed to resolve profile '{:?}' for normalization",
+                    executor_profile_id
+                );
             }
         }
 
@@ -1456,6 +1783,448 @@ pub trait ContainerService {
             .await?;
 
         tracing::debug!("Started next action: {:?}", next_action);
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::str::FromStr;
+
+    use sqlx::{
+        ConnectOptions, SqlitePool,
+        sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions},
+    };
+    use tokio::sync::Mutex;
+
+    use super::*;
+    use crate::services::config::Config;
+
+    struct TestContainerService {
+        db: DBService,
+        git: GitService,
+        config: Arc<RwLock<Config>>,
+        notifications: NotificationService,
+        msg_stores: Arc<RwLock<HashMap<Uuid, Arc<MsgStore>>>>,
+        stopped_processes: Arc<Mutex<Vec<Uuid>>>,
+        events: Arc<Mutex<Vec<TestContainerEvent>>>,
+        container_ref: String,
+    }
+
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    enum TestContainerEvent {
+        EnsureContainerExists,
+        IsContainerClean,
+        StopExecution(Uuid),
+    }
+
+    impl TestContainerService {
+        fn new(db: DBService, container_ref: String) -> Self {
+            let config = Arc::new(RwLock::new(Config::default()));
+            Self {
+                db,
+                git: GitService::new(),
+                notifications: NotificationService::new(config.clone()),
+                config,
+                msg_stores: Arc::new(RwLock::new(HashMap::new())),
+                stopped_processes: Arc::new(Mutex::new(Vec::new())),
+                events: Arc::new(Mutex::new(Vec::new())),
+                container_ref,
+            }
+        }
+
+        async fn stopped_processes(&self) -> Vec<Uuid> {
+            self.stopped_processes.lock().await.clone()
+        }
+
+        async fn events(&self) -> Vec<TestContainerEvent> {
+            self.events.lock().await.clone()
+        }
+    }
+
+    #[async_trait]
+    impl ContainerService for TestContainerService {
+        fn msg_stores(&self) -> &Arc<RwLock<HashMap<Uuid, Arc<MsgStore>>>> {
+            &self.msg_stores
+        }
+
+        fn db(&self) -> &DBService {
+            &self.db
+        }
+
+        fn git(&self) -> &GitService {
+            &self.git
+        }
+
+        fn config(&self) -> &Arc<RwLock<Config>> {
+            &self.config
+        }
+
+        fn notification_service(&self) -> &NotificationService {
+            &self.notifications
+        }
+
+        async fn touch(&self, _workspace: &Workspace) -> Result<(), ContainerError> {
+            Ok(())
+        }
+
+        fn workspace_to_current_dir(&self, _workspace: &Workspace) -> PathBuf {
+            PathBuf::from(&self.container_ref)
+        }
+
+        async fn store_db_stream_handle(&self, _id: Uuid, _handle: JoinHandle<()>) {}
+
+        async fn take_db_stream_handle(&self, _id: &Uuid) -> Option<JoinHandle<()>> {
+            None
+        }
+
+        async fn create(&self, _workspace: &Workspace) -> Result<ContainerRef, ContainerError> {
+            Ok(self.container_ref.clone())
+        }
+
+        async fn kill_all_running_processes(&self) -> Result<(), ContainerError> {
+            Ok(())
+        }
+
+        async fn delete(&self, _workspace: &Workspace) -> Result<(), ContainerError> {
+            Ok(())
+        }
+
+        async fn ensure_container_exists(
+            &self,
+            _workspace: &Workspace,
+        ) -> Result<ContainerRef, ContainerError> {
+            self.events
+                .lock()
+                .await
+                .push(TestContainerEvent::EnsureContainerExists);
+            Ok(self.container_ref.clone())
+        }
+
+        async fn is_container_clean(&self, _workspace: &Workspace) -> Result<bool, ContainerError> {
+            self.events
+                .lock()
+                .await
+                .push(TestContainerEvent::IsContainerClean);
+            Ok(true)
+        }
+
+        async fn start_execution_inner(
+            &self,
+            _workspace: &Workspace,
+            _execution_process: &ExecutionProcess,
+            _executor_action: &ExecutorAction,
+        ) -> Result<(), ContainerError> {
+            Ok(())
+        }
+
+        async fn stop_execution(
+            &self,
+            execution_process: &ExecutionProcess,
+            status: ExecutionProcessStatus,
+        ) -> Result<(), ContainerError> {
+            self.events
+                .lock()
+                .await
+                .push(TestContainerEvent::StopExecution(execution_process.id));
+            self.stopped_processes
+                .lock()
+                .await
+                .push(execution_process.id);
+            ExecutionProcess::update_completion(&self.db.pool, execution_process.id, status, None)
+                .await?;
+            Ok(())
+        }
+
+        async fn try_commit_changes(
+            &self,
+            _ctx: &ExecutionContext,
+        ) -> Result<bool, ContainerError> {
+            Ok(false)
+        }
+
+        async fn copy_project_files(
+            &self,
+            _source_dir: &Path,
+            _target_dir: &Path,
+            _copy_files: &str,
+        ) -> Result<(), ContainerError> {
+            Ok(())
+        }
+
+        async fn stream_diff(
+            &self,
+            _workspace: &Workspace,
+            _stats_only: bool,
+        ) -> Result<BoxStream<'static, Result<LogMsg, std::io::Error>>, ContainerError> {
+            Ok(futures::stream::empty().boxed())
+        }
+
+        async fn git_branch_prefix(&self) -> String {
+            String::new()
+        }
+    }
+
+    async fn test_pool() -> Result<(tempfile::TempDir, SqlitePool), Box<dyn std::error::Error>> {
+        let temp_dir = tempfile::tempdir()?;
+        let db_path = temp_dir.path().join("test.sqlite");
+        let database_url = format!("sqlite://{}", db_path.to_string_lossy());
+        let options = SqliteConnectOptions::from_str(&database_url)?
+            .create_if_missing(true)
+            .journal_mode(SqliteJournalMode::Delete)
+            .disable_statement_logging();
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(options)
+            .await?;
+        sqlx::migrate!("../db/migrations").run(&pool).await?;
+        Ok((temp_dir, pool))
+    }
+
+    async fn insert_workspace(pool: &SqlitePool, container_ref: &str) -> Result<Uuid, sqlx::Error> {
+        let workspace_id = Uuid::new_v4();
+        sqlx::query("INSERT INTO workspaces (id, branch, container_ref) VALUES (?1, ?2, ?3)")
+            .bind(workspace_id)
+            .bind("test-branch")
+            .bind(container_ref)
+            .execute(pool)
+            .await?;
+        Ok(workspace_id)
+    }
+
+    async fn insert_process(
+        pool: &SqlitePool,
+        session_id: Uuid,
+        run_reason: ExecutionProcessRunReason,
+        status: ExecutionProcessStatus,
+        created_at: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Uuid, sqlx::Error> {
+        let process_id = Uuid::new_v4();
+        sqlx::query(
+            r#"INSERT INTO execution_processes
+               (id, session_id, run_reason, executor_action, status, dropped,
+                started_at, created_at, updated_at)
+               VALUES (?1, ?2, ?3, ?4, ?5, FALSE, ?6, ?7, ?8)"#,
+        )
+        .bind(process_id)
+        .bind(session_id)
+        .bind(run_reason)
+        .bind("{}")
+        .bind(status)
+        .bind(created_at)
+        .bind(created_at)
+        .bind(created_at)
+        .execute(pool)
+        .await?;
+        Ok(process_id)
+    }
+
+    struct TwoSessionResetFixture {
+        _temp_dir: tempfile::TempDir,
+        pool: SqlitePool,
+        service: TestContainerService,
+        session_a_id: Uuid,
+        target_process_id: Uuid,
+        session_a_running_process_id: Uuid,
+        session_b_running_process_id: Uuid,
+    }
+
+    async fn two_session_reset_fixture()
+    -> Result<TwoSessionResetFixture, Box<dyn std::error::Error>> {
+        let (temp_dir, pool) = test_pool().await?;
+        let workspace_id =
+            insert_workspace(&pool, temp_dir.path().to_string_lossy().as_ref()).await?;
+        let session_a = Session::create(
+            &pool,
+            &CreateSession {
+                executor: Some("codex".to_string()),
+                name: Some("session a".to_string()),
+            },
+            Uuid::new_v4(),
+            workspace_id,
+        )
+        .await?;
+        let session_b = Session::create(
+            &pool,
+            &CreateSession {
+                executor: Some("codex".to_string()),
+                name: Some("session b".to_string()),
+            },
+            Uuid::new_v4(),
+            workspace_id,
+        )
+        .await?;
+
+        let now = chrono::Utc::now();
+        let target_process_id = insert_process(
+            &pool,
+            session_a.id,
+            ExecutionProcessRunReason::CodingAgent,
+            ExecutionProcessStatus::Completed,
+            now,
+        )
+        .await?;
+        let session_a_running_process_id = insert_process(
+            &pool,
+            session_a.id,
+            ExecutionProcessRunReason::CodingAgent,
+            ExecutionProcessStatus::Running,
+            now + chrono::Duration::milliseconds(1),
+        )
+        .await?;
+        let session_b_running_process_id = insert_process(
+            &pool,
+            session_b.id,
+            ExecutionProcessRunReason::CodingAgent,
+            ExecutionProcessStatus::Running,
+            now + chrono::Duration::milliseconds(2),
+        )
+        .await?;
+
+        let service = TestContainerService::new(
+            DBService { pool: pool.clone() },
+            temp_dir.path().to_string_lossy().to_string(),
+        );
+
+        Ok(TwoSessionResetFixture {
+            _temp_dir: temp_dir,
+            pool,
+            service,
+            session_a_id: session_a.id,
+            target_process_id,
+            session_a_running_process_id,
+            session_b_running_process_id,
+        })
+    }
+
+    #[tokio::test]
+    async fn reset_session_to_process_stops_only_processes_in_target_session()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let fixture = two_session_reset_fixture().await?;
+
+        fixture
+            .service
+            .reset_session_to_process(
+                fixture.session_a_id,
+                fixture.target_process_id,
+                false,
+                false,
+                false,
+            )
+            .await?;
+
+        assert_eq!(
+            fixture.service.stopped_processes().await,
+            vec![fixture.session_a_running_process_id]
+        );
+
+        let session_a_process =
+            ExecutionProcess::find_by_id(&fixture.pool, fixture.session_a_running_process_id)
+                .await?
+                .expect("session A running process should still exist");
+        assert_eq!(session_a_process.status, ExecutionProcessStatus::Killed);
+        assert!(session_a_process.dropped);
+
+        let session_b_process =
+            ExecutionProcess::find_by_id(&fixture.pool, fixture.session_b_running_process_id)
+                .await?
+                .expect("session B running process should still exist");
+        assert_eq!(session_b_process.status, ExecutionProcessStatus::Running);
+        assert!(!session_b_process.dropped);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn reset_session_to_process_rejects_git_reset_while_other_session_runs_without_override()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let fixture = two_session_reset_fixture().await?;
+
+        let err = fixture
+            .service
+            .reset_session_to_process(
+                fixture.session_a_id,
+                fixture.target_process_id,
+                true,
+                false,
+                false,
+            )
+            .await
+            .expect_err("git reset should be rejected while another session is running");
+
+        assert!(
+            err.to_string()
+                .contains("Cannot reset worktree while another session is running")
+        );
+        assert_eq!(
+            fixture.service.stopped_processes().await,
+            Vec::<Uuid>::new()
+        );
+
+        let session_a_process =
+            ExecutionProcess::find_by_id(&fixture.pool, fixture.session_a_running_process_id)
+                .await?
+                .expect("session A running process should still exist");
+        assert_eq!(session_a_process.status, ExecutionProcessStatus::Running);
+        assert!(!session_a_process.dropped);
+
+        let session_b_process =
+            ExecutionProcess::find_by_id(&fixture.pool, fixture.session_b_running_process_id)
+                .await?
+                .expect("session B running process should still exist");
+        assert_eq!(session_b_process.status, ExecutionProcessStatus::Running);
+        assert!(!session_b_process.dropped);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn reset_session_to_process_stops_other_session_when_git_reset_override_is_enabled()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let fixture = two_session_reset_fixture().await?;
+
+        fixture
+            .service
+            .reset_session_to_process(
+                fixture.session_a_id,
+                fixture.target_process_id,
+                true,
+                false,
+                true,
+            )
+            .await?;
+
+        assert_eq!(
+            fixture.service.stopped_processes().await,
+            vec![
+                fixture.session_b_running_process_id,
+                fixture.session_a_running_process_id,
+            ]
+        );
+        assert_eq!(
+            fixture.service.events().await,
+            vec![
+                TestContainerEvent::StopExecution(fixture.session_b_running_process_id),
+                TestContainerEvent::StopExecution(fixture.session_a_running_process_id),
+                TestContainerEvent::EnsureContainerExists,
+                TestContainerEvent::IsContainerClean,
+            ]
+        );
+
+        let session_a_process =
+            ExecutionProcess::find_by_id(&fixture.pool, fixture.session_a_running_process_id)
+                .await?
+                .expect("session A running process should still exist");
+        assert_eq!(session_a_process.status, ExecutionProcessStatus::Killed);
+        assert!(session_a_process.dropped);
+
+        let session_b_process =
+            ExecutionProcess::find_by_id(&fixture.pool, fixture.session_b_running_process_id)
+                .await?
+                .expect("session B running process should still exist");
+        assert_eq!(session_b_process.status, ExecutionProcessStatus::Killed);
+        assert!(!session_b_process.dropped);
+
         Ok(())
     }
 }

@@ -158,7 +158,7 @@ impl Deployment for LocalDeployment {
         }
 
         let approvals = Approvals::new();
-        let queued_message_service = QueuedMessageService::new();
+        let queued_message_service = QueuedMessageService::new(db.clone());
 
         let oauth_credentials = Arc::new(OAuthCredentials::new(credentials_path()));
         if let Err(e) = oauth_credentials.load().await {
@@ -294,6 +294,17 @@ impl Deployment for LocalDeployment {
             pty,
             pr_sync_notify,
         };
+
+        if let Err(e) = deployment.queued_message_service.recover_stale().await {
+            tracing::warn!("Failed to recover stale queued messages at startup: {}", e);
+        }
+        if let Err(e) = deployment
+            .container
+            .try_start_queued_messages(&deployment.queued_message_service)
+            .await
+        {
+            tracing::warn!("Failed to start queued messages at startup: {}", e);
+        }
 
         Ok(deployment)
     }

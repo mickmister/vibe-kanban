@@ -197,6 +197,7 @@ interface SessionChatBoxProps<TExecutor extends string = string> {
   tokenUsageInfo?: ContextUsageInfo | null;
   supportsContextUsage?: boolean;
   dropzone?: DropzoneProps;
+  queuedCount?: number;
 }
 
 function defaultExecutorLabel(executor: string) {
@@ -261,6 +262,7 @@ export function SessionChatBox<TExecutor extends string = string>({
   tokenUsageInfo,
   supportsContextUsage,
   dropzone,
+  queuedCount = 0,
 }: SessionChatBoxProps<TExecutor>) {
   const { t } = useTranslation('tasks');
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -296,9 +298,9 @@ export function SessionChatBox<TExecutor extends string = string>({
     editor.value.trim().length > 0 || (reviewComments?.count ?? 0) > 0;
   const canSend =
     hasContent && !['sending', 'stopping', 'queue-loading'].includes(status);
-  const isQueued = status === 'queued';
+  const isQueued = status === 'queued' || queuedCount > 0;
   const isRunning = status === 'running' || status === 'queued';
-  const areContentInsertActionsDisabled = isDisabled || isQueued;
+  const areContentInsertActionsDisabled = isDisabled;
   const showRunningAnimation =
     (status === 'running' || status === 'queued' || status === 'sending') &&
     !isInApprovalMode &&
@@ -636,7 +638,9 @@ export function SessionChatBox<TExecutor extends string = string>({
         >
           <ClockIcon className="h-4 w-4 text-low" />
           <span className="text-sm text-low">
-            {t('followUp.queuedMessage')}
+            {queuedCount > 1
+              ? `${queuedCount} messages queued - will execute in priority order`
+              : t('followUp.queuedMessage')}
           </span>
         </div>
       );
