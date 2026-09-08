@@ -18,7 +18,7 @@ module.exports = {
     'prettier',
   ],
   plugins: ['@typescript-eslint', 'react-hooks', 'unused-imports'],
-  ignorePatterns: ['dist', 'src/**/*.test.ts', 'src/**/*.test.tsx'],
+  ignorePatterns: ['dist'],
   rules: {
     'unused-imports/no-unused-imports': 'error',
     'unused-imports/no-unused-vars': [
