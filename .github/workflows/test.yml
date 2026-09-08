@@ -10,6 +10,7 @@ on:
   push:
     branches:
       - main
+      - vk/dd53-vk-update-codex
   workflow_dispatch:
 
 concurrency:
