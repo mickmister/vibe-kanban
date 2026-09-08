@@ -95,6 +95,7 @@ services:
       # Core runtime
       SERVER_DATABASE_URL: postgres://remote:remote@remote-db:5432/remote
       SERVER_LISTEN_ADDR: 0.0.0.0:8081
+      CODEX_SQLITE_LOGS: off
       ELECTRIC_URL: http://electric:3000
       ELECTRIC_ROLE_PASSWORD: ${ELECTRIC_ROLE_PASSWORD:-remote}
       SERVER_PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:3000}
