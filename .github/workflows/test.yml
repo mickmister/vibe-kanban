@@ -346,7 +346,8 @@ jobs:
 
       - name: Coding-agent upgrade gate no-op
         if: steps.should_run.outputs.result != 'true'
-        run: echo "Coding-agent upgrade gate: no relevant files changed; no-op pass."
+        run: |
+          echo "Coding-agent upgrade gate: no relevant files changed; no-op pass."
 
       - name: Setup Rust and Node
         if: steps.should_run.outputs.result == 'true'
