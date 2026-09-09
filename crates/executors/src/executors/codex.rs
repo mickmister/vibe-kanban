@@ -524,12 +524,67 @@ impl Codex {
 }
 
 impl Codex {
+    const BINARY_ENV_VAR: &'static str = "VK_CODEX_BINARY";
+
     pub fn base_command() -> &'static str {
         "npx -y @openai/codex@0.147.0"
     }
 
+    fn selected_base_command(&self) -> Result<String, CommandBuildError> {
+        Self::select_base_command(
+            self.cmd.base_command_override.as_deref(),
+            env::var_os(Self::BINARY_ENV_VAR),
+        )
+    }
+
+    fn select_base_command(
+        user_override: Option<&str>,
+        configured_binary: Option<std::ffi::OsString>,
+    ) -> Result<String, CommandBuildError> {
+        if let Some(user_override) = user_override {
+            return Ok(user_override.to_string());
+        }
+
+        let Some(configured_binary) = configured_binary else {
+            return Ok(Self::base_command().to_string());
+        };
+        let path = PathBuf::from(configured_binary);
+        if !path.is_absolute() || !Self::is_executable_file(&path) {
+            return Err(CommandBuildError::InvalidConfiguredExecutable {
+                variable: Self::BINARY_ENV_VAR,
+                path: path.to_string_lossy().into_owned(),
+            });
+        }
+
+        let path = path.to_string_lossy();
+        #[cfg(windows)]
+        let command = format!("\"{}\"", path.replace('"', "\\\""));
+        #[cfg(not(windows))]
+        let command = shlex::try_quote(&path)?.into_owned();
+        Ok(command)
+    }
+
+    fn is_executable_file(path: &Path) -> bool {
+        let Ok(metadata) = path.metadata() else {
+            return false;
+        };
+        if !metadata.is_file() {
+            return false;
+        }
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            metadata.permissions().mode() & 0o111 != 0
+        }
+        #[cfg(not(unix))]
+        {
+            true
+        }
+    }
+
     fn build_command_builder(&self) -> Result<CommandBuilder, CommandBuildError> {
-        let mut builder = CommandBuilder::new(Self::base_command());
+        let mut builder = CommandBuilder::new(self.selected_base_command()?);
         builder = builder.extend_params(["app-server"]);
         if self.oss.unwrap_or(false) {
             builder = builder.extend_params(["--oss"]);
@@ -538,13 +593,14 @@ impl Codex {
         apply_overrides(builder, &self.cmd)
     }
 
-    fn build_model_catalog_command_builder(&self) -> CommandBuilder {
-        let base = self
-            .cmd
-            .base_command_override
-            .clone()
-            .unwrap_or_else(|| Self::base_command().to_string());
-        CommandBuilder::new(base).extend_params(["debug", "models", "--bundled"])
+    fn build_model_catalog_command_builder(&self) -> Result<CommandBuilder, CommandBuildError> {
+        Ok(
+            CommandBuilder::new(self.selected_base_command()?).extend_params([
+                "debug",
+                "models",
+                "--bundled",
+            ]),
+        )
     }
 
     async fn discover_model_selector_from_bundled_catalog(
@@ -553,12 +609,12 @@ impl Codex {
         const CODEX_MODEL_CATALOG_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
 
         let command_parts = self
-            .build_model_catalog_command_builder()
+            .build_model_catalog_command_builder()?
             .build_initial()
             .map_err(ExecutorError::from)?;
         let (executable, args) = command_parts.into_resolved().await?;
         let mut command = Command::new(executable);
-        command.args(args);
+        command.env("CODEX_SQLITE_LOGS", "off").args(args);
         if let Some(env) = &self.cmd.env {
             command.envs(env);
         }
@@ -833,16 +889,12 @@ impl Codex {
             .env("NODE_NO_WARNINGS", "1")
             .env("NO_COLOR", "1")
             .env("RUST_LOG", "error")
+            .env("CODEX_SQLITE_LOGS", "off")
             .args(&args);
 
         env.clone()
             .with_profile(&self.cmd)
             .apply_to_command(&mut process);
-        // VK runs short-lived Codex app-server children and relies on OTEL/stderr
-        // for diagnostics. SQLite-backed Codex logs are non-critical and can
-        // contend heavily on hosts with many sessions, so force them off for
-        // VK-spawned Codex processes even if profile env overrides are present.
-        process.env("CODEX_SQLITE_LOGS", "off");
 
         let mut child = {
             let _span = tracing::debug_span!(
@@ -962,12 +1014,17 @@ impl Codex {
 
 #[cfg(test)]
 mod tests {
+    use std::ffi::OsString;
+
     use codex_app_server_protocol::AskForApproval as V2AskForApproval;
     use futures::StreamExt;
 
     use super::{AskForApproval, Codex, resolve_model};
     use crate::{
-        executor_discovery::ExecutorDiscoveredOptions, executors::StandardCodingAgentExecutor,
+        command::CommandBuildError,
+        executor_discovery::ExecutorDiscoveredOptions,
+        executors::{BaseCodingAgent, CodingAgent, StandardCodingAgentExecutor},
+        profile::{ExecutorConfigs, ExecutorProfileId},
     };
 
     fn test_codex() -> Codex {
@@ -1016,6 +1073,74 @@ mod tests {
             (Some("gpt-5.4-mini"), false)
         );
         assert_eq!(resolve_model(None), (None, false));
+    }
+
+    #[test]
+    fn user_command_override_takes_precedence_over_configured_binary() {
+        let selected = Codex::select_base_command(
+            Some("custom-codex --flag"),
+            Some(OsString::from("/missing/deployment/codex")),
+        )
+        .unwrap();
+
+        assert_eq!(selected, "custom-codex --flag");
+    }
+
+    #[test]
+    fn configured_binary_takes_precedence_over_builtin_command() {
+        let executable = std::env::current_exe().unwrap();
+        let selected =
+            Codex::select_base_command(None, Some(executable.clone().into_os_string())).unwrap();
+
+        #[cfg(not(windows))]
+        assert_eq!(
+            shlex::split(&selected),
+            Some(vec![executable.to_string_lossy().into_owned()])
+        );
+        #[cfg(windows)]
+        assert!(selected.contains(&executable.to_string_lossy().to_string()));
+    }
+
+    #[test]
+    fn builtin_command_is_used_without_overrides() {
+        assert_eq!(
+            Codex::select_base_command(None, None).unwrap(),
+            Codex::base_command()
+        );
+    }
+
+    #[test]
+    fn configured_binary_must_be_an_existing_absolute_file() {
+        let error =
+            Codex::select_base_command(None, Some(OsString::from("/missing/deployment/codex")))
+                .unwrap_err();
+
+        assert!(matches!(
+            error,
+            CommandBuildError::InvalidConfiguredExecutable {
+                variable: "VK_CODEX_BINARY",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn codex_defaults_disable_sqlite_logs() {
+        let config = ExecutorConfigs::from_defaults()
+            .get_coding_agent(&ExecutorProfileId::new(BaseCodingAgent::Codex));
+        let Some(CodingAgent::Codex(codex)) = config else {
+            panic!("missing default Codex profile");
+        };
+
+        assert_eq!(
+            codex
+                .cmd
+                .env
+                .as_ref()
+                .and_then(|env| env.get("CODEX_SQLITE_LOGS"))
+                .map(String::as_str),
+            Some("off")
+        );
     }
 
     #[test]
