@@ -559,6 +559,13 @@ impl Codex {
         let (executable, args) = command_parts.into_resolved().await?;
         let mut command = Command::new(executable);
         command.args(args);
+        command
+            .kill_on_drop(true)
+            .stdin(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .env("NPM_CONFIG_LOGLEVEL", "error")
+            .env("NODE_NO_WARNINGS", "1")
+            .env("NO_COLOR", "1");
         if let Some(env) = &self.cmd.env {
             command.envs(env);
         }
