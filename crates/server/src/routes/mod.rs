@@ -1,7 +1,6 @@
-use axum::{
-    Router,
-    routing::{IntoMakeService, get},
-};
+use std::net::SocketAddr;
+
+use axum::{Router, extract::connect_info::IntoMakeServiceWithConnectInfo, routing::get};
 use tower_http::{
     compression::CompressionLayer, trace::TraceLayer, validate_request::ValidateRequestHeaderLayer,
 };
@@ -38,7 +37,10 @@ pub mod webhook_subscriptions;
 pub mod webrtc;
 pub mod workspaces;
 
-pub fn router(deployment: DeploymentImpl, perf_tracing_enabled: bool) -> IntoMakeService<Router> {
+pub fn router(
+    deployment: DeploymentImpl,
+    perf_tracing_enabled: bool,
+) -> IntoMakeServiceWithConnectInfo<Router, SocketAddr> {
     let relay_signed_routes = Router::new()
         .route("/health", get(health::health_check))
         .merge(config::router())
@@ -100,5 +102,7 @@ pub fn router(deployment: DeploymentImpl, perf_tracing_enabled: bool) -> IntoMak
             router
         };
 
-    router.layer(CompressionLayer::new()).into_make_service()
+    router
+        .layer(CompressionLayer::new())
+        .into_make_service_with_connect_info::<SocketAddr>()
 }

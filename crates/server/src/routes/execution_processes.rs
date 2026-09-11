@@ -1,12 +1,13 @@
 use std::{
     collections::HashMap,
+    net::SocketAddr,
     sync::{Arc, OnceLock},
 };
 
 use anyhow;
 use axum::{
     Extension, Router,
-    extract::{Path, Query, State, ws::Message},
+    extract::{ConnectInfo, Path, Query, State, ws::Message},
     middleware::from_fn_with_state,
     response::{IntoResponse, Json as ResponseJson},
     routing::{get, post},
@@ -110,7 +111,9 @@ fn authorize_external_start_recovery(
     process_workspace_id: Uuid,
     request: &ConfirmExternalProcessStoppedRequest,
     request_signature: Option<&crate::middleware::RelayRequestSignatureContext>,
+    peer: Option<SocketAddr>,
 ) -> Result<String, ApiError> {
+    let actor = verified_recovery_actor(request_signature, peer)?;
     if request.recovery_token.trim().is_empty() || request.recovery_generation < 1 {
         return Err(ApiError::Unauthorized);
     }
@@ -119,9 +122,20 @@ fn authorize_external_start_recovery(
             "Process workspace does not match.".into(),
         ));
     }
-    Ok(request_signature
-        .map(|signature| format!("relay:{}", signature.signing_session_id))
-        .unwrap_or_else(|| "local_ui".to_string()))
+    Ok(actor)
+}
+
+fn verified_recovery_actor(
+    request_signature: Option<&crate::middleware::RelayRequestSignatureContext>,
+    peer: Option<SocketAddr>,
+) -> Result<String, ApiError> {
+    if let Some(signature) = request_signature {
+        return Ok(format!("relay:{}", signature.signing_session_id));
+    }
+    match peer {
+        Some(peer) if peer.ip().is_loopback() => Ok("local_ui".to_string()),
+        _ => Err(ApiError::Unauthorized),
+    }
 }
 
 impl AgentResponse {
@@ -571,6 +585,7 @@ pub(crate) async fn confirm_external_process_stopped_for_workspace(
     State(deployment): State<DeploymentImpl>,
     Path(path): Path<HashMap<String, String>>,
     request_signature: Option<Extension<crate::middleware::RelayRequestSignatureContext>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
     ResponseJson(request): ResponseJson<ConfirmExternalProcessStoppedRequest>,
 ) -> Result<ResponseJson<ApiResponse<()>>, ApiError> {
     let process_id = path
@@ -597,6 +612,7 @@ pub(crate) async fn confirm_external_process_stopped_for_workspace(
         request_signature
             .as_ref()
             .map(|Extension(signature)| signature),
+        Some(peer),
     )?;
     confirm_external_process_stopped_with_context(
         &deployment,
@@ -612,7 +628,15 @@ pub(crate) async fn get_external_start_status_for_workspace(
     Extension(workspace): Extension<db::models::workspace::Workspace>,
     State(deployment): State<DeploymentImpl>,
     Path(path): Path<HashMap<String, String>>,
+    request_signature: Option<Extension<crate::middleware::RelayRequestSignatureContext>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
 ) -> Result<ResponseJson<ApiResponse<Option<ExternalStartStatus>>>, ApiError> {
+    verified_recovery_actor(
+        request_signature
+            .as_ref()
+            .map(|Extension(signature)| signature),
+        Some(peer),
+    )?;
     let process_id = path
         .get("process_id")
         .and_then(|value| value.parse().ok())
@@ -814,6 +838,7 @@ pub(super) fn router(deployment: &DeploymentImpl) -> Router<DeploymentImpl> {
 #[cfg(test)]
 mod tests {
     use std::{
+        net::SocketAddr,
         sync::{
             Arc,
             atomic::{AtomicUsize, Ordering},
@@ -848,12 +873,20 @@ mod tests {
     #[test]
     fn operator_recovery_authorization_requires_capability_and_workspace_scope() {
         let workspace_id = Uuid::new_v4();
+        let loopback = "127.0.0.1:4242".parse().unwrap();
         let valid = ConfirmExternalProcessStoppedRequest {
             recovery_token: "opaque-capability".into(),
             recovery_generation: 3,
         };
         assert_eq!(
-            authorize_external_start_recovery(workspace_id, workspace_id, &valid, None).unwrap(),
+            authorize_external_start_recovery(
+                workspace_id,
+                workspace_id,
+                &valid,
+                None,
+                Some(loopback)
+            )
+            .unwrap(),
             "local_ui"
         );
         let missing = ConfirmExternalProcessStoppedRequest {
@@ -861,12 +894,52 @@ mod tests {
             ..valid.clone()
         };
         assert!(matches!(
-            authorize_external_start_recovery(workspace_id, workspace_id, &missing, None),
+            authorize_external_start_recovery(
+                workspace_id,
+                workspace_id,
+                &missing,
+                None,
+                Some(loopback)
+            ),
             Err(crate::error::ApiError::Unauthorized)
         ));
+        let relay_id = Uuid::new_v4();
+        let relay = crate::middleware::RelayRequestSignatureContext {
+            signing_session_id: relay_id,
+            timestamp: 1,
+            nonce: Uuid::new_v4(),
+            signature_b64: "verified-by-middleware".into(),
+        };
+        assert_eq!(
+            authorize_external_start_recovery(
+                workspace_id,
+                workspace_id,
+                &valid,
+                Some(&relay),
+                Some("203.0.113.2:4242".parse().unwrap()),
+            )
+            .unwrap(),
+            format!("relay:{relay_id}")
+        );
         assert!(matches!(
-            authorize_external_start_recovery(Uuid::new_v4(), workspace_id, &valid, None),
+            authorize_external_start_recovery(
+                Uuid::new_v4(),
+                workspace_id,
+                &valid,
+                None,
+                Some(loopback)
+            ),
             Err(crate::error::ApiError::Forbidden(_))
+        ));
+        assert!(matches!(
+            authorize_external_start_recovery(
+                workspace_id,
+                workspace_id,
+                &valid,
+                None,
+                Some("203.0.113.2:4242".parse().unwrap())
+            ),
+            Err(crate::error::ApiError::Unauthorized)
         ));
     }
 
@@ -874,17 +947,23 @@ mod tests {
     async fn operator_recovery_http_endpoint_rejects_missing_invalid_and_cross_workspace_authorization()
      {
         async fn endpoint(
-            AxumState(process_workspace): AxumState<Uuid>,
+            AxumState((process_workspace, peer)): AxumState<(Uuid, SocketAddr)>,
             AxumPath(workspace): AxumPath<Uuid>,
             Json(request): Json<ConfirmExternalProcessStoppedRequest>,
         ) -> Result<String, crate::error::ApiError> {
-            authorize_external_start_recovery(workspace, process_workspace, &request, None)
+            authorize_external_start_recovery(
+                workspace,
+                process_workspace,
+                &request,
+                None,
+                Some(peer),
+            )
         }
 
         let process_workspace = Uuid::new_v4();
         let app = Router::new()
             .route("/workspaces/{workspace}", post(endpoint))
-            .with_state(process_workspace);
+            .with_state((process_workspace, "127.0.0.1:4242".parse().unwrap()));
         let call = |workspace: Uuid, body: &'static str| {
             app.clone().oneshot(
                 Request::builder()
