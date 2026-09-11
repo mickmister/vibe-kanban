@@ -70,10 +70,18 @@ use crate::services::{
 };
 pub type ContainerRef = String;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExternalProcessReconciliation {
+    Absent,
+    Terminated,
+}
+
 #[derive(Debug, Error)]
 pub enum ContainerError {
     #[error("Waiting for team capacity.")]
     AdmissionWaiting,
+    #[error("Waiting to reconcile a previously authorized agent process.")]
+    ExternalProcessUnresolved,
     #[error(transparent)]
     GitServiceError(#[from] GitServiceError),
     #[error(transparent)]
@@ -243,9 +251,20 @@ pub trait ContainerService {
                         queue.release_turn(token.token_id, token.fence).await?;
                     }
                     Err(error) => {
-                        if matches!(error, ContainerError::AdmissionWaiting) {
+                        if matches!(
+                            error,
+                            ContainerError::AdmissionWaiting
+                                | ContainerError::ExternalProcessUnresolved
+                        ) {
                             queue
-                                .requeue_waiting(item.id, "Waiting for team capacity.")
+                                .requeue_waiting(
+                                    item.id,
+                                    if matches!(error, ContainerError::ExternalProcessUnresolved) {
+                                        "Waiting to reconcile the prior agent start."
+                                    } else {
+                                        "Waiting for team capacity."
+                                    },
+                                )
                                 .await?;
                             continue;
                         }
@@ -585,6 +604,15 @@ pub trait ContainerService {
                 )
                 .await?;
             if matches!(external_state.as_deref(), Some("authorized" | "claiming")) {
+                if let Some(record) =
+                    db::models::execution_external_start::ExecutionExternalStart::record(
+                        &self.db().pool,
+                        process.id,
+                    )
+                    .await?
+                {
+                    self.reconcile_external_process(&record).await?;
+                }
                 // No external spawn was durably confirmed. The deterministic
                 // operation can safely return to waiting after restart.
                 ExecutionProcess::rollback_unfinalized_start(&self.db().pool, process.id).await?;
@@ -603,7 +631,17 @@ pub trait ContainerService {
                 }
                 continue;
             }
-            // Update the execution process status first
+            if let Some(record) =
+                db::models::execution_external_start::ExecutionExternalStart::record(
+                    &self.db().pool,
+                    process.id,
+                )
+                .await?
+            {
+                self.reconcile_external_process(&record).await?;
+            }
+            // Only release capacity after the exact prior child is absent or
+            // has been terminated by its durable OS identity.
             if let Err(e) = ExecutionProcess::update_completion(
                 &self.db().pool,
                 process.id,
@@ -1186,6 +1224,11 @@ pub trait ContainerService {
         executor_action: &ExecutorAction,
         external_start_fence: Option<i64>,
     ) -> Result<(), ContainerError>;
+
+    async fn reconcile_external_process(
+        &self,
+        record: &db::models::execution_external_start::ExecutionExternalStartRecord,
+    ) -> Result<ExternalProcessReconciliation, ContainerError>;
 
     async fn stop_execution(
         &self,
@@ -1882,6 +1925,40 @@ pub trait ContainerService {
         } else {
             None
         };
+        let spawn_request_ready = if let Some(claim) = &claim {
+            db::models::execution_external_start::ExecutionExternalStart::mark_spawn_requested(
+                &self.db().pool,
+                process_id,
+                claim.fence,
+            )
+            .await
+            .unwrap_or(false)
+        } else {
+            true
+        };
+        if !spawn_request_ready {
+            ExecutionProcess::update_completion(
+                &self.db().pool,
+                process_id,
+                ExecutionProcessStatus::Failed,
+                None,
+            )
+            .await?;
+            db::models::execution_external_start::ExecutionExternalStart::fail(
+                &self.db().pool,
+                process_id,
+            )
+            .await?;
+            if let Some((token, _)) = &admission {
+                let _ = db::models::agent_turn_admission::AgentTurnAdmission::release(
+                    &self.db().pool,
+                    token.token_id,
+                    token.fence,
+                )
+                .await;
+            }
+            return Err(ContainerError::AdmissionWaiting);
+        }
         if let Err(start_error) = self
             .start_execution_inner(
                 workspace,
@@ -1895,6 +1972,12 @@ pub trait ContainerService {
                 .write()
                 .await
                 .remove(&execution_process.id);
+            if matches!(start_error, ContainerError::ExternalProcessUnresolved) {
+                // The child may still be alive. Keep the process/admission as
+                // capacity until restart reconciliation proves it absent or
+                // terminates its exact persisted OS identity.
+                return Err(start_error);
+            }
             // Mark process as failed
             if let Err(update_error) = ExecutionProcess::update_completion(
                 &self.db().pool,
@@ -2411,10 +2494,18 @@ mod tests {
                     _execution_process.id,
                     fence,
                     Some("fake"),
+                    Some("fake-start"),
                 )
                 .await?;
             }
             Ok(())
+        }
+
+        async fn reconcile_external_process(
+            &self,
+            _record: &db::models::execution_external_start::ExecutionExternalStartRecord,
+        ) -> Result<ExternalProcessReconciliation, ContainerError> {
+            Ok(ExternalProcessReconciliation::Terminated)
         }
 
         async fn stop_execution(

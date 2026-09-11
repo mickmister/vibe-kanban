@@ -74,14 +74,42 @@ mod tests {
             .unwrap();
         assert!(recovered.fence > first.fence);
         assert!(
-            !ExecutionExternalStart::confirm_spawned(&pool, process, first.fence, Some("stale"))
+            ExecutionExternalStart::mark_spawn_requested(&pool, process, recovered.fence)
                 .await
                 .unwrap()
         );
         assert!(
-            ExecutionExternalStart::confirm_spawned(&pool, process, recovered.fence, Some("pid-1"))
-                .await
-                .unwrap()
+            ExecutionExternalStart::record_spawn_identity(
+                &pool,
+                process,
+                recovered.fence,
+                "pid-1",
+                "start-1",
+            )
+            .await
+            .unwrap()
+        );
+        assert!(
+            !ExecutionExternalStart::confirm_spawned(
+                &pool,
+                process,
+                first.fence,
+                Some("stale"),
+                Some("old")
+            )
+            .await
+            .unwrap()
+        );
+        assert!(
+            ExecutionExternalStart::confirm_spawned(
+                &pool,
+                process,
+                recovered.fence,
+                Some("pid-1"),
+                Some("start-1")
+            )
+            .await
+            .unwrap()
         );
         assert!(
             ExecutionExternalStart::is_spawned(&pool, process)
@@ -99,6 +127,17 @@ mod tests {
 }
 
 pub struct ExecutionExternalStart;
+
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct ExecutionExternalStartRecord {
+    pub execution_process_id: Uuid,
+    pub start_key: String,
+    pub state: String,
+    pub claim_fence: i64,
+    pub spawn_requested_at: Option<chrono::DateTime<Utc>>,
+    pub external_process_id: Option<String>,
+    pub external_process_started_at: Option<String>,
+}
 impl ExecutionExternalStart {
     pub async fn authorize(pool: &SqlitePool, process_id: Uuid) -> Result<(), sqlx::Error> {
         let now = Utc::now();
@@ -129,10 +168,40 @@ impl ExecutionExternalStart {
         process_id: Uuid,
         fence: i64,
         external_id: Option<&str>,
+        external_started_at: Option<&str>,
     ) -> Result<bool, sqlx::Error> {
-        let result=sqlx::query("UPDATE execution_external_starts SET state='spawned',external_process_id=?3,claim_expires_at=NULL,updated_at=?4 WHERE execution_process_id=?1 AND claim_fence=?2 AND state='claiming'")
-   .bind(process_id).bind(fence).bind(external_id).bind(Utc::now()).execute(pool).await?;
+        let result=sqlx::query("UPDATE execution_external_starts SET state='spawned',external_process_id=?3,external_process_started_at=?4,claim_expires_at=NULL,updated_at=?5 WHERE execution_process_id=?1 AND claim_fence=?2 AND state='claiming' AND spawn_requested_at IS NOT NULL")
+   .bind(process_id).bind(fence).bind(external_id).bind(external_started_at).bind(Utc::now()).execute(pool).await?;
         Ok(result.rows_affected() == 1)
+    }
+    pub async fn record_spawn_identity(
+        pool: &SqlitePool,
+        process_id: Uuid,
+        fence: i64,
+        external_id: &str,
+        external_started_at: &str,
+    ) -> Result<bool, sqlx::Error> {
+        let result = sqlx::query("UPDATE execution_external_starts SET external_process_id=?3,external_process_started_at=?4,updated_at=?5 WHERE execution_process_id=?1 AND claim_fence=?2 AND state='claiming' AND spawn_requested_at IS NOT NULL")
+            .bind(process_id).bind(fence).bind(external_id).bind(external_started_at).bind(Utc::now()).execute(pool).await?;
+        Ok(result.rows_affected() == 1)
+    }
+    pub async fn mark_spawn_requested(
+        pool: &SqlitePool,
+        process_id: Uuid,
+        fence: i64,
+    ) -> Result<bool, sqlx::Error> {
+        let now = Utc::now();
+        let result = sqlx::query("UPDATE execution_external_starts SET spawn_requested_at=?3,updated_at=?3 WHERE execution_process_id=?1 AND claim_fence=?2 AND state='claiming'")
+            .bind(process_id).bind(fence).bind(now).execute(pool).await?;
+        Ok(result.rows_affected() == 1)
+    }
+
+    pub async fn record(
+        pool: &SqlitePool,
+        process_id: Uuid,
+    ) -> Result<Option<ExecutionExternalStartRecord>, sqlx::Error> {
+        sqlx::query_as("SELECT execution_process_id,start_key,state,claim_fence,spawn_requested_at,external_process_id,external_process_started_at FROM execution_external_starts WHERE execution_process_id=?1")
+            .bind(process_id).fetch_optional(pool).await
     }
     pub async fn is_spawned(pool: &SqlitePool, process_id: Uuid) -> Result<bool, sqlx::Error> {
         Ok(sqlx::query_scalar::<_,i64>("SELECT COUNT(*) FROM execution_external_starts WHERE execution_process_id=?1 AND state='spawned'").bind(process_id).fetch_one(pool).await?>0)

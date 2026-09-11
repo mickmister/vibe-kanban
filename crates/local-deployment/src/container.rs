@@ -39,7 +39,7 @@ use services::services::{
     analytics::AnalyticsContext,
     approvals::{Approvals, executor_approvals::ExecutorApprovalBridge},
     config::{Config, DEFAULT_COMMIT_REMINDER_PROMPT},
-    container::{ContainerError, ContainerRef, ContainerService},
+    container::{ContainerError, ContainerRef, ContainerService, ExternalProcessReconciliation},
     conversation_preview,
     diff_stream::{self, DiffStreamHandle},
     file::FileService,
@@ -62,6 +62,85 @@ use workspace_manager::{RepoWorkspaceInput, WorkspaceError, WorkspaceManager};
 use crate::{command, copy};
 
 const WORKSPACE_TOUCH_DEBOUNCE: Duration = Duration::from_mins(2);
+
+async fn process_start_marker(pid: u32) -> Option<String> {
+    let system = sysinfo::System::new_all();
+    let process = system.process(sysinfo::Pid::from_u32(pid))?;
+    (!matches!(process.status(), sysinfo::ProcessStatus::Zombie))
+        .then(|| process.start_time().to_string())
+}
+
+async fn find_process_by_start_key(_start_key: &str) -> Option<(u32, String)> {
+    #[cfg(target_os = "linux")]
+    {
+        let marker = format!("VK_EXECUTION_START_KEY={_start_key}");
+        let mut entries = tokio::fs::read_dir("/proc").await.ok()?;
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            let Ok(pid) = entry.file_name().to_string_lossy().parse::<u32>() else {
+                continue;
+            };
+            let Ok(environ) = tokio::fs::read(format!("/proc/{pid}/environ")).await else {
+                continue;
+            };
+            if environ
+                .split(|byte| *byte == 0)
+                .any(|value| value == marker.as_bytes())
+                && let Some(started_at) = process_start_marker(pid).await
+            {
+                return Some((pid, started_at));
+            }
+        }
+    }
+    None
+}
+
+async fn terminate_exact_process(
+    pid: u32,
+    expected_started_at: &str,
+) -> Result<ExternalProcessReconciliation, ContainerError> {
+    let Some(actual) = process_start_marker(pid).await else {
+        return Ok(ExternalProcessReconciliation::Absent);
+    };
+    if actual != expected_started_at {
+        return Err(ContainerError::ExternalProcessUnresolved);
+    }
+    let status = tokio::process::Command::new("kill")
+        .args(["-TERM", &format!("-{pid}")])
+        .status()
+        .await
+        .map_err(|_| ContainerError::ExternalProcessUnresolved)?;
+    if !status.success() && process_start_marker(pid).await.is_some() {
+        return Err(ContainerError::ExternalProcessUnresolved);
+    }
+    for _ in 0..50 {
+        if process_start_marker(pid).await.is_none() {
+            return Ok(ExternalProcessReconciliation::Terminated);
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    Err(ContainerError::ExternalProcessUnresolved)
+}
+
+async fn require_spawn_confirmation(
+    child: &mut AsyncGroupChild,
+    confirmation: Result<bool, sqlx::Error>,
+) -> Result<(), ContainerError> {
+    match confirmation {
+        Ok(true) => Ok(()),
+        Ok(false) => {
+            command::kill_process_group_and_wait(child)
+                .await
+                .map_err(|_| ContainerError::ExternalProcessUnresolved)?;
+            Err(ContainerError::AdmissionWaiting)
+        }
+        Err(error) => {
+            command::kill_process_group_and_wait(child)
+                .await
+                .map_err(|_| ContainerError::ExternalProcessUnresolved)?;
+            Err(error.into())
+        }
+    }
+}
 
 #[derive(Clone)]
 pub struct LocalContainerService {
@@ -1332,17 +1411,28 @@ impl ContainerService for LocalContainerService {
 
         if let Some(fence) = external_start_fence {
             let external_id = spawned.child.id().map(|id| id.to_string());
-            if !db::models::execution_external_start::ExecutionExternalStart::confirm_spawned(
-                &self.db.pool,
-                execution_process.id,
-                fence,
-                external_id.as_deref(),
-            )
-            .await?
-            {
-                let _ = command::kill_process_group(&mut spawned.child).await;
-                return Err(ContainerError::AdmissionWaiting);
-            }
+            let external_started_at = match spawned.child.id() {
+                Some(pid) => process_start_marker(pid).await,
+                None => None,
+            };
+            let identity_recorded = match (&external_id, &external_started_at) {
+                (Some(id), Some(started_at)) =>
+                    db::models::execution_external_start::ExecutionExternalStart::record_spawn_identity(
+                        &self.db.pool, execution_process.id, fence, id, started_at,
+                    ).await,
+                _ => Ok(false),
+            };
+            require_spawn_confirmation(&mut spawned.child, identity_recorded).await?;
+            let confirmed =
+                db::models::execution_external_start::ExecutionExternalStart::confirm_spawned(
+                    &self.db.pool,
+                    execution_process.id,
+                    fence,
+                    external_id.as_deref(),
+                    external_started_at.as_deref(),
+                )
+                .await;
+            require_spawn_confirmation(&mut spawned.child, confirmed).await?;
         }
 
         if let Err(e) = self
@@ -1367,6 +1457,31 @@ impl ContainerService for LocalContainerService {
         self.add_exit_monitor_handle(execution_process.id, hn).await;
 
         Ok(())
+    }
+
+    async fn reconcile_external_process(
+        &self,
+        record: &db::models::execution_external_start::ExecutionExternalStartRecord,
+    ) -> Result<ExternalProcessReconciliation, ContainerError> {
+        let identity = match (
+            &record.external_process_id,
+            &record.external_process_started_at,
+        ) {
+            (Some(pid), Some(started_at)) => {
+                pid.parse::<u32>().ok().map(|pid| (pid, started_at.clone()))
+            }
+            _ => find_process_by_start_key(&record.start_key).await,
+        };
+        match identity {
+            Some((pid, started_at)) => terminate_exact_process(pid, &started_at).await,
+            None if record.spawn_requested_at.is_none() => {
+                Ok(ExternalProcessReconciliation::Absent)
+            }
+            #[cfg(target_os = "linux")]
+            None => Ok(ExternalProcessReconciliation::Absent),
+            #[cfg(not(target_os = "linux"))]
+            None => Err(ContainerError::ExternalProcessUnresolved),
+        }
     }
 
     async fn stop_execution(
@@ -1649,5 +1764,78 @@ fn success_exit_status() -> std::process::ExitStatus {
     {
         use std::os::windows::process::ExitStatusExt;
         ExitStatusExt::from_raw(0)
+    }
+}
+
+#[cfg(all(test, unix))]
+mod external_start_tests {
+    use utils::command_ext::GroupSpawnNoWindowExt;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn confirmation_database_error_terminates_real_subprocess_group() {
+        let mut command = tokio::process::Command::new("sh");
+        command.args(["-c", "sleep 60"]);
+        let mut child = command.group_spawn_no_window().unwrap();
+        let pid = child.id().expect("subprocess pid");
+        assert!(process_start_marker(pid).await.is_some());
+
+        let error = require_spawn_confirmation(
+            &mut child,
+            Err(sqlx::Error::Protocol(
+                "injected confirmation failure".into(),
+            )),
+        )
+        .await
+        .expect_err("confirmation error must fail startup");
+
+        assert!(error.to_string().contains("injected confirmation failure"));
+        assert!(process_start_marker(pid).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn exact_identity_reconciliation_terminates_real_subprocess_once() {
+        let start_key = format!("test-{}", Uuid::new_v4());
+        let mut command = tokio::process::Command::new("sh");
+        command.args(["-c", "sleep 60"]);
+        command.env("VK_EXECUTION_START_KEY", &start_key);
+        let mut child = command.group_spawn_no_window().unwrap();
+        let pid = child.id().expect("subprocess pid");
+        let started_at = process_start_marker(pid).await.expect("start marker");
+        #[cfg(target_os = "linux")]
+        let discovered = find_process_by_start_key(&start_key)
+            .await
+            .expect("spawn-before-confirmation process must be discoverable");
+        #[cfg(not(target_os = "linux"))]
+        let discovered = (pid, started_at.clone());
+        assert_eq!(discovered, (pid, started_at.clone()));
+
+        assert_eq!(
+            terminate_exact_process(discovered.0, &discovered.1)
+                .await
+                .unwrap(),
+            ExternalProcessReconciliation::Terminated
+        );
+        assert!(process_start_marker(pid).await.is_none());
+        // Keep AsyncGroupChild from attempting to own a live child in drop;
+        // reconciliation has already waited until the exact PID disappeared.
+        let _ = child.wait().await;
+    }
+
+    #[tokio::test]
+    async fn reused_pid_identity_is_never_terminated_or_released_as_the_prior_child() {
+        let mut command = tokio::process::Command::new("sh");
+        command.args(["-c", "sleep 60"]);
+        let mut child = command.group_spawn_no_window().unwrap();
+        let pid = child.id().expect("subprocess pid");
+        let error = terminate_exact_process(pid, "different-start-time")
+            .await
+            .expect_err("identity mismatch must retain capacity for reconciliation");
+        assert!(matches!(error, ContainerError::ExternalProcessUnresolved));
+        assert!(process_start_marker(pid).await.is_some());
+        command::kill_process_group_and_wait(&mut child)
+            .await
+            .unwrap();
     }
 }
