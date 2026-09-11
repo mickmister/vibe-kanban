@@ -72,6 +72,8 @@ pub type ContainerRef = String;
 
 #[derive(Debug, Error)]
 pub enum ContainerError {
+    #[error("Waiting for team capacity.")]
+    AdmissionWaiting,
     #[error(transparent)]
     GitServiceError(#[from] GitServiceError),
     #[error(transparent)]
@@ -241,6 +243,12 @@ pub trait ContainerService {
                         queue.release_turn(token.token_id, token.fence).await?;
                     }
                     Err(error) => {
+                        if matches!(error, ContainerError::AdmissionWaiting) {
+                            queue
+                                .requeue_waiting(item.id, "Waiting for team capacity.")
+                                .await?;
+                            continue;
+                        }
                         let message = error.to_string();
                         tracing::error!(
                             queue_item_id = %item.id,
@@ -352,6 +360,9 @@ pub trait ContainerService {
                 Ok(Some(process))
             }
             Err(error) => {
+                if matches!(error, ContainerError::AdmissionWaiting) {
+                    return Err(error);
+                }
                 queue.mark_failed(item.id, &error.to_string()).await?;
                 Err(error)
             }
@@ -1609,21 +1620,7 @@ pub trait ContainerService {
                     _ => return Err(ContainerError::Other(anyhow!("Waiting for team capacity."))),
                 },
             };
-            if !db::models::agent_turn_admission::AgentTurnAdmission::authorize_start(
-                &self.db().pool,
-                token.token_id,
-                token.fence,
-                process_id,
-                workspace.id,
-                capacity,
-            )
-            .await?
-            {
-                return Err(ContainerError::Other(anyhow!(
-                    "Agent turn admission is no longer current."
-                )));
-            }
-            Some(token)
+            Some((token, capacity))
         } else {
             None
         };
@@ -1635,13 +1632,13 @@ pub trait ContainerService {
             &repo_states,
             admission
                 .as_ref()
-                .map(|token| (token.token_id, token.fence)),
+                .map(|(token, capacity)| (token.token_id, token.fence, *capacity)),
         )
         .await
         {
             Ok(process) => process,
             Err(error) => {
-                if let Some(token) = &admission {
+                if let Some((token, _)) = &admission {
                     let _ = db::models::agent_turn_admission::AgentTurnAdmission::release(
                         &self.db().pool,
                         token.token_id,
@@ -1649,10 +1646,14 @@ pub trait ContainerService {
                     )
                     .await;
                 }
-                return Err(error.into());
+                return if admission.is_some() && matches!(error, sqlx::Error::RowNotFound) {
+                    Err(ContainerError::AdmissionWaiting)
+                } else {
+                    Err(error.into())
+                };
             }
         };
-        if let Some(token) = &admission
+        if let Some((token, _)) = &admission
             && !db::models::agent_turn_admission::AgentTurnAdmission::mark_started(
                 &self.db().pool,
                 token.token_id,

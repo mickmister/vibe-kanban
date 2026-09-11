@@ -370,7 +370,7 @@ impl AgentMessageQueueItem {
             id,
             AgentMessageQueueStatus::Queued,
             Some(reason),
-            &["leased"],
+            &["leased", "starting"],
         )
         .await
     }

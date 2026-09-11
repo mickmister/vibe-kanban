@@ -630,4 +630,59 @@ mod tests {
             AcquireAgentTurnAdmission::Acquired(_)
         ));
     }
+
+    #[tokio::test]
+    async fn forward_migration_upgrades_the_applied_intermediate_contract() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        pool.execute("PRAGMA foreign_keys=ON").await.unwrap();
+        pool.execute("CREATE TABLE workspaces(id BLOB PRIMARY KEY)")
+            .await
+            .unwrap();
+        pool.execute("CREATE TABLE agent_message_queue(id BLOB PRIMARY KEY)")
+            .await
+            .unwrap();
+        sqlx::raw_sql(include_str!(
+            "../../migrations/20260911000000_add_agent_turn_admission.sql"
+        ))
+        .execute(&pool)
+        .await
+        .unwrap();
+        let workspace = Uuid::new_v4();
+        let queue = Uuid::new_v4();
+        sqlx::query("INSERT INTO workspaces VALUES(?1)")
+            .bind(workspace)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO agent_message_queue VALUES(?1)")
+            .bind(queue)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO agent_turn_admissions(token_id,operation_key,queue_item_id,intended_process_id,workspace_id,fence,status,expires_at,created_at,updated_at) VALUES(?1,'old',?2,NULL,?3,1,'reserved',NULL,?4,?4)").bind(Uuid::new_v4()).bind(queue).bind(workspace).bind(Utc::now()).execute(&pool).await.unwrap();
+        sqlx::raw_sql(include_str!(
+            "../../migrations/20260911120000_upgrade_agent_turn_admission.sql"
+        ))
+        .execute(&pool)
+        .await
+        .unwrap();
+        let preserved: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM agent_turn_admissions WHERE operation_key='old'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(preserved, 1);
+        let direct_workspace = Uuid::new_v4();
+        sqlx::query("INSERT INTO workspaces VALUES(?1)")
+            .bind(direct_workspace)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO agent_turn_admissions(token_id,operation_key,queue_item_id,workspace_id,fence,status,created_at,updated_at) VALUES(?1,'direct',NULL,?2,1,'starting',?3,?3)").bind(Uuid::new_v4()).bind(direct_workspace).bind(Utc::now()).execute(&pool).await.unwrap();
+    }
 }

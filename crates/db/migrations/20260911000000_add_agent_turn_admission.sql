@@ -1,11 +1,11 @@
 CREATE TABLE agent_turn_admissions (
     token_id BLOB PRIMARY KEY,
     operation_key TEXT NOT NULL UNIQUE,
-    queue_item_id BLOB,
+    queue_item_id BLOB NOT NULL,
     intended_process_id BLOB,
     workspace_id BLOB NOT NULL,
     fence INTEGER NOT NULL DEFAULT 1,
-    status TEXT NOT NULL CHECK (status IN ('reserved','starting','started','released','expired')),
+    status TEXT NOT NULL CHECK (status IN ('reserved','started','released','expired')),
     expires_at TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
@@ -15,6 +15,6 @@ CREATE TABLE agent_turn_admissions (
 
 CREATE UNIQUE INDEX idx_agent_turn_admission_active_workspace
     ON agent_turn_admissions(workspace_id)
-    WHERE status IN ('reserved','starting');
+    WHERE status = 'reserved';
 CREATE INDEX idx_agent_turn_admission_status_expiry
     ON agent_turn_admissions(status, expires_at);
