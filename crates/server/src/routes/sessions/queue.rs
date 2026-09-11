@@ -10,7 +10,10 @@ use db::models::{
     session::Session,
 };
 use deployment::Deployment;
-use executors::actions::{ExecutorActionProvenance, ExecutorActionProvenanceKind};
+use executors::{
+    actions::{ExecutorActionProvenance, ExecutorActionProvenanceKind},
+    profile::ExecutorConfig,
+};
 use serde::{Deserialize, Serialize};
 use services::services::{container::ContainerService, queued_message::QueueStatus};
 use ts_rs::TS;
@@ -22,6 +25,8 @@ use crate::{DeploymentImpl, error::ApiError, middleware::load_session_middleware
 #[derive(Debug, Deserialize, TS)]
 pub struct QueueMessageRequest {
     pub message: String,
+    #[serde(default)]
+    pub executor_config: Option<ExecutorConfig>,
     #[serde(default)]
     pub source: Option<AgentMessageSource>,
     #[serde(default)]
@@ -60,6 +65,7 @@ async fn queue_message(
             payload
                 .provenance
                 .or_else(|| default_provenance_for_source(source)),
+            payload.executor_config,
         )
         .await
         .map_err(|e| ApiError::BadRequest(e.to_string()))?;

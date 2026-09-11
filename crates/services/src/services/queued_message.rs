@@ -89,6 +89,7 @@ impl QueuedMessageService {
         source: AgentMessageSource,
         priority: Option<i64>,
         provenance: Option<ExecutorActionProvenance>,
+        executor_config: Option<executors::profile::ExecutorConfig>,
     ) -> Result<AgentMessageQueueItem, QueueError> {
         if session.executor.as_deref().is_none_or(str::is_empty) {
             return Err(QueueError::SessionExecutorMissing);
@@ -102,6 +103,7 @@ impl QueuedMessageService {
                 priority,
                 data: QueuedFollowUpData {
                     message,
+                    executor_config,
                     session_command,
                     provenance,
                 },

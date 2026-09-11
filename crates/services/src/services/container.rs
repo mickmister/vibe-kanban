@@ -259,7 +259,16 @@ pub trait ContainerService {
             .ok_or_else(|| ContainerError::Other(anyhow!("Workspace not found")))?;
         self.ensure_container_exists(&workspace).await?;
 
-        let executor_config = self.executor_config_for_session(&session).await?;
+        let executor_config = if let Some(config) = item.data.executor_config.clone() {
+            if session.executor.as_deref() != Some(config.executor.to_string().as_str()) {
+                return Err(ContainerError::Other(anyhow!(
+                    "queued executor does not match the selected session"
+                )));
+            }
+            config
+        } else {
+            self.executor_config_for_session(&session).await?
+        };
         let latest_session_info =
             CodingAgentTurn::find_latest_session_info(&self.db().pool, session.id).await?;
         let repos = WorkspaceRepo::find_repos_for_workspace(&self.db().pool, workspace.id).await?;

@@ -48,6 +48,8 @@ impl AgentMessageSource {
 pub struct QueuedFollowUpData {
     pub message: String,
     #[serde(default)]
+    pub executor_config: Option<executors::profile::ExecutorConfig>,
+    #[serde(default)]
     pub session_command: Option<SessionCommand>,
     #[serde(default)]
     pub provenance: Option<ExecutorActionProvenance>,
