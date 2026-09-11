@@ -8,6 +8,7 @@ use anyhow;
 use axum::{
     Extension, Router,
     extract::{ConnectInfo, Path, Query, State, ws::Message},
+    http::StatusCode,
     middleware::from_fn_with_state,
     response::{IntoResponse, Json as ResponseJson},
     routing::{get, post},
@@ -817,6 +818,11 @@ pub(super) fn router(deployment: &DeploymentImpl) -> Router<DeploymentImpl> {
         .route("/", get(get_execution_process_by_id))
         .route("/final-message", get(get_execution_process_final_message))
         .route("/stop", post(stop_execution_process))
+        .route(
+            "/external-start-status",
+            get(|| async { StatusCode::NOT_FOUND }),
+        )
+        .route("/confirm-stopped", post(|| async { StatusCode::NOT_FOUND }))
         .route("/repo-states", get(get_execution_process_repo_states))
         .route("/raw-logs/ws", get(stream_raw_logs_ws))
         .route("/normalized-logs/ws", get(stream_normalized_logs_ws))

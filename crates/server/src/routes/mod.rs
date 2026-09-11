@@ -41,6 +41,10 @@ pub fn router(
     deployment: DeploymentImpl,
     perf_tracing_enabled: bool,
 ) -> IntoMakeServiceWithConnectInfo<Router, SocketAddr> {
+    app_router(deployment, perf_tracing_enabled).into_make_service_with_connect_info::<SocketAddr>()
+}
+
+pub(crate) fn app_router(deployment: DeploymentImpl, perf_tracing_enabled: bool) -> Router {
     let relay_signed_routes = Router::new()
         .route("/health", get(health::health_check))
         .merge(config::router())
@@ -102,7 +106,5 @@ pub fn router(
             router
         };
 
-    router
-        .layer(CompressionLayer::new())
-        .into_make_service_with_connect_info::<SocketAddr>()
+    router.layer(CompressionLayer::new())
 }
