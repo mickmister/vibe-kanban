@@ -2773,6 +2773,23 @@ impl ClaudeToolData {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn workflow_exposed_reasoning_values_are_discovered() {
+        let options = super::default_discovered_options();
+        let opus = options
+            .model_selector
+            .models
+            .iter()
+            .find(|model| model.id == "opus")
+            .unwrap();
+        assert_eq!(
+            opus.reasoning_options
+                .iter()
+                .map(|option| option.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["low", "medium", "high", "xhigh", "max"]
+        );
+    }
     use super::*;
     use crate::logs::utils::{EntryIndexProvider, patch::extract_normalized_entry_from_patch};
 

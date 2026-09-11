@@ -259,16 +259,12 @@ pub trait ContainerService {
             .ok_or_else(|| ContainerError::Other(anyhow!("Workspace not found")))?;
         self.ensure_container_exists(&workspace).await?;
 
-        let executor_config = if let Some(config) = item.data.executor_config.clone() {
-            if session.executor.as_deref() != Some(config.executor.to_string().as_str()) {
-                return Err(ContainerError::Other(anyhow!(
-                    "queued executor does not match the selected session"
-                )));
-            }
-            config
-        } else {
-            self.executor_config_for_session(&session).await?
-        };
+        let executor_config =
+            if let Some(config) = Self::queued_executor_config_override(&session, &item.data)? {
+                config
+            } else {
+                self.executor_config_for_session(&session).await?
+            };
         let latest_session_info =
             CodingAgentTurn::find_latest_session_info(&self.db().pool, session.id).await?;
         let repos = WorkspaceRepo::find_repos_for_workspace(&self.db().pool, workspace.id).await?;
@@ -361,6 +357,21 @@ pub trait ContainerService {
                 Err(error)
             }
         }
+    }
+
+    fn queued_executor_config_override(
+        session: &Session,
+        data: &db::models::agent_message_queue::QueuedFollowUpData,
+    ) -> Result<Option<ExecutorConfig>, ContainerError> {
+        let Some(config) = data.executor_config.clone() else {
+            return Ok(None);
+        };
+        if session.executor.as_deref() != Some(config.executor.to_string().as_str()) {
+            return Err(ContainerError::Other(anyhow!(
+                "queued executor does not match the selected session"
+            )));
+        }
+        Ok(Some(config))
     }
 
     async fn executor_config_for_session(
@@ -1808,6 +1819,71 @@ mod tests {
 
     use super::*;
     use crate::services::config::Config;
+
+    fn queue_test_session(executor: &str) -> Session {
+        let now = chrono::Utc::now();
+        Session {
+            id: Uuid::new_v4(),
+            workspace_id: Uuid::new_v4(),
+            name: Some("workflow-role".into()),
+            executor: Some(executor.into()),
+            agent_working_dir: None,
+            context_reset_execution_process_id: None,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    fn queued_data(
+        config: Option<ExecutorConfig>,
+    ) -> db::models::agent_message_queue::QueuedFollowUpData {
+        db::models::agent_message_queue::QueuedFollowUpData {
+            message: "review".into(),
+            executor_config: config,
+            session_command: None,
+            provenance: None,
+        }
+    }
+
+    #[test]
+    fn queued_workflow_config_preserves_model_and_reasoning_exactly() {
+        let mut config = ExecutorConfig::new(BaseCodingAgent::Codex);
+        config.model_id = Some("gpt-5-codex".into());
+        config.reasoning_id = Some("xhigh".into());
+        let json = serde_json::to_string(&queued_data(Some(config.clone()))).unwrap();
+        let persisted: db::models::agent_message_queue::QueuedFollowUpData =
+            serde_json::from_str(&json).unwrap();
+        let applied = TestContainerService::queued_executor_config_override(
+            &queue_test_session("CODEX"),
+            &persisted,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(applied.model_id.as_deref(), Some("gpt-5-codex"));
+        assert_eq!(applied.reasoning_id.as_deref(), Some("xhigh"));
+    }
+
+    #[test]
+    fn queued_workflow_config_supports_legacy_entries_and_rejects_executor_mismatch() {
+        let legacy: db::models::agent_message_queue::QueuedFollowUpData =
+            serde_json::from_str(r#"{"message":"review"}"#).unwrap();
+        assert!(
+            TestContainerService::queued_executor_config_override(
+                &queue_test_session("CODEX"),
+                &legacy
+            )
+            .unwrap()
+            .is_none()
+        );
+
+        let config = ExecutorConfig::new(BaseCodingAgent::ClaudeCode);
+        let error = TestContainerService::queued_executor_config_override(
+            &queue_test_session("CODEX"),
+            &queued_data(Some(config)),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("does not match"));
+    }
 
     struct TestContainerService {
         db: DBService,

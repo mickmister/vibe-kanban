@@ -845,7 +845,17 @@ impl Codex {
 
 #[cfg(test)]
 mod tests {
-    use super::resolve_model;
+    use std::str::FromStr;
+
+    use super::{ReasoningEffort, resolve_model};
+
+    #[test]
+    fn workflow_exposed_reasoning_values_parse() {
+        for value in ["low", "medium", "high", "xhigh"] {
+            assert!(ReasoningEffort::from_str(value).is_ok(), "{value}");
+        }
+        assert!(ReasoningEffort::from_str("minimal").is_err());
+    }
 
     #[test]
     fn resolve_model_detects_fast_suffix() {
