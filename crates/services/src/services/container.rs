@@ -572,6 +572,37 @@ pub trait ContainerService {
                 process.id,
                 process.session_id
             );
+            let queue_item_id =
+                db::models::agent_turn_admission::AgentTurnAdmission::queue_item_for_process(
+                    &self.db().pool,
+                    process.id,
+                )
+                .await?;
+            let external_state =
+                db::models::execution_external_start::ExecutionExternalStart::state(
+                    &self.db().pool,
+                    process.id,
+                )
+                .await?;
+            if matches!(external_state.as_deref(), Some("authorized" | "claiming")) {
+                // No external spawn was durably confirmed. The deterministic
+                // operation can safely return to waiting after restart.
+                ExecutionProcess::rollback_unfinalized_start(&self.db().pool, process.id).await?;
+                db::models::agent_turn_admission::AgentTurnAdmission::release_for_process(
+                    &self.db().pool,
+                    process.id,
+                )
+                .await?;
+                if let Some(item_id) = queue_item_id {
+                    AgentMessageQueueItem::requeue_waiting(
+                        &self.db().pool,
+                        item_id,
+                        "Waiting to resume after restart.",
+                    )
+                    .await?;
+                }
+                continue;
+            }
             // Update the execution process status first
             if let Err(e) = ExecutionProcess::update_completion(
                 &self.db().pool,
@@ -615,6 +646,19 @@ pub trait ContainerService {
             }
             // Process marked as failed
             tracing::info!("Marked orphaned execution process {} as failed", process.id);
+            db::models::agent_turn_admission::AgentTurnAdmission::release_for_process(
+                &self.db().pool,
+                process.id,
+            )
+            .await?;
+            if let Some(item_id) = queue_item_id {
+                AgentMessageQueueItem::mark_failed(
+                    &self.db().pool,
+                    item_id,
+                    "The agent start was confirmed, but monitoring was interrupted. Review before retrying.",
+                )
+                .await?;
+            }
         }
         Ok(())
     }
@@ -1140,6 +1184,7 @@ pub trait ContainerService {
         workspace: &Workspace,
         execution_process: &ExecutionProcess,
         executor_action: &ExecutorAction,
+        external_start_fence: Option<i64>,
     ) -> Result<(), ContainerError>;
 
     async fn stop_execution(
@@ -1672,6 +1717,32 @@ pub trait ContainerService {
             .await;
             return Err(ContainerError::AdmissionWaiting);
         }
+        if admission.is_some() {
+            if let Err(error) =
+                db::models::execution_external_start::ExecutionExternalStart::authorize(
+                    &self.db().pool,
+                    process_id,
+                )
+                .await
+            {
+                ExecutionProcess::update_completion(
+                    &self.db().pool,
+                    process_id,
+                    ExecutionProcessStatus::Failed,
+                    None,
+                )
+                .await?;
+                if let Some((token, _)) = &admission {
+                    let _ = db::models::agent_turn_admission::AgentTurnAdmission::release(
+                        &self.db().pool,
+                        token.token_id,
+                        token.fence,
+                    )
+                    .await;
+                }
+                return Err(error.into());
+            }
+        }
         let execution_process_id = execution_process.id.to_string();
         tracing::Span::current().record("execution_process_id", execution_process_id.as_str());
         self.msg_stores()
@@ -1685,6 +1756,26 @@ pub trait ContainerService {
                 .write()
                 .await
                 .remove(&execution_process.id);
+            db::models::execution_external_start::ExecutionExternalStart::fail(
+                &self.db().pool,
+                process_id,
+            )
+            .await?;
+            ExecutionProcess::update_completion(
+                &self.db().pool,
+                process_id,
+                ExecutionProcessStatus::Failed,
+                None,
+            )
+            .await?;
+            if let Some((token, _)) = &admission {
+                let _ = db::models::agent_turn_admission::AgentTurnAdmission::release(
+                    &self.db().pool,
+                    token.token_id,
+                    token.fence,
+                )
+                .await;
+            }
             return Err(e.into());
         }
 
@@ -1721,6 +1812,26 @@ pub trait ContainerService {
                     .write()
                     .await
                     .remove(&execution_process.id);
+                db::models::execution_external_start::ExecutionExternalStart::fail(
+                    &self.db().pool,
+                    process_id,
+                )
+                .await?;
+                ExecutionProcess::update_completion(
+                    &self.db().pool,
+                    process_id,
+                    ExecutionProcessStatus::Failed,
+                    None,
+                )
+                .await?;
+                if let Some((token, _)) = &admission {
+                    let _ = db::models::agent_turn_admission::AgentTurnAdmission::release(
+                        &self.db().pool,
+                        token.token_id,
+                        token.fence,
+                    )
+                    .await;
+                }
                 return Err(e.into());
             }
         }
@@ -1735,8 +1846,49 @@ pub trait ContainerService {
             )
         );
 
+        let claim = if admission.is_some() {
+            match db::models::execution_external_start::ExecutionExternalStart::claim(
+                &self.db().pool,
+                process_id,
+                chrono::Duration::seconds(120),
+            )
+            .await?
+            {
+                Some(claim) => Some(claim),
+                None => {
+                    ExecutionProcess::update_completion(
+                        &self.db().pool,
+                        process_id,
+                        ExecutionProcessStatus::Failed,
+                        None,
+                    )
+                    .await?;
+                    db::models::execution_external_start::ExecutionExternalStart::fail(
+                        &self.db().pool,
+                        process_id,
+                    )
+                    .await?;
+                    if let Some((token, _)) = &admission {
+                        let _ = db::models::agent_turn_admission::AgentTurnAdmission::release(
+                            &self.db().pool,
+                            token.token_id,
+                            token.fence,
+                        )
+                        .await;
+                    }
+                    return Err(ContainerError::AdmissionWaiting);
+                }
+            }
+        } else {
+            None
+        };
         if let Err(start_error) = self
-            .start_execution_inner(workspace, &execution_process, &executor_action_for_process)
+            .start_execution_inner(
+                workspace,
+                &execution_process,
+                &executor_action_for_process,
+                claim.as_ref().map(|claim| claim.fence),
+            )
             .await
         {
             self.msg_stores()
@@ -1757,6 +1909,19 @@ pub trait ContainerService {
                     execution_process.id,
                     update_error
                 );
+            }
+            let _ = db::models::execution_external_start::ExecutionExternalStart::fail(
+                &self.db().pool,
+                process_id,
+            )
+            .await;
+            if let Some((token, _)) = &admission {
+                let _ = db::models::agent_turn_admission::AgentTurnAdmission::release(
+                    &self.db().pool,
+                    token.token_id,
+                    token.fence,
+                )
+                .await;
             }
             // Emit stderr error message
             let log_message = LogMsg::Stderr(format!("Failed to start execution: {start_error}"));
@@ -1803,6 +1968,35 @@ pub trait ContainerService {
                 }
             };
             return Err(start_error);
+        }
+        if admission.is_some()
+            && !db::models::execution_external_start::ExecutionExternalStart::is_spawned(
+                &self.db().pool,
+                process_id,
+            )
+            .await?
+        {
+            ExecutionProcess::update_completion(
+                &self.db().pool,
+                process_id,
+                ExecutionProcessStatus::Failed,
+                None,
+            )
+            .await?;
+            db::models::execution_external_start::ExecutionExternalStart::fail(
+                &self.db().pool,
+                process_id,
+            )
+            .await?;
+            if let Some((token, _)) = &admission {
+                let _ = db::models::agent_turn_admission::AgentTurnAdmission::release(
+                    &self.db().pool,
+                    token.token_id,
+                    token.fence,
+                )
+                .await;
+            }
+            return Err(ContainerError::AdmissionWaiting);
         }
 
         if is_clear_session_command
@@ -2077,6 +2271,7 @@ mod tests {
         msg_stores: Arc<RwLock<HashMap<Uuid, Arc<MsgStore>>>>,
         stopped_processes: Arc<Mutex<Vec<Uuid>>>,
         events: Arc<Mutex<Vec<TestContainerEvent>>>,
+        external_start_behavior: Arc<Mutex<TestExternalStartBehavior>>,
         container_ref: String,
     }
 
@@ -2085,6 +2280,14 @@ mod tests {
         EnsureContainerExists,
         IsContainerClean,
         StopExecution(Uuid),
+        ExternalStart(Uuid),
+    }
+
+    #[derive(Clone, Copy, Debug, Default)]
+    enum TestExternalStartBehavior {
+        #[default]
+        Confirm,
+        ErrorBeforeConfirmation,
     }
 
     impl TestContainerService {
@@ -2098,6 +2301,7 @@ mod tests {
                 msg_stores: Arc::new(RwLock::new(HashMap::new())),
                 stopped_processes: Arc::new(Mutex::new(Vec::new())),
                 events: Arc::new(Mutex::new(Vec::new())),
+                external_start_behavior: Arc::new(Mutex::new(TestExternalStartBehavior::Confirm)),
                 container_ref,
             }
         }
@@ -2108,6 +2312,10 @@ mod tests {
 
         async fn events(&self) -> Vec<TestContainerEvent> {
             self.events.lock().await.clone()
+        }
+
+        async fn set_external_start_behavior(&self, behavior: TestExternalStartBehavior) {
+            *self.external_start_behavior.lock().await = behavior;
         }
     }
 
@@ -2183,7 +2391,29 @@ mod tests {
             _workspace: &Workspace,
             _execution_process: &ExecutionProcess,
             _executor_action: &ExecutorAction,
+            external_start_fence: Option<i64>,
         ) -> Result<(), ContainerError> {
+            self.events
+                .lock()
+                .await
+                .push(TestContainerEvent::ExternalStart(_execution_process.id));
+            if matches!(
+                *self.external_start_behavior.lock().await,
+                TestExternalStartBehavior::ErrorBeforeConfirmation
+            ) {
+                return Err(ContainerError::Other(anyhow!(
+                    "injected external start failure"
+                )));
+            }
+            if let Some(fence) = external_start_fence {
+                db::models::execution_external_start::ExecutionExternalStart::confirm_spawned(
+                    &self.db.pool,
+                    _execution_process.id,
+                    fence,
+                    Some("fake"),
+                )
+                .await?;
+            }
             Ok(())
         }
 
@@ -2259,6 +2489,373 @@ mod tests {
             .execute(pool)
             .await?;
         Ok(workspace_id)
+    }
+
+    async fn start_fixture() -> Result<
+        (
+            tempfile::TempDir,
+            SqlitePool,
+            TestContainerService,
+            Workspace,
+            Session,
+        ),
+        Box<dyn std::error::Error>,
+    > {
+        let (temp_dir, pool) = test_pool().await?;
+        let workspace_id =
+            insert_workspace(&pool, temp_dir.path().to_string_lossy().as_ref()).await?;
+        let repo_dir = temp_dir.path().join("repo");
+        std::fs::create_dir_all(&repo_dir)?;
+        let repo = Repo::find_or_create(&pool, &repo_dir, "repo").await?;
+        sqlx::query("INSERT INTO workspace_repos(id,workspace_id,repo_id,target_branch) VALUES(?1,?2,?3,'main')")
+            .bind(Uuid::new_v4()).bind(workspace_id).bind(repo.id).execute(&pool).await?;
+        let session = Session::create(
+            &pool,
+            &CreateSession {
+                executor: Some("CODEX".into()),
+                name: Some("agent".into()),
+            },
+            Uuid::new_v4(),
+            workspace_id,
+        )
+        .await?;
+        let workspace = Workspace::find_by_id(&pool, workspace_id).await?.unwrap();
+        let service = TestContainerService::new(
+            DBService { pool: pool.clone() },
+            temp_dir.path().to_string_lossy().to_string(),
+        );
+        Ok((temp_dir, pool, service, workspace, session))
+    }
+
+    #[tokio::test]
+    async fn shared_direct_coding_start_confirms_external_spawn_once()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (_temp, pool, service, workspace, session) = start_fixture().await?;
+        let action = ExecutorAction::new(
+            ExecutorActionType::CodingAgentInitialRequest(CodingAgentInitialRequest {
+                prompt: "test".into(),
+                executor_config: ExecutorConfig::new(BaseCodingAgent::Codex),
+                working_dir: None,
+            }),
+            None,
+        );
+        let process = service
+            .start_execution(
+                &workspace,
+                &session,
+                &action,
+                &ExecutionProcessRunReason::CodingAgent,
+            )
+            .await?;
+        assert_eq!(service.events().await.iter().filter(|event| matches!(event, TestContainerEvent::ExternalStart(id) if *id == process.id)).count(), 1);
+        assert_eq!(
+            db::models::execution_external_start::ExecutionExternalStart::state(&pool, process.id)
+                .await?
+                .as_deref(),
+            Some("spawned")
+        );
+        let admission: String = sqlx::query_scalar(
+            "SELECT status FROM agent_turn_admissions WHERE intended_process_id=?1",
+        )
+        .bind(process.id)
+        .fetch_one(&pool)
+        .await?;
+        assert_eq!(admission, "started");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn shared_queued_coding_start_confirms_external_spawn_once()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (_temp, pool, service, _workspace, session) = start_fixture().await?;
+        let queue = QueuedMessageService::new(DBService { pool: pool.clone() });
+        let item = queue
+            .queue_message(
+                &session,
+                "test".into(),
+                None,
+                db::models::agent_message_queue::AgentMessageSource::FromUser,
+                None,
+                None,
+                None,
+            )
+            .await?;
+        service.try_start_queued_messages(&queue).await?;
+        assert_eq!(
+            service
+                .events()
+                .await
+                .iter()
+                .filter(
+                    |event| matches!(event, TestContainerEvent::ExternalStart(id) if *id == item.id)
+                )
+                .count(),
+            1
+        );
+        let current = AgentMessageQueueItem::find_by_id(&pool, item.id)
+            .await?
+            .unwrap();
+        assert_eq!(current.status, AgentMessageQueueStatus::Running);
+        assert_eq!(
+            db::models::execution_external_start::ExecutionExternalStart::state(&pool, item.id)
+                .await?
+                .as_deref(),
+            Some("spawned")
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn queued_capacity_rejection_remains_waiting_without_external_start()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (_temp, pool, service, _workspace, session) = start_fixture().await?;
+        service.config.write().await.agent_turn_capacity = 0;
+        let queue = QueuedMessageService::new(DBService { pool: pool.clone() });
+        let item = queue
+            .queue_message(
+                &session,
+                "test".into(),
+                None,
+                db::models::agent_message_queue::AgentMessageSource::FromUser,
+                None,
+                None,
+                None,
+            )
+            .await?;
+        service.try_start_queued_messages(&queue).await?;
+        let current = AgentMessageQueueItem::find_by_id(&pool, item.id)
+            .await?
+            .unwrap();
+        assert_eq!(current.status, AgentMessageQueueStatus::Queued);
+        assert_eq!(
+            current.last_error.as_deref(),
+            Some("Waiting for team capacity.")
+        );
+        assert!(
+            !service
+                .events()
+                .await
+                .iter()
+                .any(|event| matches!(event, TestContainerEvent::ExternalStart(_)))
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn script_start_uses_separate_external_start_policy()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (_temp, pool, service, workspace, session) = start_fixture().await?;
+        let action = ExecutorAction::new(
+            ExecutorActionType::ScriptRequest(ScriptRequest {
+                script: "true".into(),
+                language: ScriptRequestLanguage::Bash,
+                context: ScriptContext::SetupScript,
+                working_dir: None,
+                env: Default::default(),
+            }),
+            None,
+        );
+        let process = service
+            .start_execution(
+                &workspace,
+                &session,
+                &action,
+                &ExecutionProcessRunReason::SetupScript,
+            )
+            .await?;
+        assert!(
+            db::models::execution_external_start::ExecutionExternalStart::state(&pool, process.id)
+                .await?
+                .is_none()
+        );
+        Ok(())
+    }
+
+    async fn assert_pre_spawn_failure_is_terminal(
+        pool: &SqlitePool,
+        service: &TestContainerService,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        assert!(
+            !service
+                .events()
+                .await
+                .iter()
+                .any(|event| matches!(event, TestContainerEvent::ExternalStart(_)))
+        );
+        let (process_id, process_status): (Uuid, String) = sqlx::query_as(
+            "SELECT id,status FROM execution_processes ORDER BY created_at DESC LIMIT 1",
+        )
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(process_status, "failed");
+        let admission_status: String = sqlx::query_scalar(
+            "SELECT status FROM agent_turn_admissions WHERE intended_process_id=?1",
+        )
+        .bind(process_id)
+        .fetch_one(pool)
+        .await?;
+        assert_eq!(admission_status, "released");
+        assert_eq!(
+            db::models::execution_external_start::ExecutionExternalStart::state(pool, process_id)
+                .await?
+                .as_deref(),
+            Some("failed")
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn workspace_update_failure_never_reaches_external_start()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (_temp, pool, service, workspace, session) = start_fixture().await?;
+        sqlx::query("CREATE TRIGGER fail_workspace_update BEFORE UPDATE ON workspaces BEGIN SELECT RAISE(FAIL,'test workspace failure'); END")
+            .execute(&pool).await?;
+        let action = ExecutorAction::new(
+            ExecutorActionType::CodingAgentInitialRequest(CodingAgentInitialRequest {
+                prompt: "test".into(),
+                executor_config: ExecutorConfig::new(BaseCodingAgent::Codex),
+                working_dir: None,
+            }),
+            None,
+        );
+        assert!(
+            service
+                .start_execution(
+                    &workspace,
+                    &session,
+                    &action,
+                    &ExecutionProcessRunReason::CodingAgent
+                )
+                .await
+                .is_err()
+        );
+        assert_pre_spawn_failure_is_terminal(&pool, &service).await
+    }
+
+    #[tokio::test]
+    async fn coding_turn_creation_failure_never_reaches_external_start()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (_temp, pool, service, workspace, session) = start_fixture().await?;
+        sqlx::query("CREATE TRIGGER fail_turn_insert BEFORE INSERT ON coding_agent_turns BEGIN SELECT RAISE(FAIL,'test turn failure'); END")
+            .execute(&pool).await?;
+        let action = ExecutorAction::new(
+            ExecutorActionType::CodingAgentInitialRequest(CodingAgentInitialRequest {
+                prompt: "test".into(),
+                executor_config: ExecutorConfig::new(BaseCodingAgent::Codex),
+                working_dir: None,
+            }),
+            None,
+        );
+        assert!(
+            service
+                .start_execution(
+                    &workspace,
+                    &session,
+                    &action,
+                    &ExecutionProcessRunReason::CodingAgent
+                )
+                .await
+                .is_err()
+        );
+        assert_pre_spawn_failure_is_terminal(&pool, &service).await
+    }
+
+    #[tokio::test]
+    async fn external_start_error_terminalizes_process_and_releases_admission()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (_temp, pool, service, workspace, session) = start_fixture().await?;
+        service
+            .set_external_start_behavior(TestExternalStartBehavior::ErrorBeforeConfirmation)
+            .await;
+        let action = ExecutorAction::new(
+            ExecutorActionType::CodingAgentInitialRequest(CodingAgentInitialRequest {
+                prompt: "test".into(),
+                executor_config: ExecutorConfig::new(BaseCodingAgent::Codex),
+                working_dir: None,
+            }),
+            None,
+        );
+        assert!(
+            service
+                .start_execution(
+                    &workspace,
+                    &session,
+                    &action,
+                    &ExecutionProcessRunReason::CodingAgent
+                )
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            service
+                .events()
+                .await
+                .iter()
+                .filter(|event| matches!(event, TestContainerEvent::ExternalStart(_)))
+                .count(),
+            1
+        );
+        let (process_id, status): (Uuid, String) = sqlx::query_as(
+            "SELECT id,status FROM execution_processes ORDER BY created_at DESC LIMIT 1",
+        )
+        .fetch_one(&pool)
+        .await?;
+        assert_eq!(status, "failed");
+        let admission: String = sqlx::query_scalar(
+            "SELECT status FROM agent_turn_admissions WHERE intended_process_id=?1",
+        )
+        .bind(process_id)
+        .fetch_one(&pool)
+        .await?;
+        assert_eq!(admission, "released");
+        assert_eq!(
+            db::models::execution_external_start::ExecutionExternalStart::state(&pool, process_id)
+                .await?
+                .as_deref(),
+            Some("failed")
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn restart_reconciles_unconfirmed_external_start_without_orphan_capacity()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (_temp, pool, service, workspace, session) = start_fixture().await?;
+        let action = ExecutorAction::new(
+            ExecutorActionType::CodingAgentInitialRequest(CodingAgentInitialRequest {
+                prompt: "test".into(),
+                executor_config: ExecutorConfig::new(BaseCodingAgent::Codex),
+                working_dir: None,
+            }),
+            None,
+        );
+        let process = service
+            .start_execution(
+                &workspace,
+                &session,
+                &action,
+                &ExecutionProcessRunReason::CodingAgent,
+            )
+            .await?;
+        // Model the durable crash window immediately before the external hook
+        // confirmed a spawn. Startup must reclaim the logical operation rather
+        // than treating the authorized process row as live forever.
+        sqlx::query("UPDATE execution_external_starts SET state='claiming',external_process_id=NULL,claim_expires_at=?2 WHERE execution_process_id=?1")
+            .bind(process.id).bind(chrono::Utc::now()-chrono::Duration::seconds(1)).execute(&pool).await?;
+        service.cleanup_orphan_executions().await?;
+        assert!(
+            ExecutionProcess::find_by_id(&pool, process.id)
+                .await?
+                .is_none()
+        );
+        let admission: String = sqlx::query_scalar(
+            "SELECT status FROM agent_turn_admissions WHERE intended_process_id=?1",
+        )
+        .bind(process.id)
+        .fetch_one(&pool)
+        .await?;
+        assert_eq!(admission, "released");
+        Ok(())
     }
 
     async fn insert_process(

@@ -1255,6 +1255,7 @@ impl ContainerService for LocalContainerService {
         workspace: &Workspace,
         execution_process: &ExecutionProcess,
         executor_action: &ExecutorAction,
+        external_start_fence: Option<i64>,
     ) -> Result<(), ContainerError> {
         // Get the worktree path
         let container_ref = workspace
@@ -1303,6 +1304,12 @@ impl ContainerService for LocalContainerService {
         env.insert("VK_WORKSPACE_ID", workspace.id.to_string());
         env.insert("VK_WORKSPACE_BRANCH", &workspace.branch);
         env.insert("VK_SESSION_ID", execution_process.session_id.to_string());
+        if external_start_fence.is_some() {
+            env.insert(
+                "VK_EXECUTION_START_KEY",
+                format!("execution:{}", execution_process.id),
+            );
+        }
 
         // Create the child and stream, add to execution tracker with timeout
         let mut spawned = tokio::time::timeout(
@@ -1322,6 +1329,21 @@ impl ContainerService for LocalContainerService {
                 "Timeout: process took more than 30 seconds to start"
             ))
         })??;
+
+        if let Some(fence) = external_start_fence {
+            let external_id = spawned.child.id().map(|id| id.to_string());
+            if !db::models::execution_external_start::ExecutionExternalStart::confirm_spawned(
+                &self.db.pool,
+                execution_process.id,
+                fence,
+                external_id.as_deref(),
+            )
+            .await?
+            {
+                let _ = command::kill_process_group(&mut spawned.child).await;
+                return Err(ContainerError::AdmissionWaiting);
+            }
+        }
 
         if let Err(e) = self
             .track_child_msgs_in_store(execution_process.id, &mut spawned.child)

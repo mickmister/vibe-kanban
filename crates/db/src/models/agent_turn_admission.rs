@@ -253,6 +253,28 @@ impl AgentTurnAdmission {
             .bind(token_id).bind(Utc::now()).bind(fence).execute(pool).await?;
         Ok(true)
     }
+
+    pub async fn release_for_process(
+        pool: &SqlitePool,
+        process_id: Uuid,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query("UPDATE agent_turn_admissions SET status='released',expires_at=NULL,updated_at=?2 WHERE intended_process_id=?1 AND status IN ('reserved','started')")
+            .bind(process_id).bind(Utc::now()).execute(pool).await?;
+        Ok(())
+    }
+
+    pub async fn queue_item_for_process(
+        pool: &SqlitePool,
+        process_id: Uuid,
+    ) -> Result<Option<Uuid>, sqlx::Error> {
+        sqlx::query_scalar(
+            "SELECT queue_item_id FROM agent_turn_admissions WHERE intended_process_id=?1",
+        )
+        .bind(process_id)
+        .fetch_optional(pool)
+        .await
+        .map(Option::flatten)
+    }
 }
 
 #[cfg(test)]
