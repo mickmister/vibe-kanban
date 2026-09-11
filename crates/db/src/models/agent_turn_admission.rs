@@ -8,6 +8,7 @@ use uuid::Uuid;
 #[sqlx(type_name = "TEXT", rename_all = "snake_case")]
 pub enum AgentTurnAdmissionStatus {
     Reserved,
+    Starting,
     Started,
     Released,
     Expired,
@@ -17,7 +18,7 @@ pub enum AgentTurnAdmissionStatus {
 pub struct AgentTurnAdmission {
     pub token_id: Uuid,
     pub operation_key: String,
-    pub queue_item_id: Uuid,
+    pub queue_item_id: Option<Uuid>,
     pub intended_process_id: Option<Uuid>,
     pub workspace_id: Uuid,
     pub fence: i64,
@@ -49,7 +50,7 @@ impl AgentTurnAdmission {
     pub async fn reconcile(pool: &SqlitePool, now: DateTime<Utc>) -> Result<(), sqlx::Error> {
         sqlx::query(
             r#"UPDATE agent_turn_admissions AS a SET status = 'started', expires_at = NULL, updated_at = ?1
-               WHERE a.status = 'reserved' AND EXISTS (
+               WHERE a.status IN ('reserved','starting') AND EXISTS (
                  SELECT 1 FROM execution_processes ep
                  WHERE ep.id = a.intended_process_id AND ep.status = 'running'
                )"#,
@@ -59,7 +60,7 @@ impl AgentTurnAdmission {
         .await?;
         sqlx::query(
             r#"UPDATE agent_turn_admissions SET status = 'expired', updated_at = ?1
-               WHERE status = 'reserved' AND expires_at IS NOT NULL AND expires_at <= ?1
+               WHERE status IN ('reserved','starting') AND expires_at IS NOT NULL AND expires_at <= ?1
                  AND NOT EXISTS (
                    SELECT 1 FROM execution_processes ep
                    WHERE ep.id = agent_turn_admissions.intended_process_id AND ep.status = 'running'
@@ -92,10 +93,15 @@ impl AgentTurnAdmission {
         let now = Utc::now();
         Self::reconcile(pool, now).await?;
         if let Some(existing) = Self::find(pool, operation_key).await? {
-            if existing.queue_item_id != queue_item_id || existing.workspace_id != workspace_id {
+            if existing.queue_item_id != Some(queue_item_id)
+                || existing.workspace_id != workspace_id
+            {
                 return Ok(AcquireAgentTurnAdmission::IdentityConflict);
             }
-            if existing.status == AgentTurnAdmissionStatus::Reserved {
+            if matches!(
+                existing.status,
+                AgentTurnAdmissionStatus::Reserved | AgentTurnAdmissionStatus::Starting
+            ) {
                 return Ok(AcquireAgentTurnAdmission::Acquired(existing));
             }
             if existing.status == AgentTurnAdmissionStatus::Started {
@@ -115,8 +121,8 @@ impl AgentTurnAdmission {
                  (token_id, operation_key, queue_item_id, workspace_id, fence, status, expires_at, created_at, updated_at)
                SELECT ?1, ?2, ?3, ?4, 1, 'reserved', ?5, ?6, ?6
                WHERE (SELECT COUNT(*) FROM execution_processes WHERE status = 'running' AND run_reason = 'codingagent')
-                       + (SELECT COUNT(*) FROM agent_turn_admissions WHERE status = 'reserved') < ?7
-                 AND NOT EXISTS (SELECT 1 FROM agent_turn_admissions WHERE workspace_id = ?4 AND status = 'reserved')
+                       + (SELECT COUNT(*) FROM agent_turn_admissions WHERE status IN ('reserved','starting')) < ?7
+                 AND NOT EXISTS (SELECT 1 FROM agent_turn_admissions WHERE workspace_id = ?4 AND status IN ('reserved','starting'))
                  AND NOT EXISTS (
                    SELECT 1 FROM execution_processes ep JOIN sessions s ON s.id = ep.session_id
                    WHERE s.workspace_id = ?4 AND ep.status = 'running' AND ep.run_reason != 'devserver'
@@ -128,8 +134,8 @@ impl AgentTurnAdmission {
                  AND agent_turn_admissions.workspace_id = excluded.workspace_id
                  AND agent_turn_admissions.status IN ('released','expired')
                  AND (SELECT COUNT(*) FROM execution_processes WHERE status = 'running' AND run_reason = 'codingagent')
-                       + (SELECT COUNT(*) FROM agent_turn_admissions WHERE status = 'reserved') < ?7
-                 AND NOT EXISTS (SELECT 1 FROM agent_turn_admissions other WHERE other.workspace_id = ?4 AND other.status = 'reserved')"#,
+                       + (SELECT COUNT(*) FROM agent_turn_admissions WHERE status IN ('reserved','starting')) < ?7
+                 AND NOT EXISTS (SELECT 1 FROM agent_turn_admissions other WHERE other.workspace_id = ?4 AND other.status IN ('reserved','starting'))"#,
         )
         .bind(token_id).bind(operation_key).bind(queue_item_id).bind(workspace_id)
         .bind(expires_at).bind(now).bind(capacity as i64).execute(pool).await?;
@@ -139,7 +145,7 @@ impl AgentTurnAdmission {
             ));
         }
         let workspace_busy: i64 = sqlx::query_scalar(
-            r#"SELECT EXISTS(SELECT 1 FROM agent_turn_admissions WHERE workspace_id=?1 AND status='reserved')
+            r#"SELECT EXISTS(SELECT 1 FROM agent_turn_admissions WHERE workspace_id=?1 AND status IN ('reserved','starting'))
                OR EXISTS(SELECT 1 FROM execution_processes ep JOIN sessions s ON s.id=ep.session_id
                          WHERE s.workspace_id=?1 AND ep.status='running' AND ep.run_reason!='devserver')"#)
             .bind(workspace_id).fetch_one(pool).await?;
@@ -161,14 +167,89 @@ impl AgentTurnAdmission {
         Ok(result.rows_affected() == 1)
     }
 
+    pub async fn find_by_process(
+        pool: &SqlitePool,
+        process_id: Uuid,
+    ) -> Result<Option<Self>, sqlx::Error> {
+        sqlx::query_as("SELECT * FROM agent_turn_admissions WHERE intended_process_id=?1")
+            .bind(process_id)
+            .fetch_optional(pool)
+            .await
+    }
+
+    pub async fn acquire_direct(
+        pool: &SqlitePool,
+        process_id: Uuid,
+        workspace_id: Uuid,
+        capacity: usize,
+        ttl: Duration,
+    ) -> Result<AcquireAgentTurnAdmission, sqlx::Error> {
+        let operation_key = format!("process:{process_id}");
+        let now = Utc::now();
+        Self::reconcile(pool, now).await?;
+        if let Some(existing) = Self::find(pool, &operation_key).await? {
+            return Ok(AcquireAgentTurnAdmission::Acquired(existing));
+        }
+        if capacity == 0 {
+            return Ok(AcquireAgentTurnAdmission::CapacityUnavailable);
+        }
+        let result = sqlx::query(r#"INSERT INTO agent_turn_admissions
+            (token_id,operation_key,queue_item_id,intended_process_id,workspace_id,fence,status,expires_at,created_at,updated_at)
+            SELECT ?1,?2,NULL,?3,?4,1,'reserved',?5,?6,?6
+            WHERE (SELECT COUNT(*) FROM execution_processes WHERE status='running' AND run_reason='codingagent')
+                    + (SELECT COUNT(*) FROM agent_turn_admissions WHERE status IN ('reserved','starting')) < ?7
+              AND NOT EXISTS (SELECT 1 FROM agent_turn_admissions WHERE workspace_id=?4 AND status IN ('reserved','starting'))
+              AND NOT EXISTS (SELECT 1 FROM execution_processes ep JOIN sessions s ON s.id=ep.session_id
+                              WHERE s.workspace_id=?4 AND ep.status='running' AND ep.run_reason!='devserver')"#)
+            .bind(Uuid::new_v4()).bind(&operation_key).bind(process_id).bind(workspace_id)
+            .bind(now + ttl).bind(now).bind(capacity as i64).execute(pool).await?;
+        if result.rows_affected() == 1 {
+            return Ok(AcquireAgentTurnAdmission::Acquired(
+                Self::find(pool, &operation_key).await?.unwrap(),
+            ));
+        }
+        Ok(AcquireAgentTurnAdmission::CapacityUnavailable)
+    }
+
+    /// Final fenced authorization immediately before the process row/start
+    /// boundary. `starting` remains capacity-counted until the process exists.
+    pub async fn authorize_start(
+        pool: &SqlitePool,
+        token_id: Uuid,
+        fence: i64,
+        process_id: Uuid,
+        workspace_id: Uuid,
+        capacity: usize,
+    ) -> Result<bool, sqlx::Error> {
+        let now = Utc::now();
+        let result = sqlx::query(r#"UPDATE agent_turn_admissions SET status='starting', updated_at=?6
+            WHERE token_id=?1 AND fence=?2 AND intended_process_id=?3 AND workspace_id=?4
+              AND status='reserved' AND expires_at>?6
+              AND (SELECT COUNT(*) FROM execution_processes WHERE status='running' AND run_reason='codingagent')
+                    + (SELECT COUNT(*) FROM agent_turn_admissions WHERE status IN ('reserved','starting')) <= ?5"#)
+            .bind(token_id).bind(fence).bind(process_id).bind(workspace_id)
+            .bind(capacity as i64).bind(now).execute(pool).await?;
+        Ok(result.rows_affected() == 1)
+    }
+
     pub async fn mark_started(
         pool: &SqlitePool,
         token_id: Uuid,
         fence: i64,
     ) -> Result<bool, sqlx::Error> {
-        let result = sqlx::query("UPDATE agent_turn_admissions SET status='started', expires_at=NULL, updated_at=?3 WHERE token_id=?1 AND fence=?2 AND status='reserved'")
+        let result = sqlx::query("UPDATE agent_turn_admissions SET status='started', expires_at=NULL, updated_at=?3 WHERE token_id=?1 AND fence=?2 AND status='starting'")
             .bind(token_id).bind(fence).bind(Utc::now()).execute(pool).await?;
-        Ok(result.rows_affected() == 1)
+        if result.rows_affected() == 1 {
+            return Ok(true);
+        }
+        let current: Option<(i64, AgentTurnAdmissionStatus)> =
+            sqlx::query_as("SELECT fence,status FROM agent_turn_admissions WHERE token_id=?1")
+                .bind(token_id)
+                .fetch_optional(pool)
+                .await?;
+        Ok(
+            matches!(current, Some((current_fence, AgentTurnAdmissionStatus::Started)) if current_fence == fence),
+        )
     }
 
     pub async fn release(
@@ -215,8 +296,8 @@ mod tests {
             "CREATE TABLE sessions(id BLOB PRIMARY KEY, workspace_id BLOB NOT NULL)",
             "CREATE TABLE execution_processes(id BLOB PRIMARY KEY, session_id BLOB NOT NULL, status TEXT NOT NULL, run_reason TEXT NOT NULL)",
             "CREATE TABLE agent_message_queue(id BLOB PRIMARY KEY, started_execution_process_id BLOB)",
-            "CREATE TABLE agent_turn_admissions(token_id BLOB PRIMARY KEY, operation_key TEXT NOT NULL UNIQUE, queue_item_id BLOB NOT NULL, intended_process_id BLOB, workspace_id BLOB NOT NULL, fence INTEGER NOT NULL DEFAULT 1, status TEXT NOT NULL, expires_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)",
-            "CREATE UNIQUE INDEX active_workspace ON agent_turn_admissions(workspace_id) WHERE status='reserved'",
+            "CREATE TABLE agent_turn_admissions(token_id BLOB PRIMARY KEY, operation_key TEXT NOT NULL UNIQUE, queue_item_id BLOB, intended_process_id BLOB, workspace_id BLOB NOT NULL, fence INTEGER NOT NULL DEFAULT 1, status TEXT NOT NULL, expires_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)",
+            "CREATE UNIQUE INDEX active_workspace ON agent_turn_admissions(workspace_id) WHERE status IN ('reserved','starting')",
         ] {
             pool.execute(sql).await.unwrap();
         }
@@ -311,6 +392,9 @@ mod tests {
             AcquireAgentTurnAdmission::Acquired(v) => v,
             _ => panic!(),
         };
+        AgentTurnAdmission::prepare_process(&pool, first.token_id, first.fence, q)
+            .await
+            .unwrap();
         let second = match AgentTurnAdmission::acquire(&pool, "op", q, w, 1, Duration::seconds(60))
             .await
             .unwrap()
@@ -322,6 +406,19 @@ mod tests {
         assert!(second.fence > first.fence);
         assert!(
             !AgentTurnAdmission::mark_started(&pool, first.token_id, first.fence)
+                .await
+                .unwrap()
+        );
+        assert!(
+            !AgentTurnAdmission::authorize_start(&pool, first.token_id, first.fence, q, w, 1)
+                .await
+                .unwrap()
+        );
+        AgentTurnAdmission::prepare_process(&pool, second.token_id, second.fence, q)
+            .await
+            .unwrap();
+        assert!(
+            AgentTurnAdmission::authorize_start(&pool, second.token_id, second.fence, q, w, 1)
                 .await
                 .unwrap()
         );
@@ -403,8 +500,8 @@ mod tests {
             "CREATE TABLE sessions(id BLOB PRIMARY KEY, workspace_id BLOB NOT NULL)",
             "CREATE TABLE execution_processes(id BLOB PRIMARY KEY, session_id BLOB NOT NULL, status TEXT NOT NULL, run_reason TEXT NOT NULL)",
             "CREATE TABLE agent_message_queue(id BLOB PRIMARY KEY, started_execution_process_id BLOB)",
-            "CREATE TABLE agent_turn_admissions(token_id BLOB PRIMARY KEY, operation_key TEXT NOT NULL UNIQUE, queue_item_id BLOB NOT NULL, intended_process_id BLOB, workspace_id BLOB NOT NULL, fence INTEGER NOT NULL DEFAULT 1, status TEXT NOT NULL, expires_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)",
-            "CREATE UNIQUE INDEX active_workspace ON agent_turn_admissions(workspace_id) WHERE status='reserved'",
+            "CREATE TABLE agent_turn_admissions(token_id BLOB PRIMARY KEY, operation_key TEXT NOT NULL UNIQUE, queue_item_id BLOB, intended_process_id BLOB, workspace_id BLOB NOT NULL, fence INTEGER NOT NULL DEFAULT 1, status TEXT NOT NULL, expires_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)",
+            "CREATE UNIQUE INDEX active_workspace ON agent_turn_admissions(workspace_id) WHERE status IN ('reserved','starting')",
         ] {
             pool.execute(sql).await.unwrap();
         }
@@ -435,5 +532,102 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    #[tokio::test]
+    async fn capacity_changes_are_deterministic_and_replay_keeps_its_slot() {
+        let pool = pool().await;
+        let ids = [Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4()];
+        for id in ids {
+            item(&pool, id).await;
+        }
+        assert_eq!(
+            AgentTurnAdmission::acquire(
+                &pool,
+                "zero",
+                ids[0],
+                Uuid::new_v4(),
+                0,
+                Duration::seconds(60)
+            )
+            .await
+            .unwrap(),
+            AcquireAgentTurnAdmission::CapacityUnavailable
+        );
+        let one = match AgentTurnAdmission::acquire(
+            &pool,
+            "one",
+            ids[0],
+            Uuid::new_v4(),
+            2,
+            Duration::seconds(60),
+        )
+        .await
+        .unwrap()
+        {
+            AcquireAgentTurnAdmission::Acquired(v) => v,
+            _ => panic!(),
+        };
+        assert!(
+            matches!(AgentTurnAdmission::acquire(&pool,"one",ids[0],one.workspace_id,0,Duration::seconds(60)).await.unwrap(), AcquireAgentTurnAdmission::Acquired(v) if v.token_id==one.token_id)
+        );
+        let two = match AgentTurnAdmission::acquire(
+            &pool,
+            "two",
+            ids[1],
+            Uuid::new_v4(),
+            2,
+            Duration::seconds(60),
+        )
+        .await
+        .unwrap()
+        {
+            AcquireAgentTurnAdmission::Acquired(v) => v,
+            _ => panic!(),
+        };
+        assert_eq!(
+            AgentTurnAdmission::acquire(
+                &pool,
+                "three",
+                ids[2],
+                Uuid::new_v4(),
+                1,
+                Duration::seconds(60)
+            )
+            .await
+            .unwrap(),
+            AcquireAgentTurnAdmission::CapacityUnavailable
+        );
+        assert!(
+            AgentTurnAdmission::release(&pool, two.token_id, two.fence)
+                .await
+                .unwrap()
+        );
+        assert_eq!(
+            AgentTurnAdmission::acquire(
+                &pool,
+                "three",
+                ids[2],
+                Uuid::new_v4(),
+                1,
+                Duration::seconds(60)
+            )
+            .await
+            .unwrap(),
+            AcquireAgentTurnAdmission::CapacityUnavailable
+        );
+        assert!(matches!(
+            AgentTurnAdmission::acquire(
+                &pool,
+                "three",
+                ids[2],
+                Uuid::new_v4(),
+                2,
+                Duration::seconds(60)
+            )
+            .await
+            .unwrap(),
+            AcquireAgentTurnAdmission::Acquired(_)
+        ));
     }
 }

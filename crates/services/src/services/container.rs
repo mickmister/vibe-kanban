@@ -236,12 +236,7 @@ pub trait ContainerService {
                     .start_queued_message(queue, &item, Some((token.token_id, token.fence)))
                     .await
                 {
-                    Ok(Some(_)) => {
-                        if !queue.mark_turn_started(token.token_id, token.fence).await? {
-                            tracing::warn!(queue_item_id=%item.id, "agent turn admission became stale after process start");
-                        }
-                        started_any = true
-                    }
+                    Ok(Some(_)) => started_any = true,
                     Ok(None) => {
                         queue.release_turn(token.token_id, token.fence).await?;
                     }
@@ -314,7 +309,10 @@ pub trait ContainerService {
             cleanup_action.map(Box::new),
             item.data.provenance.clone(),
         );
-        let process_id = Uuid::new_v4();
+        // The logical queued turn owns a deterministic process identity. A
+        // restarted pump therefore resumes the prepared intent instead of
+        // inventing a second side effect identity.
+        let process_id = item.id;
         if let Some((token_id, fence)) = admission
             && !queue
                 .prepare_turn_process(token_id, fence, process_id)
@@ -1584,13 +1582,88 @@ pub trait ContainerService {
             run_reason: run_reason.clone(),
         };
 
-        let execution_process = ExecutionProcess::create(
+        // All coding-agent starts, including direct/manual routes, cross this
+        // database-backed final admission boundary. Dev servers and scripts
+        // intentionally use their existing independent capacity policies.
+        let admission = if *run_reason == ExecutionProcessRunReason::CodingAgent {
+            let capacity = self.config().read().await.agent_turn_capacity;
+            let token = match db::models::agent_turn_admission::AgentTurnAdmission::find_by_process(
+                &self.db().pool,
+                process_id,
+            )
+            .await?
+            {
+                Some(token) => token,
+                None => match db::models::agent_turn_admission::AgentTurnAdmission::acquire_direct(
+                    &self.db().pool,
+                    process_id,
+                    workspace.id,
+                    capacity,
+                    chrono::Duration::seconds(120),
+                )
+                .await?
+                {
+                    db::models::agent_turn_admission::AcquireAgentTurnAdmission::Acquired(
+                        token,
+                    ) => token,
+                    _ => return Err(ContainerError::Other(anyhow!("Waiting for team capacity."))),
+                },
+            };
+            if !db::models::agent_turn_admission::AgentTurnAdmission::authorize_start(
+                &self.db().pool,
+                token.token_id,
+                token.fence,
+                process_id,
+                workspace.id,
+                capacity,
+            )
+            .await?
+            {
+                return Err(ContainerError::Other(anyhow!(
+                    "Agent turn admission is no longer current."
+                )));
+            }
+            Some(token)
+        } else {
+            None
+        };
+
+        let execution_process = match ExecutionProcess::create(
             &self.db().pool,
             &create_execution_process,
             process_id,
             &repo_states,
+            admission
+                .as_ref()
+                .map(|token| (token.token_id, token.fence)),
         )
-        .await?;
+        .await
+        {
+            Ok(process) => process,
+            Err(error) => {
+                if let Some(token) = &admission {
+                    let _ = db::models::agent_turn_admission::AgentTurnAdmission::release(
+                        &self.db().pool,
+                        token.token_id,
+                        token.fence,
+                    )
+                    .await;
+                }
+                return Err(error.into());
+            }
+        };
+        if let Some(token) = &admission
+            && !db::models::agent_turn_admission::AgentTurnAdmission::mark_started(
+                &self.db().pool,
+                token.token_id,
+                token.fence,
+            )
+            .await?
+        {
+            return Err(ContainerError::Other(anyhow!(
+                "Agent turn admission could not be finalized."
+            )));
+        }
         let execution_process_id = execution_process.id.to_string();
         tracing::Span::current().record("execution_process_id", execution_process_id.as_str());
         self.msg_stores()

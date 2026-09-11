@@ -385,28 +385,55 @@ impl ExecutionProcess {
         data: &CreateExecutionProcess,
         process_id: Uuid,
         repo_states: &[CreateExecutionProcessRepoState],
+        admission: Option<(Uuid, i64)>,
     ) -> Result<Self, sqlx::Error> {
         let now = Utc::now();
         let executor_action_json = sqlx::types::Json(&data.executor_action);
 
-        sqlx::query!(
-            r#"INSERT INTO execution_processes (
+        let result = if let Some((token_id, fence)) = admission {
+            // The process row is the durable start boundary. Gate its insert
+            // on the current fence so an expired owner cannot start after a
+            // newer owner reacquires the logical operation.
+            sqlx::query(
+                r#"INSERT INTO execution_processes (
                     id, session_id, run_reason, executor_action,
                     status, exit_code, started_at, completed_at, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
-            process_id,
-            data.session_id,
-            data.run_reason,
-            executor_action_json,
-            ExecutionProcessStatus::Running,
-            None::<i64>,
-            now,
-            None::<DateTime<Utc>>,
-            now,
-            now
-        )
-        .execute(pool)
-        .await?;
+                ) SELECT ?1,?2,?3,?4,?5,NULL,?6,NULL,?6,?6
+                  WHERE EXISTS (
+                    SELECT 1 FROM agent_turn_admissions
+                    WHERE token_id=?7 AND fence=?8 AND intended_process_id=?1
+                      AND status='starting' AND expires_at>?6
+                  )"#,
+            )
+            .bind(process_id)
+            .bind(data.session_id)
+            .bind(&data.run_reason)
+            .bind(executor_action_json)
+            .bind(ExecutionProcessStatus::Running)
+            .bind(now)
+            .bind(token_id)
+            .bind(fence)
+            .execute(pool)
+            .await?
+        } else {
+            sqlx::query(
+                r#"INSERT INTO execution_processes (
+                    id, session_id, run_reason, executor_action,
+                    status, exit_code, started_at, completed_at, created_at, updated_at
+                ) VALUES (?1,?2,?3,?4,?5,NULL,?6,NULL,?6,?6)"#,
+            )
+            .bind(process_id)
+            .bind(data.session_id)
+            .bind(&data.run_reason)
+            .bind(executor_action_json)
+            .bind(ExecutionProcessStatus::Running)
+            .bind(now)
+            .execute(pool)
+            .await?
+        };
+        if result.rows_affected() != 1 {
+            return Err(sqlx::Error::RowNotFound);
+        }
 
         ExecutionProcessRepoState::create_many(pool, process_id, repo_states).await?;
 
