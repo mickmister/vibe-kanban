@@ -11,7 +11,7 @@ use db::{
     DBService,
     models::{
         agent_message_queue::{AgentMessageQueueItem, AgentMessageQueueStatus},
-        coding_agent_turn::{CodingAgentTurn, CreateCodingAgentTurn},
+        coding_agent_turn::{CodingAgentResumeInfo, CodingAgentTurn, CreateCodingAgentTurn},
         execution_process::{
             CreateExecutionProcess, ExecutionContext, ExecutionProcess, ExecutionProcessError,
             ExecutionProcessRunReason, ExecutionProcessStatus,
@@ -275,37 +275,12 @@ pub trait ContainerService {
             .filter(|dir| !dir.is_empty())
             .cloned();
 
-        let action_type = if let Some(command) = item.data.session_command.clone() {
-            let latest_session_info = if command.requires_provider_context(executor_config.executor)
-            {
-                latest_session_info
-            } else {
-                None
-            };
-            ExecutorActionType::CodingAgentSessionCommandRequest(CodingAgentSessionCommandRequest {
-                command,
-                prompt: item.data.message.clone(),
-                session_id: latest_session_info
-                    .as_ref()
-                    .map(|info| info.session_id.clone()),
-                executor_config: executor_config.clone(),
-                working_dir: working_dir.clone(),
-            })
-        } else if let Some(info) = latest_session_info {
-            ExecutorActionType::CodingAgentFollowUpRequest(CodingAgentFollowUpRequest {
-                prompt: item.data.message.clone(),
-                session_id: info.session_id,
-                reset_to_message_id: None,
-                executor_config: executor_config.clone(),
-                working_dir: working_dir.clone(),
-            })
-        } else {
-            ExecutorActionType::CodingAgentInitialRequest(CodingAgentInitialRequest {
-                prompt: item.data.message.clone(),
-                executor_config: executor_config.clone(),
-                working_dir,
-            })
-        };
+        let action_type = Self::build_queued_action_type(
+            &item.data,
+            executor_config,
+            latest_session_info,
+            working_dir,
+        );
 
         let cleanup_action = if matches!(
             &action_type,
@@ -372,6 +347,43 @@ pub trait ContainerService {
             )));
         }
         Ok(Some(config))
+    }
+
+    fn build_queued_action_type(
+        data: &db::models::agent_message_queue::QueuedFollowUpData,
+        executor_config: ExecutorConfig,
+        latest_session_info: Option<CodingAgentResumeInfo>,
+        working_dir: Option<String>,
+    ) -> ExecutorActionType {
+        if let Some(command) = data.session_command.clone() {
+            let latest_session_info = command
+                .requires_provider_context(executor_config.executor)
+                .then_some(latest_session_info)
+                .flatten();
+            return ExecutorActionType::CodingAgentSessionCommandRequest(
+                CodingAgentSessionCommandRequest {
+                    command,
+                    prompt: data.message.clone(),
+                    session_id: latest_session_info.map(|info| info.session_id),
+                    executor_config,
+                    working_dir,
+                },
+            );
+        }
+        if let Some(info) = latest_session_info {
+            return ExecutorActionType::CodingAgentFollowUpRequest(CodingAgentFollowUpRequest {
+                prompt: data.message.clone(),
+                session_id: info.session_id,
+                reset_to_message_id: None,
+                executor_config,
+                working_dir,
+            });
+        }
+        ExecutorActionType::CodingAgentInitialRequest(CodingAgentInitialRequest {
+            prompt: data.message.clone(),
+            executor_config,
+            working_dir,
+        })
     }
 
     async fn executor_config_for_session(
@@ -1883,6 +1895,71 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.to_string().contains("does not match"));
+    }
+
+    fn exact_test_config() -> ExecutorConfig {
+        let mut config = ExecutorConfig::new(BaseCodingAgent::Codex);
+        config.model_id = Some("gpt-5-codex".into());
+        config.reasoning_id = Some("xhigh".into());
+        config
+    }
+
+    fn assert_exact_config(config: &ExecutorConfig) {
+        assert_eq!(config.model_id.as_deref(), Some("gpt-5-codex"));
+        assert_eq!(config.reasoning_id.as_deref(), Some("xhigh"));
+    }
+
+    #[test]
+    fn queued_action_builder_preserves_config_for_initial_and_follow_up() {
+        let data = queued_data(Some(exact_test_config()));
+        match TestContainerService::build_queued_action_type(&data, exact_test_config(), None, None)
+        {
+            ExecutorActionType::CodingAgentInitialRequest(request) => {
+                assert_exact_config(&request.executor_config)
+            }
+            other => panic!("expected initial request, got {other:?}"),
+        }
+
+        match TestContainerService::build_queued_action_type(
+            &data,
+            exact_test_config(),
+            Some(CodingAgentResumeInfo {
+                session_id: "provider-session".into(),
+                message_id: None,
+            }),
+            None,
+        ) {
+            ExecutorActionType::CodingAgentFollowUpRequest(request) => {
+                assert_eq!(request.session_id, "provider-session");
+                assert_exact_config(&request.executor_config);
+            }
+            other => panic!("expected follow-up request, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn queued_action_builder_preserves_config_for_session_commands() {
+        let mut data = queued_data(Some(exact_test_config()));
+        data.session_command = Some(
+            executors::actions::session_command::SessionCommand::Compact {
+                instructions: Some("retain context".into()),
+            },
+        );
+        match TestContainerService::build_queued_action_type(
+            &data,
+            exact_test_config(),
+            Some(CodingAgentResumeInfo {
+                session_id: "provider-session".into(),
+                message_id: None,
+            }),
+            None,
+        ) {
+            ExecutorActionType::CodingAgentSessionCommandRequest(request) => {
+                assert_eq!(request.session_id.as_deref(), Some("provider-session"));
+                assert_exact_config(&request.executor_config);
+            }
+            other => panic!("expected session command request, got {other:?}"),
+        }
     }
 
     struct TestContainerService {
