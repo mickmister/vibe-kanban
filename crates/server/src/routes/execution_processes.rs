@@ -821,12 +821,21 @@ mod tests {
         time::Duration,
     };
 
+    use axum::{
+        Json, Router,
+        body::Body,
+        extract::{Path as AxumPath, State as AxumState},
+        http::StatusCode,
+        routing::post,
+    };
     use futures_util::{FutureExt, StreamExt};
+    use http::Request;
     use serde_json::json;
     use tokio::{
         sync::{Mutex, oneshot},
         time::timeout,
     };
+    use tower::ServiceExt;
     use utils::{log_msg::LogMsg, msg_store::MsgStore};
     use uuid::Uuid;
 
@@ -859,6 +868,68 @@ mod tests {
             authorize_external_start_recovery(Uuid::new_v4(), workspace_id, &valid, None),
             Err(crate::error::ApiError::Forbidden(_))
         ));
+    }
+
+    #[tokio::test]
+    async fn operator_recovery_http_endpoint_rejects_missing_invalid_and_cross_workspace_authorization()
+     {
+        async fn endpoint(
+            AxumState(process_workspace): AxumState<Uuid>,
+            AxumPath(workspace): AxumPath<Uuid>,
+            Json(request): Json<ConfirmExternalProcessStoppedRequest>,
+        ) -> Result<String, crate::error::ApiError> {
+            authorize_external_start_recovery(workspace, process_workspace, &request, None)
+        }
+
+        let process_workspace = Uuid::new_v4();
+        let app = Router::new()
+            .route("/workspaces/{workspace}", post(endpoint))
+            .with_state(process_workspace);
+        let call = |workspace: Uuid, body: &'static str| {
+            app.clone().oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/workspaces/{workspace}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+        };
+
+        assert_eq!(
+            call(process_workspace, "{}").await.unwrap().status(),
+            StatusCode::UNPROCESSABLE_ENTITY
+        );
+        assert_eq!(
+            call(
+                process_workspace,
+                r#"{"recoveryToken":"","recoveryGeneration":1}"#,
+            )
+            .await
+            .unwrap()
+            .status(),
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            call(
+                Uuid::new_v4(),
+                r#"{"recoveryToken":"opaque","recoveryGeneration":1}"#,
+            )
+            .await
+            .unwrap()
+            .status(),
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            call(
+                process_workspace,
+                r#"{"recoveryToken":"opaque","recoveryGeneration":1}"#,
+            )
+            .await
+            .unwrap()
+            .status(),
+            StatusCode::OK
+        );
     }
 
     #[tokio::test]
