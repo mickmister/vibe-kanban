@@ -206,6 +206,7 @@ pub trait ContainerService {
     ) -> Result<(), ContainerError> {
         let _guard = queue.pump_lock().lock_owned().await;
         let max_concurrent = self.config().read().await.agent_queue_concurrency.max(1);
+        let turn_capacity = self.config().read().await.agent_turn_capacity;
 
         loop {
             let items = queue.lease_next_batch(max_concurrent).await?;
@@ -215,19 +216,35 @@ pub trait ContainerService {
 
             let mut started_any = false;
             for item in items {
-                if ExecutionProcess::has_running_non_dev_server_processes_for_workspace(
-                    &self.db().pool,
-                    item.workspace_id,
-                )
-                .await?
-                {
-                    queue.requeue(item.id).await?;
+                let admission = queue.acquire_turn(&item, turn_capacity).await?;
+                let db::models::agent_turn_admission::AcquireAgentTurnAdmission::Acquired(token) =
+                    admission
+                else {
+                    // Capacity and workspace serialization are durable admission
+                    // concerns. Keep the item pending with product-safe status.
+                    let reason = match admission {
+                        db::models::agent_turn_admission::AcquireAgentTurnAdmission::CapacityUnavailable => "Waiting for team capacity.",
+                        db::models::agent_turn_admission::AcquireAgentTurnAdmission::WorkspaceBusy => "Waiting for the workspace to become available.",
+                        db::models::agent_turn_admission::AcquireAgentTurnAdmission::IdentityConflict => "This work request conflicts with an existing admission.",
+                        db::models::agent_turn_admission::AcquireAgentTurnAdmission::Acquired(_) => unreachable!(),
+                    };
+                    queue.requeue_waiting(item.id, reason).await?;
                     continue;
-                }
+                };
 
-                match self.start_queued_message(queue, &item).await {
-                    Ok(Some(_)) => started_any = true,
-                    Ok(None) => {}
+                match self
+                    .start_queued_message(queue, &item, Some((token.token_id, token.fence)))
+                    .await
+                {
+                    Ok(Some(_)) => {
+                        if !queue.mark_turn_started(token.token_id, token.fence).await? {
+                            tracing::warn!(queue_item_id=%item.id, "agent turn admission became stale after process start");
+                        }
+                        started_any = true
+                    }
+                    Ok(None) => {
+                        queue.release_turn(token.token_id, token.fence).await?;
+                    }
                     Err(error) => {
                         let message = error.to_string();
                         tracing::error!(
@@ -236,6 +253,7 @@ pub trait ContainerService {
                             "failed to start queued follow-up"
                         );
                         queue.mark_failed(item.id, &message).await?;
+                        queue.release_turn(token.token_id, token.fence).await?;
                     }
                 }
             }
@@ -250,6 +268,7 @@ pub trait ContainerService {
         &self,
         queue: &QueuedMessageService,
         item: &AgentMessageQueueItem,
+        admission: Option<(Uuid, i64)>,
     ) -> Result<Option<ExecutionProcess>, ContainerError> {
         let session = Session::find_by_id(&self.db().pool, item.session_id)
             .await?
@@ -296,6 +315,13 @@ pub trait ContainerService {
             item.data.provenance.clone(),
         );
         let process_id = Uuid::new_v4();
+        if let Some((token_id, fence)) = admission
+            && !queue
+                .prepare_turn_process(token_id, fence, process_id)
+                .await?
+        {
+            return Ok(None);
+        }
         if !queue.mark_starting(item.id, process_id).await? {
             let current = AgentMessageQueueItem::find_by_id(&self.db().pool, item.id).await?;
             if current

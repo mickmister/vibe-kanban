@@ -7,6 +7,7 @@ use db::{
             AgentMessageQueueItem, AgentMessageSource, CreateAgentMessageQueueItem,
             QueuedFollowUpData,
         },
+        agent_turn_admission::{AcquireAgentTurnAdmission, AgentTurnAdmission},
         session::Session,
     },
 };
@@ -153,15 +154,42 @@ impl QueuedMessageService {
         max_concurrent: usize,
     ) -> Result<Vec<AgentMessageQueueItem>, QueueError> {
         self.recover_stale().await?;
-        let running = AgentMessageQueueItem::count_running_coding_agents(&self.db.pool).await?;
-        let available = (max_concurrent as i64).saturating_sub(running);
         Ok(AgentMessageQueueItem::lease_next_batch(
             &self.db.pool,
             self.lease_owner(),
-            available,
+            max_concurrent as i64,
             self.lease_duration(),
         )
         .await?)
+    }
+    pub async fn acquire_turn(
+        &self,
+        item: &AgentMessageQueueItem,
+        capacity: usize,
+    ) -> Result<AcquireAgentTurnAdmission, QueueError> {
+        Ok(AgentTurnAdmission::acquire(
+            &self.db.pool,
+            &format!("queue:{}", item.id),
+            item.id,
+            item.workspace_id,
+            capacity,
+            self.lease_duration(),
+        )
+        .await?)
+    }
+    pub async fn mark_turn_started(&self, token_id: Uuid, fence: i64) -> Result<bool, QueueError> {
+        Ok(AgentTurnAdmission::mark_started(&self.db.pool, token_id, fence).await?)
+    }
+    pub async fn prepare_turn_process(
+        &self,
+        token_id: Uuid,
+        fence: i64,
+        process_id: Uuid,
+    ) -> Result<bool, QueueError> {
+        Ok(AgentTurnAdmission::prepare_process(&self.db.pool, token_id, fence, process_id).await?)
+    }
+    pub async fn release_turn(&self, token_id: Uuid, fence: i64) -> Result<bool, QueueError> {
+        Ok(AgentTurnAdmission::release(&self.db.pool, token_id, fence).await?)
     }
     pub async fn mark_starting(
         &self,
@@ -172,6 +200,9 @@ impl QueuedMessageService {
             AgentMessageQueueItem::mark_starting(&self.db.pool, item_id, execution_process_id)
                 .await?,
         )
+    }
+    pub async fn requeue_waiting(&self, item_id: Uuid, reason: &str) -> Result<(), QueueError> {
+        Ok(AgentMessageQueueItem::requeue_waiting(&self.db.pool, item_id, reason).await?)
     }
     pub async fn mark_running(
         &self,

@@ -31,6 +31,10 @@ fn default_agent_queue_concurrency() -> usize {
     8
 }
 
+fn default_agent_turn_capacity() -> usize {
+    8
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize, TS, PartialEq, Eq)]
 pub enum SendMessageShortcut {
     #[default]
@@ -76,6 +80,9 @@ pub struct Config {
     pub host_nickname: Option<String>,
     #[serde(default = "default_agent_queue_concurrency")]
     pub agent_queue_concurrency: usize,
+    /// Hard, database-enforced ceiling for active and reserved coding-agent turns.
+    #[serde(default = "default_agent_turn_capacity")]
+    pub agent_turn_capacity: usize,
     #[serde(default)]
     pub webhook_subscriptions: Vec<WebhookSubscription>,
 }
@@ -128,6 +135,7 @@ impl Config {
             relay_enabled: true,
             host_nickname: None,
             agent_queue_concurrency: default_agent_queue_concurrency(),
+            agent_turn_capacity: default_agent_turn_capacity(),
             webhook_subscriptions: Vec::new(),
         }
     }
@@ -186,6 +194,7 @@ impl Default for Config {
             relay_enabled: true,
             host_nickname: None,
             agent_queue_concurrency: default_agent_queue_concurrency(),
+            agent_turn_capacity: default_agent_turn_capacity(),
             webhook_subscriptions: Vec::new(),
         }
     }

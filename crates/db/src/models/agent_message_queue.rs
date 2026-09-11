@@ -289,7 +289,7 @@ impl AgentMessageQueueItem {
             let result = sqlx::query(
                 r#"UPDATE agent_message_queue
                    SET status = 'leased', lease_owner = ?2, lease_expires_at = ?3,
-                       attempt_count = attempt_count + 1, updated_at = ?4
+                       attempt_count = attempt_count + 1, last_error = NULL, updated_at = ?4
                    WHERE id = ?1 AND status = 'queued'"#,
             )
             .bind(id)
@@ -360,6 +360,21 @@ impl AgentMessageQueueItem {
         Self::set_status_from(pool, id, AgentMessageQueueStatus::Queued, None, &["leased"]).await
     }
 
+    pub async fn requeue_waiting(
+        pool: &SqlitePool,
+        id: Uuid,
+        reason: &str,
+    ) -> Result<(), sqlx::Error> {
+        Self::set_status_from(
+            pool,
+            id,
+            AgentMessageQueueStatus::Queued,
+            Some(reason),
+            &["leased"],
+        )
+        .await
+    }
+
     pub async fn mark_terminal_for_execution_process(
         pool: &SqlitePool,
         execution_process_id: Uuid,
@@ -387,6 +402,26 @@ impl AgentMessageQueueItem {
 
     pub async fn recover_stale(pool: &SqlitePool, _lease_owner: &str) -> Result<(), sqlx::Error> {
         let now = Utc::now();
+        // A process may have been durably created after admission but before
+        // the queue row was marked running. Recover that identity first so a
+        // restart observes the process instead of launching a duplicate.
+        sqlx::query(
+            r#"UPDATE agent_message_queue AS q
+               SET started_execution_process_id = (
+                 SELECT a.intended_process_id FROM agent_turn_admissions a
+                 JOIN execution_processes ep ON ep.id = a.intended_process_id
+                 WHERE a.queue_item_id = q.id AND ep.status = 'running'
+               ), updated_at = ?1
+               WHERE q.status = 'starting' AND q.started_execution_process_id IS NULL
+                 AND EXISTS (
+                   SELECT 1 FROM agent_turn_admissions a
+                   JOIN execution_processes ep ON ep.id = a.intended_process_id
+                   WHERE a.queue_item_id = q.id AND ep.status = 'running'
+                 )"#,
+        )
+        .bind(now)
+        .execute(pool)
+        .await?;
         sqlx::query(
             r#"UPDATE agent_message_queue
                SET status = 'queued', lease_owner = NULL, lease_expires_at = NULL, updated_at = ?1
@@ -566,6 +601,17 @@ mod tests {
         )
         .await
         .unwrap();
+        pool.execute(
+            r#"CREATE TABLE agent_turn_admissions (
+                token_id BLOB PRIMARY KEY, operation_key TEXT NOT NULL UNIQUE,
+                queue_item_id BLOB NOT NULL, intended_process_id BLOB,
+                workspace_id BLOB NOT NULL, fence INTEGER NOT NULL,
+                status TEXT NOT NULL, expires_at TEXT, created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )"#,
+        )
+        .await
+        .unwrap();
         pool
     }
 
@@ -595,6 +641,7 @@ mod tests {
                 priority,
                 data: QueuedFollowUpData {
                     message: message.to_string(),
+                    executor_config: None,
                     session_command: None,
                     provenance: None,
                 },
@@ -922,6 +969,7 @@ mod tests {
                 priority: None,
                 data: QueuedFollowUpData {
                     message: "Review workflow result".to_string(),
+                    executor_config: None,
                     session_command: None,
                     provenance: Some(ExecutorActionProvenance {
                         kind: ExecutorActionProvenanceKind::Workflow,
@@ -995,8 +1043,16 @@ mod tests {
         .execute(&pool)
         .await
         .unwrap();
-
-        AgentMessageQueueItem::mark_running(&pool, item.id, process_id)
+        sqlx::query("INSERT INTO agent_turn_admissions(token_id,operation_key,queue_item_id,intended_process_id,workspace_id,fence,status,expires_at,created_at,updated_at) VALUES(?1,'crash-window',?2,?3,?4,1,'reserved',?5,?5,?5)")
+            .bind(Uuid::new_v4()).bind(item.id).bind(process_id).bind(workspace_id)
+            .bind(Utc::now() - Duration::seconds(1)).execute(&pool).await.unwrap();
+        sqlx::query("UPDATE agent_message_queue SET lease_expires_at=?2 WHERE id=?1")
+            .bind(item.id)
+            .bind(Utc::now() - Duration::seconds(1))
+            .execute(&pool)
+            .await
+            .unwrap();
+        AgentMessageQueueItem::recover_stale(&pool, "new-server")
             .await
             .unwrap();
         let running = AgentMessageQueueItem::find_by_id(&pool, item.id)
