@@ -123,6 +123,33 @@ mod tests {
                 .as_deref(),
             Some("pid-1")
         );
+
+        ExecutionExternalStart::mark_blocked(&pool, process, "Needs confirmation")
+            .await
+            .unwrap();
+        let workspace: Uuid = sqlx::query_scalar("SELECT s.workspace_id FROM execution_processes ep JOIN sessions s ON s.id=ep.session_id WHERE ep.id=?1")
+            .bind(process).fetch_one(&pool).await.unwrap();
+        assert_eq!(
+            ExecutionExternalStart::confirm_stopped(&pool, process, Uuid::new_v4(), "operator")
+                .await
+                .unwrap(),
+            ExternalStartRecoveryResult::WrongWorkspace
+        );
+        assert_eq!(
+            ExecutionExternalStart::confirm_stopped(&pool, process, workspace, "operator")
+                .await
+                .unwrap(),
+            ExternalStartRecoveryResult::Reconciled
+        );
+        assert_eq!(
+            ExecutionExternalStart::confirm_stopped(&pool, process, workspace, "operator")
+                .await
+                .unwrap(),
+            ExternalStartRecoveryResult::AlreadyReconciled
+        );
+        let audit_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM execution_external_start_recoveries WHERE execution_process_id=?1")
+            .bind(process).fetch_one(&pool).await.unwrap();
+        assert_eq!(audit_count, 1);
     }
 }
 
@@ -137,6 +164,15 @@ pub struct ExecutionExternalStartRecord {
     pub spawn_requested_at: Option<chrono::DateTime<Utc>>,
     pub external_process_id: Option<String>,
     pub external_process_started_at: Option<String>,
+    pub blocked_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExternalStartRecoveryResult {
+    Reconciled,
+    AlreadyReconciled,
+    NotBlocked,
+    WrongWorkspace,
 }
 impl ExecutionExternalStart {
     pub async fn authorize(pool: &SqlitePool, process_id: Uuid) -> Result<(), sqlx::Error> {
@@ -200,8 +236,56 @@ impl ExecutionExternalStart {
         pool: &SqlitePool,
         process_id: Uuid,
     ) -> Result<Option<ExecutionExternalStartRecord>, sqlx::Error> {
-        sqlx::query_as("SELECT execution_process_id,start_key,state,claim_fence,spawn_requested_at,external_process_id,external_process_started_at FROM execution_external_starts WHERE execution_process_id=?1")
+        sqlx::query_as("SELECT execution_process_id,start_key,state,claim_fence,spawn_requested_at,external_process_id,external_process_started_at,blocked_reason FROM execution_external_starts WHERE execution_process_id=?1")
             .bind(process_id).fetch_optional(pool).await
+    }
+    pub async fn mark_blocked(
+        pool: &SqlitePool,
+        process_id: Uuid,
+        reason: &str,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query("UPDATE execution_external_starts SET state='blocked',blocked_reason=?2,claim_expires_at=NULL,updated_at=?3 WHERE execution_process_id=?1 AND state IN ('authorized','claiming','spawned','blocked')")
+            .bind(process_id).bind(reason).bind(Utc::now()).execute(pool).await?;
+        Ok(())
+    }
+
+    pub async fn confirm_stopped(
+        pool: &SqlitePool,
+        process_id: Uuid,
+        workspace_id: Uuid,
+        actor: &str,
+    ) -> Result<ExternalStartRecoveryResult, sqlx::Error> {
+        let actor = actor.trim();
+        if actor.is_empty() {
+            return Err(sqlx::Error::Protocol("Recovery actor is required".into()));
+        }
+        let mut tx = pool.begin().await?;
+        let actual_workspace: Option<Uuid> = sqlx::query_scalar("SELECT s.workspace_id FROM execution_processes ep JOIN sessions s ON s.id=ep.session_id WHERE ep.id=?1")
+            .bind(process_id).fetch_optional(&mut *tx).await?;
+        if actual_workspace != Some(workspace_id) {
+            tx.rollback().await?;
+            return Ok(ExternalStartRecoveryResult::WrongWorkspace);
+        }
+        let state: Option<String> = sqlx::query_scalar(
+            "SELECT state FROM execution_external_starts WHERE execution_process_id=?1",
+        )
+        .bind(process_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        if state.as_deref() == Some("failed") {
+            tx.rollback().await?;
+            return Ok(ExternalStartRecoveryResult::AlreadyReconciled);
+        }
+        if state.as_deref() != Some("blocked") {
+            tx.rollback().await?;
+            return Ok(ExternalStartRecoveryResult::NotBlocked);
+        }
+        sqlx::query("INSERT INTO execution_external_start_recoveries(id,execution_process_id,workspace_id,operation,actor,created_at) VALUES(?1,?2,?3,'confirm_stopped',?4,?5) ON CONFLICT(execution_process_id,operation) DO NOTHING")
+            .bind(Uuid::new_v4()).bind(process_id).bind(workspace_id).bind(actor).bind(Utc::now()).execute(&mut *tx).await?;
+        sqlx::query("UPDATE execution_external_starts SET state='failed',blocked_reason=NULL,updated_at=?2 WHERE execution_process_id=?1 AND state='blocked'")
+            .bind(process_id).bind(Utc::now()).execute(&mut *tx).await?;
+        tx.commit().await?;
+        Ok(ExternalStartRecoveryResult::Reconciled)
     }
     pub async fn is_spawned(pool: &SqlitePool, process_id: Uuid) -> Result<bool, sqlx::Error> {
         Ok(sqlx::query_scalar::<_,i64>("SELECT COUNT(*) FROM execution_external_starts WHERE execution_process_id=?1 AND state='spawned'").bind(process_id).fetch_one(pool).await?>0)

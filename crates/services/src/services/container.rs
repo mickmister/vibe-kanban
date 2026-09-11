@@ -603,6 +603,16 @@ pub trait ContainerService {
                     process.id,
                 )
                 .await?;
+            if external_state.as_deref() == Some("blocked") {
+                if let Some(item_id) = queue_item_id {
+                    AgentMessageQueueItem::requeue_waiting(
+                        &self.db().pool,
+                        item_id,
+                        "Agent process status needs operator confirmation before work can continue.",
+                    ).await?;
+                }
+                continue;
+            }
             if matches!(external_state.as_deref(), Some("authorized" | "claiming")) {
                 if let Some(record) =
                     db::models::execution_external_start::ExecutionExternalStart::record(
@@ -611,7 +621,20 @@ pub trait ContainerService {
                     )
                     .await?
                 {
-                    self.reconcile_external_process(&record).await?;
+                    if let Err(error) = self.reconcile_external_process(&record).await {
+                        if matches!(error, ContainerError::ExternalProcessUnresolved) {
+                            db::models::execution_external_start::ExecutionExternalStart::mark_blocked(
+                                &self.db().pool, process.id,
+                                "External process status requires operator confirmation.",
+                            ).await?;
+                            if let Some(item_id) = queue_item_id {
+                                AgentMessageQueueItem::requeue_waiting(&self.db().pool, item_id,
+                                    "Agent process status needs operator confirmation before work can continue.").await?;
+                            }
+                            continue;
+                        }
+                        return Err(error);
+                    }
                 }
                 // No external spawn was durably confirmed. The deterministic
                 // operation can safely return to waiting after restart.
@@ -638,7 +661,22 @@ pub trait ContainerService {
                 )
                 .await?
             {
-                self.reconcile_external_process(&record).await?;
+                if let Err(error) = self.reconcile_external_process(&record).await {
+                    if matches!(error, ContainerError::ExternalProcessUnresolved) {
+                        db::models::execution_external_start::ExecutionExternalStart::mark_blocked(
+                            &self.db().pool,
+                            process.id,
+                            "External process status requires operator confirmation.",
+                        )
+                        .await?;
+                        if let Some(item_id) = queue_item_id {
+                            AgentMessageQueueItem::requeue_waiting(&self.db().pool, item_id,
+                                "Agent process status needs operator confirmation before work can continue.").await?;
+                        }
+                        continue;
+                    }
+                    return Err(error);
+                }
             }
             // Only release capacity after the exact prior child is absent or
             // has been terminated by its durable OS identity.
@@ -1229,6 +1267,42 @@ pub trait ContainerService {
         &self,
         record: &db::models::execution_external_start::ExecutionExternalStartRecord,
     ) -> Result<ExternalProcessReconciliation, ContainerError>;
+
+    async fn confirm_external_process_stopped(
+        &self,
+        workspace_id: Uuid,
+        process_id: Uuid,
+        actor: &str,
+    ) -> Result<db::models::execution_external_start::ExternalStartRecoveryResult, ContainerError>
+    {
+        use db::models::execution_external_start::ExternalStartRecoveryResult;
+        let result = db::models::execution_external_start::ExecutionExternalStart::confirm_stopped(
+            &self.db().pool,
+            process_id,
+            workspace_id,
+            actor,
+        )
+        .await?;
+        if matches!(
+            result,
+            ExternalStartRecoveryResult::Reconciled
+                | ExternalStartRecoveryResult::AlreadyReconciled
+        ) {
+            ExecutionProcess::update_completion(
+                &self.db().pool,
+                process_id,
+                ExecutionProcessStatus::Failed,
+                None,
+            )
+            .await?;
+            db::models::agent_turn_admission::AgentTurnAdmission::release_for_process(
+                &self.db().pool,
+                process_id,
+            )
+            .await?;
+        }
+        Ok(result)
+    }
 
     async fn stop_execution(
         &self,
@@ -2371,6 +2445,7 @@ mod tests {
         #[default]
         Confirm,
         ErrorBeforeConfirmation,
+        ReconcileUnresolved,
     }
 
     impl TestContainerService {
@@ -2505,7 +2580,14 @@ mod tests {
             &self,
             _record: &db::models::execution_external_start::ExecutionExternalStartRecord,
         ) -> Result<ExternalProcessReconciliation, ContainerError> {
-            Ok(ExternalProcessReconciliation::Terminated)
+            if matches!(
+                *self.external_start_behavior.lock().await,
+                TestExternalStartBehavior::ReconcileUnresolved
+            ) {
+                Err(ContainerError::ExternalProcessUnresolved)
+            } else {
+                Ok(ExternalProcessReconciliation::Terminated)
+            }
         }
 
         async fn stop_execution(
@@ -2938,6 +3020,75 @@ mod tests {
             ExecutionProcess::find_by_id(&pool, process.id)
                 .await?
                 .is_none()
+        );
+        let admission: String = sqlx::query_scalar(
+            "SELECT status FROM agent_turn_admissions WHERE intended_process_id=?1",
+        )
+        .bind(process.id)
+        .fetch_one(&pool)
+        .await?;
+        assert_eq!(admission, "released");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn uncertain_restart_blocks_until_scoped_idempotent_operator_confirmation()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (_temp, pool, service, workspace, session) = start_fixture().await?;
+        let action = ExecutorAction::new(
+            ExecutorActionType::CodingAgentInitialRequest(CodingAgentInitialRequest {
+                prompt: "test".into(),
+                executor_config: ExecutorConfig::new(BaseCodingAgent::Codex),
+                working_dir: None,
+            }),
+            None,
+        );
+        let process = service
+            .start_execution(
+                &workspace,
+                &session,
+                &action,
+                &ExecutionProcessRunReason::CodingAgent,
+            )
+            .await?;
+        sqlx::query("UPDATE execution_external_starts SET state='claiming',external_process_id=NULL,external_process_started_at=NULL WHERE execution_process_id=?1")
+            .bind(process.id).execute(&pool).await?;
+        service
+            .set_external_start_behavior(TestExternalStartBehavior::ReconcileUnresolved)
+            .await;
+        service.cleanup_orphan_executions().await?;
+        assert_eq!(
+            db::models::execution_external_start::ExecutionExternalStart::state(&pool, process.id)
+                .await?
+                .as_deref(),
+            Some("blocked")
+        );
+        let admission: String = sqlx::query_scalar(
+            "SELECT status FROM agent_turn_admissions WHERE intended_process_id=?1",
+        )
+        .bind(process.id)
+        .fetch_one(&pool)
+        .await?;
+        assert_eq!(admission, "started");
+        // A repeated startup does not fail the cleanup loop or release capacity.
+        service.cleanup_orphan_executions().await?;
+        assert_eq!(
+            db::models::execution_external_start::ExecutionExternalStart::state(&pool, process.id)
+                .await?
+                .as_deref(),
+            Some("blocked")
+        );
+        assert_eq!(
+            service
+                .confirm_external_process_stopped(workspace.id, process.id, "operator")
+                .await?,
+            db::models::execution_external_start::ExternalStartRecoveryResult::Reconciled
+        );
+        assert_eq!(
+            service
+                .confirm_external_process_stopped(workspace.id, process.id, "operator")
+                .await?,
+            db::models::execution_external_start::ExternalStartRecoveryResult::AlreadyReconciled
         );
         let admission: String = sqlx::query_scalar(
             "SELECT status FROM agent_turn_admissions WHERE intended_process_id=?1",

@@ -104,21 +104,8 @@ async fn terminate_exact_process(
     if actual != expected_started_at {
         return Err(ContainerError::ExternalProcessUnresolved);
     }
-    let status = tokio::process::Command::new("kill")
-        .args(["-TERM", &format!("-{pid}")])
-        .status()
-        .await
-        .map_err(|_| ContainerError::ExternalProcessUnresolved)?;
-    if !status.success() && process_start_marker(pid).await.is_some() {
-        return Err(ContainerError::ExternalProcessUnresolved);
-    }
-    for _ in 0..50 {
-        if process_start_marker(pid).await.is_none() {
-            return Ok(ExternalProcessReconciliation::Terminated);
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    Err(ContainerError::ExternalProcessUnresolved)
+    command::terminate_process_group_by_id(pid).await?;
+    Ok(ExternalProcessReconciliation::Terminated)
 }
 
 async fn require_spawn_confirmation(
@@ -1792,6 +1779,25 @@ mod external_start_tests {
 
         assert!(error.to_string().contains("injected confirmation failure"));
         assert!(process_start_marker(pid).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn stale_confirmation_kills_term_resistant_descendant_and_entire_group() {
+        let mut command = tokio::process::Command::new("sh");
+        command.args([
+            "-c",
+            "trap '' INT TERM; sh -c 'trap \"\" INT TERM; while :; do sleep 1; done' & wait",
+        ]);
+        let mut child = command.group_spawn_no_window().unwrap();
+        let pgid = child.id().expect("process group leader");
+        assert!(process_start_marker(pgid).await.is_some());
+
+        let error = require_spawn_confirmation(&mut child, Ok(false))
+            .await
+            .expect_err("stale confirmation must reject startup");
+
+        assert!(matches!(error, ContainerError::AdmissionWaiting));
+        assert!(!command::process_group_exists_for_test(pgid).unwrap());
     }
 
     #[tokio::test]

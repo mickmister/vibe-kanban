@@ -19,6 +19,7 @@ use db::models::{
     },
     execution_process::{ExecutionProcess, ExecutionProcessError, ExecutionProcessStatus},
     execution_process_repo_state::ExecutionProcessRepoState,
+    session::Session,
 };
 use deployment::Deployment;
 use futures_util::{
@@ -84,6 +85,15 @@ pub struct AgentResponse {
     pub prompt_truncated: bool,
     pub prompt_max_chars: usize,
     pub prompt_source_kind: AgentPromptSourceKind,
+}
+
+#[derive(Debug, Clone, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct ExternalStartStatus {
+    pub state: String,
+    pub message: String,
+    pub can_confirm_stopped: bool,
 }
 
 impl AgentResponse {
@@ -528,6 +538,66 @@ async fn stop_execution_process(
     Ok(ResponseJson(ApiResponse::success(())))
 }
 
+async fn confirm_external_process_stopped(
+    Extension(execution_process): Extension<ExecutionProcess>,
+    State(deployment): State<DeploymentImpl>,
+) -> Result<ResponseJson<ApiResponse<()>>, ApiError> {
+    let session = Session::find_by_id(&deployment.db().pool, execution_process.session_id)
+        .await?
+        .ok_or_else(|| ApiError::BadRequest("Session not found".into()))?;
+    use db::models::execution_external_start::ExternalStartRecoveryResult;
+    match deployment
+        .container()
+        .confirm_external_process_stopped(
+            session.workspace_id,
+            execution_process.id,
+            "local_operator",
+        )
+        .await?
+    {
+        ExternalStartRecoveryResult::Reconciled
+        | ExternalStartRecoveryResult::AlreadyReconciled => {
+            Ok(ResponseJson(ApiResponse::success(())))
+        }
+        ExternalStartRecoveryResult::NotBlocked => Err(ApiError::BadRequest(
+            "This process is not awaiting operator confirmation.".into(),
+        )),
+        ExternalStartRecoveryResult::WrongWorkspace => Err(ApiError::Forbidden(
+            "Process workspace does not match.".into(),
+        )),
+    }
+}
+
+async fn get_external_start_status(
+    Extension(execution_process): Extension<ExecutionProcess>,
+    State(deployment): State<DeploymentImpl>,
+) -> Result<ResponseJson<ApiResponse<Option<ExternalStartStatus>>>, ApiError> {
+    let record = db::models::execution_external_start::ExecutionExternalStart::record(
+        &deployment.db().pool,
+        execution_process.id,
+    )
+    .await?;
+    let status = record.map(|record| {
+        let blocked = record.state == "blocked";
+        ExternalStartStatus {
+            state: if blocked {
+                "needs_confirmation"
+            } else {
+                "in_progress"
+            }
+            .into(),
+            message: if blocked {
+                "Confirm the previous agent process has stopped before continuing."
+            } else {
+                "Agent startup is being tracked."
+            }
+            .into(),
+            can_confirm_stopped: blocked,
+        }
+    });
+    Ok(ResponseJson(ApiResponse::success(status)))
+}
+
 async fn stream_execution_processes_by_session_ws(
     ws: SignedWsUpgrade,
     State(deployment): State<DeploymentImpl>,
@@ -609,6 +679,8 @@ pub(super) fn router(deployment: &DeploymentImpl) -> Router<DeploymentImpl> {
         .route("/", get(get_execution_process_by_id))
         .route("/final-message", get(get_execution_process_final_message))
         .route("/stop", post(stop_execution_process))
+        .route("/external-start-status", get(get_external_start_status))
+        .route("/confirm-stopped", post(confirm_external_process_stopped))
         .route("/repo-states", get(get_execution_process_repo_states))
         .route("/raw-logs/ws", get(stream_raw_logs_ws))
         .route("/normalized-logs/ws", get(stream_normalized_logs_ws))
