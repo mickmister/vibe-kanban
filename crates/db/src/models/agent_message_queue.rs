@@ -1064,6 +1064,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn admission_wait_requeues_starting_item_without_failure() {
+        let pool = test_pool().await;
+        let workspace = Uuid::new_v4();
+        let session = Uuid::new_v4();
+        insert_session(&pool, session, workspace).await;
+        let item = create_item(
+            &pool,
+            session,
+            workspace,
+            AgentMessageSource::Workflow,
+            None,
+            "wait",
+        )
+        .await;
+        AgentMessageQueueItem::lease_next_batch(&pool, "owner", 1, Duration::seconds(60))
+            .await
+            .unwrap();
+        AgentMessageQueueItem::mark_starting(&pool, item.id, Uuid::new_v4())
+            .await
+            .unwrap();
+        AgentMessageQueueItem::requeue_waiting(&pool, item.id, "Waiting for team capacity.")
+            .await
+            .unwrap();
+        let item = AgentMessageQueueItem::find_by_id(&pool, item.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(item.status, AgentMessageQueueStatus::Queued);
+        assert_eq!(
+            item.last_error.as_deref(),
+            Some("Waiting for team capacity.")
+        );
+    }
+
+    #[tokio::test]
     async fn lease_skips_workspaces_with_running_non_devserver_processes_and_recovers_stale_leases()
     {
         let pool = test_pool().await;

@@ -39,6 +39,7 @@ pub enum ExecutionProcessError {
 #[cfg(test)]
 mod admission_start_tests {
     use chrono::Duration;
+    use executors::actions::script::{ScriptContext, ScriptRequest, ScriptRequestLanguage};
     use sqlx::{Executor, sqlite::SqlitePoolOptions};
 
     use super::*;
@@ -93,14 +94,26 @@ mod admission_start_tests {
         admission: Option<(Uuid, i64, usize)>,
         reason: ExecutionProcessRunReason,
     ) -> bool {
-        ExecutionProcess::insert_start_row(
+        let action = ExecutorAction::new(
+            ExecutorActionType::ScriptRequest(ScriptRequest {
+                script: "true".into(),
+                language: ScriptRequestLanguage::Bash,
+                context: ScriptContext::SetupScript,
+                working_dir: None,
+                env: Default::default(),
+            }),
+            None,
+        );
+        ExecutionProcess::create(
             pool,
+            &CreateExecutionProcess {
+                session_id: session,
+                executor_action: action,
+                run_reason: reason,
+            },
             process,
-            session,
-            &reason,
-            "{}".into(),
+            &[],
             admission,
-            Utc::now(),
         )
         .await
         .is_ok()
@@ -139,6 +152,21 @@ mod admission_start_tests {
                 .await,
                 "{case}"
             );
+            let process_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM execution_processes")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+            assert_eq!(process_count, 0, "{case} left an orphan process");
+            crate::models::agent_turn_admission::AgentTurnAdmission::release(&pool, token, 2)
+                .await
+                .unwrap();
+            let reserved: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM agent_turn_admissions WHERE status='reserved'",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert_eq!(reserved, 0, "{case} left a reservation");
         }
     }
 
@@ -215,6 +243,32 @@ mod admission_start_tests {
                 .await,
                 "{operation}"
             );
+            assert!(
+                crate::models::agent_turn_admission::AgentTurnAdmission::mark_started(
+                    &pool,
+                    token.token_id,
+                    token.fence
+                )
+                .await
+                .unwrap()
+            );
+            let status: String =
+                sqlx::query_scalar("SELECT status FROM agent_turn_admissions WHERE token_id=?1")
+                    .bind(token.token_id)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(status, "started");
+            let starts: i64 =
+                sqlx::query_scalar("SELECT COUNT(*) FROM execution_processes WHERE id=?1")
+                    .bind(process)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(
+                starts, 1,
+                "external-start boundary must be reached exactly once"
+            );
         }
         for reason in [
             ExecutionProcessRunReason::SetupScript,
@@ -231,6 +285,53 @@ mod admission_start_tests {
                 .unwrap();
             assert!(start(&pool, Uuid::new_v4(), session, None, reason).await);
         }
+    }
+
+    #[tokio::test]
+    async fn failed_finalization_rolls_back_process_and_releases_reservation() {
+        let pool = pool().await;
+        let workspace = Uuid::new_v4();
+        let process = Uuid::new_v4();
+        let (session, token) = fixture(
+            &pool,
+            workspace,
+            process,
+            3,
+            Utc::now() + Duration::seconds(60),
+        )
+        .await;
+        assert!(
+            start(
+                &pool,
+                process,
+                session,
+                Some((token, 3, 1)),
+                ExecutionProcessRunReason::CodingAgent
+            )
+            .await
+        );
+        assert!(
+            !crate::models::agent_turn_admission::AgentTurnAdmission::mark_started(&pool, token, 2)
+                .await
+                .unwrap()
+        );
+        ExecutionProcess::rollback_unfinalized_start(&pool, process)
+            .await
+            .unwrap();
+        crate::models::agent_turn_admission::AgentTurnAdmission::release(&pool, token, 3)
+            .await
+            .unwrap();
+        let processes: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM execution_processes")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        let reserved: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM agent_turn_admissions WHERE status='reserved'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!((processes, reserved), (0, 0));
     }
 }
 
@@ -335,7 +436,7 @@ impl ExecutionProcess {
                 WHERE s.id=?2 AND a.token_id=?6 AND a.fence=?7 AND a.intended_process_id=?1
                   AND a.status='reserved' AND a.expires_at>?5
                   AND (SELECT COUNT(*) FROM execution_processes WHERE status='running' AND run_reason='codingagent')
-                      + (SELECT COUNT(*) FROM agent_turn_admissions WHERE status IN ('reserved','starting')) <= ?8"#)
+                      + (SELECT COUNT(*) FROM agent_turn_admissions WHERE status='reserved') <= ?8"#)
                 .bind(process_id).bind(session_id).bind(run_reason).bind(executor_action_json)
                 .bind(now).bind(token_id).bind(fence).bind(capacity as i64).execute(pool).await?
         } else {
@@ -348,6 +449,18 @@ impl ExecutionProcess {
         } else {
             Err(sqlx::Error::RowNotFound)
         }
+    }
+
+    /// Removes a process row before any external executor has been started.
+    pub async fn rollback_unfinalized_start(
+        pool: &SqlitePool,
+        process_id: Uuid,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query("DELETE FROM execution_processes WHERE id=?1 AND status='running'")
+            .bind(process_id)
+            .execute(pool)
+            .await?;
+        Ok(())
     }
 
     /// Find execution process by ID

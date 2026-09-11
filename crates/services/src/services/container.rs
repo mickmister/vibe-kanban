@@ -1661,9 +1661,16 @@ pub trait ContainerService {
             )
             .await?
         {
-            return Err(ContainerError::Other(anyhow!(
-                "Agent turn admission could not be finalized."
-            )));
+            // No external executor has started yet. Remove the durable process
+            // row and release this fence so retry remains safe and observable.
+            ExecutionProcess::rollback_unfinalized_start(&self.db().pool, process_id).await?;
+            let _ = db::models::agent_turn_admission::AgentTurnAdmission::release(
+                &self.db().pool,
+                token.token_id,
+                token.fence,
+            )
+            .await;
+            return Err(ContainerError::AdmissionWaiting);
         }
         let execution_process_id = execution_process.id.to_string();
         tracing::Span::current().record("execution_process_id", execution_process_id.as_str());
