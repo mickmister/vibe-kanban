@@ -94,6 +94,34 @@ pub struct ExternalStartStatus {
     pub state: String,
     pub message: String,
     pub can_confirm_stopped: bool,
+    pub recovery_token: Option<String>,
+    pub recovery_generation: Option<i64>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ConfirmExternalProcessStoppedRequest {
+    recovery_token: String,
+    recovery_generation: i64,
+}
+
+fn authorize_external_start_recovery(
+    authorized_workspace_id: Uuid,
+    process_workspace_id: Uuid,
+    request: &ConfirmExternalProcessStoppedRequest,
+    request_signature: Option<&crate::middleware::RelayRequestSignatureContext>,
+) -> Result<String, ApiError> {
+    if request.recovery_token.trim().is_empty() || request.recovery_generation < 1 {
+        return Err(ApiError::Unauthorized);
+    }
+    if process_workspace_id != authorized_workspace_id {
+        return Err(ApiError::Forbidden(
+            "Process workspace does not match.".into(),
+        ));
+    }
+    Ok(request_signature
+        .map(|signature| format!("relay:{}", signature.signing_session_id))
+        .unwrap_or_else(|| "local_ui".to_string()))
 }
 
 impl AgentResponse {
@@ -538,23 +566,102 @@ async fn stop_execution_process(
     Ok(ResponseJson(ApiResponse::success(())))
 }
 
-async fn confirm_external_process_stopped(
-    Extension(execution_process): Extension<ExecutionProcess>,
+pub(crate) async fn confirm_external_process_stopped_for_workspace(
+    Extension(workspace): Extension<db::models::workspace::Workspace>,
     State(deployment): State<DeploymentImpl>,
+    Path(path): Path<HashMap<String, String>>,
+    request_signature: Option<Extension<crate::middleware::RelayRequestSignatureContext>>,
+    ResponseJson(request): ResponseJson<ConfirmExternalProcessStoppedRequest>,
 ) -> Result<ResponseJson<ApiResponse<()>>, ApiError> {
+    let process_id = path
+        .get("process_id")
+        .and_then(|value| value.parse().ok())
+        .ok_or_else(|| ApiError::BadRequest("Invalid process identifier.".into()))?;
+    let execution_process = ExecutionProcess::find_by_id(&deployment.db().pool, process_id)
+        .await?
+        .ok_or(ApiError::ExecutionProcess(
+            ExecutionProcessError::ExecutionProcessNotFound,
+        ))?;
     let session = Session::find_by_id(&deployment.db().pool, execution_process.session_id)
         .await?
         .ok_or_else(|| ApiError::BadRequest("Session not found".into()))?;
+    if session.workspace_id != workspace.id {
+        return Err(ApiError::Forbidden(
+            "Process workspace does not match.".into(),
+        ));
+    }
+    let actor = authorize_external_start_recovery(
+        workspace.id,
+        session.workspace_id,
+        &request,
+        request_signature
+            .as_ref()
+            .map(|Extension(signature)| signature),
+    )?;
+    confirm_external_process_stopped_with_context(
+        &deployment,
+        execution_process.id,
+        workspace.id,
+        &actor,
+        &request,
+    )
+    .await
+}
+
+pub(crate) async fn get_external_start_status_for_workspace(
+    Extension(workspace): Extension<db::models::workspace::Workspace>,
+    State(deployment): State<DeploymentImpl>,
+    Path(path): Path<HashMap<String, String>>,
+) -> Result<ResponseJson<ApiResponse<Option<ExternalStartStatus>>>, ApiError> {
+    let process_id = path
+        .get("process_id")
+        .and_then(|value| value.parse().ok())
+        .ok_or_else(|| ApiError::BadRequest("Invalid process identifier.".into()))?;
+    let execution_process = ExecutionProcess::find_by_id(&deployment.db().pool, process_id)
+        .await?
+        .ok_or(ApiError::ExecutionProcess(
+            ExecutionProcessError::ExecutionProcessNotFound,
+        ))?;
+    let session = Session::find_by_id(&deployment.db().pool, execution_process.session_id)
+        .await?
+        .ok_or_else(|| ApiError::BadRequest("Session not found".into()))?;
+    if session.workspace_id != workspace.id {
+        return Err(ApiError::Forbidden(
+            "Process workspace does not match.".into(),
+        ));
+    }
+    get_external_start_status_by_process(&deployment, process_id).await
+}
+
+async fn confirm_external_process_stopped_with_context(
+    deployment: &DeploymentImpl,
+    process_id: Uuid,
+    workspace_id: Uuid,
+    actor: &str,
+    request: &ConfirmExternalProcessStoppedRequest,
+) -> Result<ResponseJson<ApiResponse<()>>, ApiError> {
     use db::models::execution_external_start::ExternalStartRecoveryResult;
-    match deployment
+    let recovery = deployment
         .container()
         .confirm_external_process_stopped(
-            session.workspace_id,
-            execution_process.id,
-            "local_operator",
+            workspace_id,
+            process_id,
+            actor,
+            &request.recovery_token,
+            request.recovery_generation,
         )
-        .await?
-    {
+        .await;
+    let recovery = match recovery {
+        Ok(result) => result,
+        Err(services::services::container::ContainerError::ExternalProcessUnresolved) => {
+            return Err(ApiError::BadRequest(
+                "The previous agent process could not be proven stopped. Capacity remains reserved."
+                    .into(),
+            ));
+        }
+        Err(error) => return Err(error.into()),
+    };
+    match recovery {
         ExternalStartRecoveryResult::Reconciled
         | ExternalStartRecoveryResult::AlreadyReconciled => {
             Ok(ResponseJson(ApiResponse::success(())))
@@ -565,20 +672,25 @@ async fn confirm_external_process_stopped(
         ExternalStartRecoveryResult::WrongWorkspace => Err(ApiError::Forbidden(
             "Process workspace does not match.".into(),
         )),
+        ExternalStartRecoveryResult::StaleRecovery => Err(ApiError::Forbidden(
+            "Recovery authorization is stale or invalid.".into(),
+        )),
     }
 }
 
-async fn get_external_start_status(
-    Extension(execution_process): Extension<ExecutionProcess>,
-    State(deployment): State<DeploymentImpl>,
+async fn get_external_start_status_by_process(
+    deployment: &DeploymentImpl,
+    process_id: Uuid,
 ) -> Result<ResponseJson<ApiResponse<Option<ExternalStartStatus>>>, ApiError> {
     let record = db::models::execution_external_start::ExecutionExternalStart::record(
         &deployment.db().pool,
-        execution_process.id,
+        process_id,
     )
     .await?;
     let status = record.map(|record| {
         let blocked = record.state == "blocked";
+        let recoverable =
+            blocked && record.recovery_token.is_some() && record.recovery_generation > 0;
         ExternalStartStatus {
             state: if blocked {
                 "needs_confirmation"
@@ -592,7 +704,9 @@ async fn get_external_start_status(
                 "Agent startup is being tracked."
             }
             .into(),
-            can_confirm_stopped: blocked,
+            can_confirm_stopped: recoverable,
+            recovery_token: recoverable.then(|| record.recovery_token).flatten(),
+            recovery_generation: recoverable.then_some(record.recovery_generation),
         }
     });
     Ok(ResponseJson(ApiResponse::success(status)))
@@ -679,8 +793,6 @@ pub(super) fn router(deployment: &DeploymentImpl) -> Router<DeploymentImpl> {
         .route("/", get(get_execution_process_by_id))
         .route("/final-message", get(get_execution_process_final_message))
         .route("/stop", post(stop_execution_process))
-        .route("/external-start-status", get(get_external_start_status))
-        .route("/confirm-stopped", post(confirm_external_process_stopped))
         .route("/repo-states", get(get_execution_process_repo_states))
         .route("/raw-logs/ws", get(stream_raw_logs_ws))
         .route("/normalized-logs/ws", get(stream_normalized_logs_ws))
@@ -719,9 +831,35 @@ mod tests {
     use uuid::Uuid;
 
     use super::{
-        AgentResponse, NormalizedLogReplayMode, build_live_normalized_logs_stream,
+        AgentResponse, ConfirmExternalProcessStoppedRequest, NormalizedLogReplayMode,
+        authorize_external_start_recovery, build_live_normalized_logs_stream,
         get_normalized_log_messages_single_flight,
     };
+
+    #[test]
+    fn operator_recovery_authorization_requires_capability_and_workspace_scope() {
+        let workspace_id = Uuid::new_v4();
+        let valid = ConfirmExternalProcessStoppedRequest {
+            recovery_token: "opaque-capability".into(),
+            recovery_generation: 3,
+        };
+        assert_eq!(
+            authorize_external_start_recovery(workspace_id, workspace_id, &valid, None).unwrap(),
+            "local_ui"
+        );
+        let missing = ConfirmExternalProcessStoppedRequest {
+            recovery_token: "".into(),
+            ..valid.clone()
+        };
+        assert!(matches!(
+            authorize_external_start_recovery(workspace_id, workspace_id, &missing, None),
+            Err(crate::error::ApiError::Unauthorized)
+        ));
+        assert!(matches!(
+            authorize_external_start_recovery(Uuid::new_v4(), workspace_id, &valid, None),
+            Err(crate::error::ApiError::Forbidden(_))
+        ));
+    }
 
     #[tokio::test]
     async fn live_normalized_stream_finishes_when_history_already_finished() {

@@ -1273,14 +1273,41 @@ pub trait ContainerService {
         workspace_id: Uuid,
         process_id: Uuid,
         actor: &str,
+        recovery_token: &str,
+        recovery_generation: i64,
     ) -> Result<db::models::execution_external_start::ExternalStartRecoveryResult, ContainerError>
     {
         use db::models::execution_external_start::ExternalStartRecoveryResult;
+        let Some(record) = db::models::execution_external_start::ExecutionExternalStart::record(
+            &self.db().pool,
+            process_id,
+        )
+        .await?
+        else {
+            return Ok(ExternalStartRecoveryResult::NotBlocked);
+        };
+        if record.recovery_token.as_deref() != Some(recovery_token)
+            || record.recovery_generation != recovery_generation
+        {
+            return Ok(ExternalStartRecoveryResult::StaleRecovery);
+        }
+        let process_workspace: Option<Uuid> = sqlx::query_scalar("SELECT s.workspace_id FROM execution_processes ep JOIN sessions s ON s.id=ep.session_id WHERE ep.id=?1")
+            .bind(process_id).fetch_optional(&self.db().pool).await?;
+        if process_workspace != Some(workspace_id) {
+            return Ok(ExternalStartRecoveryResult::WrongWorkspace);
+        }
+        if record.state == "blocked" {
+            // Never turn an operator assertion into released capacity. The platform
+            // reconciler must prove the exact prior process group absent or terminate it.
+            self.reconcile_external_process(&record).await?;
+        }
         let result = db::models::execution_external_start::ExecutionExternalStart::confirm_stopped(
             &self.db().pool,
             process_id,
             workspace_id,
             actor,
+            recovery_token,
+            recovery_generation,
         )
         .await?;
         if matches!(
@@ -3078,15 +3105,73 @@ mod tests {
                 .as_deref(),
             Some("blocked")
         );
+        let blocked =
+            db::models::execution_external_start::ExecutionExternalStart::record(&pool, process.id)
+                .await?
+                .unwrap();
+        let token = blocked.recovery_token.clone().unwrap();
+        let generation = blocked.recovery_generation;
         assert_eq!(
             service
-                .confirm_external_process_stopped(workspace.id, process.id, "operator")
+                .confirm_external_process_stopped(
+                    Uuid::new_v4(),
+                    process.id,
+                    "operator",
+                    &token,
+                    generation,
+                )
+                .await?,
+            db::models::execution_external_start::ExternalStartRecoveryResult::WrongWorkspace
+        );
+        assert_eq!(
+            service
+                .confirm_external_process_stopped(
+                    workspace.id,
+                    process.id,
+                    "operator",
+                    "stale-capability",
+                    generation,
+                )
+                .await?,
+            db::models::execution_external_start::ExternalStartRecoveryResult::StaleRecovery
+        );
+        // An unresolved exact process retains both the blocked state and capacity.
+        assert!(
+            service
+                .confirm_external_process_stopped(
+                    workspace.id,
+                    process.id,
+                    "operator",
+                    &token,
+                    generation,
+                )
+                .await
+                .is_err()
+        );
+        service
+            .set_external_start_behavior(TestExternalStartBehavior::Confirm)
+            .await;
+        assert_eq!(
+            service
+                .confirm_external_process_stopped(
+                    workspace.id,
+                    process.id,
+                    "operator",
+                    &token,
+                    generation,
+                )
                 .await?,
             db::models::execution_external_start::ExternalStartRecoveryResult::Reconciled
         );
         assert_eq!(
             service
-                .confirm_external_process_stopped(workspace.id, process.id, "operator")
+                .confirm_external_process_stopped(
+                    workspace.id,
+                    process.id,
+                    "operator",
+                    &token,
+                    generation,
+                )
                 .await?,
             db::models::execution_external_start::ExternalStartRecoveryResult::AlreadyReconciled
         );
@@ -3097,6 +3182,13 @@ mod tests {
         .fetch_one(&pool)
         .await?;
         assert_eq!(admission, "released");
+        let actor: String = sqlx::query_scalar(
+            "SELECT actor FROM execution_external_start_recoveries WHERE execution_process_id=?1",
+        )
+        .bind(process.id)
+        .fetch_one(&pool)
+        .await?;
+        assert_eq!(actor, "operator");
         Ok(())
     }
 

@@ -164,6 +164,16 @@ pub fn router() -> Router<DeploymentImpl> {
         )
         .route("/cleanup", post(run_cleanup_script))
         .route("/archive", post(run_archive_script))
+        .route(
+            "/execution-processes/{process_id}/external-start-status",
+            get(crate::routes::execution_processes::get_external_start_status_for_workspace),
+        )
+        .route(
+            "/execution-processes/{process_id}/confirm-stopped",
+            post(
+                crate::routes::execution_processes::confirm_external_process_stopped_for_workspace,
+            ),
+        )
 }
 
 #[axum::debug_handler]
