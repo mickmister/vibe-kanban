@@ -8,6 +8,7 @@ use std::{
 
 use anyhow::anyhow;
 use async_trait::async_trait;
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use command_group::AsyncGroupChild;
 use db::{
     DBService,
@@ -34,6 +35,7 @@ use executors::{
 };
 use futures::{FutureExt, TryStreamExt, stream::select};
 use git::GitService;
+use hmac::{Hmac, Mac};
 use serde_json::json;
 use services::services::{
     analytics::AnalyticsContext,
@@ -48,6 +50,7 @@ use services::services::{
     remote_client::RemoteClient,
     remote_sync,
 };
+use sha2::Sha256;
 use tokio::{sync::RwLock, task::JoinHandle};
 use tokio_util::io::ReaderStream;
 use tracing::Instrument;
@@ -1370,6 +1373,15 @@ impl ContainerService for LocalContainerService {
         env.insert("VK_WORKSPACE_ID", workspace.id.to_string());
         env.insert("VK_WORKSPACE_BRANCH", &workspace.branch);
         env.insert("VK_SESSION_ID", execution_process.session_id.to_string());
+        if let Ok(secret) = std::env::var("VK_WORKFLOW_SESSION_CAPABILITY_SECRET") {
+            if let Some(capability) = workflow_session_capability(
+                &secret,
+                workspace.id.to_string(),
+                execution_process.session_id.to_string(),
+            ) {
+                env.insert("VK_WORKFLOW_SESSION_CAPABILITY", capability);
+            }
+        }
         if external_start_fence.is_some() {
             env.insert(
                 "VK_EXECUTION_START_KEY",
@@ -1843,5 +1855,47 @@ mod external_start_tests {
         command::kill_process_group_and_wait(&mut child)
             .await
             .unwrap();
+    }
+}
+
+fn workflow_session_capability(
+    secret: &str,
+    workspace_id: String,
+    session_id: String,
+) -> Option<String> {
+    if secret.len() < 32 {
+        return None;
+    }
+    let exp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_millis() as u64
+        + 3_600_000;
+    let payload = serde_json::json!({"workspaceId": workspace_id, "sessionId": session_id, "exp": exp, "scope": "workflow-plan"});
+    let encoded = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&payload).ok()?);
+    let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes()).ok()?;
+    mac.update(encoded.as_bytes());
+    Some(format!(
+        "{}.{}",
+        encoded,
+        URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes())
+    ))
+}
+
+#[cfg(test)]
+mod workflow_capability_tests {
+    use super::*;
+    #[test]
+    fn capability_is_scoped_and_signed_and_short_secrets_fail_closed() {
+        assert!(workflow_session_capability("short", "ws".into(), "session".into()).is_none());
+        let token =
+            workflow_session_capability(&"s".repeat(32), "ws".into(), "session".into()).unwrap();
+        let (body, signature) = token.split_once('.').unwrap();
+        let decoded: serde_json::Value =
+            serde_json::from_slice(&URL_SAFE_NO_PAD.decode(body).unwrap()).unwrap();
+        assert_eq!(decoded["workspaceId"], "ws");
+        assert_eq!(decoded["sessionId"], "session");
+        assert_eq!(decoded["scope"], "workflow-plan");
+        assert!(!signature.is_empty());
     }
 }
