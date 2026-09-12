@@ -1376,6 +1376,12 @@ impl ContainerService for LocalContainerService {
         if let Ok(secret) = std::env::var("VK_WORKFLOW_SESSION_CAPABILITY_SECRET") {
             if let Some(capability) = workflow_session_capability(
                 &secret,
+                std::env::var("VK_WORKFLOW_SESSION_CAPABILITY_KEY_ID")
+                    .unwrap_or_else(|_| "local-v1".into()),
+                std::env::var("VK_WORKFLOW_SESSION_CAPABILITY_GENERATION")
+                    .ok()
+                    .and_then(|value| value.parse().ok())
+                    .unwrap_or(1),
                 workspace.id.to_string(),
                 execution_process.session_id.to_string(),
             ) {
@@ -1860,18 +1866,50 @@ mod external_start_tests {
 
 fn workflow_session_capability(
     secret: &str,
+    key_id: String,
+    generation: u64,
     workspace_id: String,
     session_id: String,
 ) -> Option<String> {
-    if secret.len() < 32 {
-        return None;
-    }
-    let exp = std::time::SystemTime::now()
+    let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .ok()?
-        .as_millis() as u64
-        + 3_600_000;
-    let payload = serde_json::json!({"workspaceId": workspace_id, "sessionId": session_id, "exp": exp, "scope": "workflow-plan"});
+        .as_millis() as u64;
+    workflow_session_capability_at(
+        secret,
+        key_id,
+        generation,
+        workspace_id,
+        session_id,
+        Uuid::new_v4().simple().to_string(),
+        now,
+    )
+}
+
+fn workflow_session_capability_at(
+    secret: &str,
+    key_id: String,
+    generation: u64,
+    workspace_id: String,
+    session_id: String,
+    token_id: String,
+    issued_at: u64,
+) -> Option<String> {
+    if secret.len() < 32 || key_id.is_empty() || token_id.len() < 16 {
+        return None;
+    }
+    let payload = serde_json::json!({
+        "v": 1,
+        "aud": "vd-workflow-plan",
+        "purpose": "plan-launch",
+        "kid": key_id,
+        "generation": generation,
+        "jti": token_id,
+        "iat": issued_at,
+        "exp": issued_at + 300_000,
+        "workspaceId": workspace_id,
+        "sessionId": session_id,
+    });
     let encoded = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&payload).ok()?);
     let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes()).ok()?;
     mac.update(encoded.as_bytes());
@@ -1887,15 +1925,47 @@ mod workflow_capability_tests {
     use super::*;
     #[test]
     fn capability_is_scoped_and_signed_and_short_secrets_fail_closed() {
-        assert!(workflow_session_capability("short", "ws".into(), "session".into()).is_none());
-        let token =
-            workflow_session_capability(&"s".repeat(32), "ws".into(), "session".into()).unwrap();
+        assert!(
+            workflow_session_capability("short", "key".into(), 1, "ws".into(), "session".into())
+                .is_none()
+        );
+        let token = workflow_session_capability(
+            &"s".repeat(32),
+            "key".into(),
+            1,
+            "ws".into(),
+            "session".into(),
+        )
+        .unwrap();
         let (body, signature) = token.split_once('.').unwrap();
         let decoded: serde_json::Value =
             serde_json::from_slice(&URL_SAFE_NO_PAD.decode(body).unwrap()).unwrap();
         assert_eq!(decoded["workspaceId"], "ws");
         assert_eq!(decoded["sessionId"], "session");
-        assert_eq!(decoded["scope"], "workflow-plan");
+        assert_eq!(decoded["aud"], "vd-workflow-plan");
+        assert_eq!(decoded["purpose"], "plan-launch");
+        assert_eq!(decoded["kid"], "key");
+        assert_eq!(decoded["generation"], 1);
+        assert!(decoded["exp"].as_u64().unwrap() - decoded["iat"].as_u64().unwrap() <= 300_000);
         assert!(!signature.is_empty());
+    }
+
+    #[test]
+    fn capability_matches_cross_language_golden() {
+        let token = workflow_session_capability_at(
+            "0123456789abcdef0123456789abcdef",
+            "golden".into(),
+            3,
+            "workspace-golden".into(),
+            "session-golden".into(),
+            "00112233445566778899aabbccddeeff".into(),
+            1_700_000_000_000,
+        )
+        .unwrap();
+        println!("{token}");
+        assert_eq!(
+            token,
+            "eyJ2IjoxLCJhdWQiOiJ2ZC13b3JrZmxvdy1wbGFuIiwicHVycG9zZSI6InBsYW4tbGF1bmNoIiwia2lkIjoiZ29sZGVuIiwiZ2VuZXJhdGlvbiI6MywianRpIjoiMDAxMTIyMzM0NDU1NjY3Nzg4OTlhYWJiY2NkZGVlZmYiLCJpYXQiOjE3MDAwMDAwMDAwMDAsImV4cCI6MTcwMDAwMDMwMDAwMCwid29ya3NwYWNlSWQiOiJ3b3Jrc3BhY2UtZ29sZGVuIiwic2Vzc2lvbklkIjoic2Vzc2lvbi1nb2xkZW4ifQ.-Gqr3kkiJ2cULsCVakLqK5DzEp1SIcdqbh4V-F8zGJc"
+        );
     }
 }
