@@ -1910,6 +1910,10 @@ fn workflow_session_capability_at(
         "workspaceId": workspace_id,
         "sessionId": session_id,
     });
+    sign_workflow_capability_payload(secret, payload)
+}
+
+fn sign_workflow_capability_payload(secret: &str, payload: serde_json::Value) -> Option<String> {
     let encoded = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&payload).ok()?);
     let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes()).ok()?;
     mac.update(encoded.as_bytes());
@@ -1967,5 +1971,29 @@ mod workflow_capability_tests {
             token,
             "eyJ2IjoxLCJhdWQiOiJ2ZC13b3JrZmxvdy1wbGFuIiwicHVycG9zZSI6InBsYW4tbGF1bmNoIiwia2lkIjoiZ29sZGVuIiwiZ2VuZXJhdGlvbiI6MywianRpIjoiMDAxMTIyMzM0NDU1NjY3Nzg4OTlhYWJiY2NkZGVlZmYiLCJpYXQiOjE3MDAwMDAwMDAwMDAsImV4cCI6MTcwMDAwMDMwMDAwMCwid29ya3NwYWNlSWQiOiJ3b3Jrc3BhY2UtZ29sZGVuIiwic2Vzc2lvbklkIjoic2Vzc2lvbi1nb2xkZW4ifQ.-Gqr3kkiJ2cULsCVakLqK5DzEp1SIcdqbh4V-F8zGJc"
         );
+    }
+
+    #[test]
+    fn emits_cross_language_negative_vectors() {
+        let base = serde_json::json!({"v":1,"aud":"vd-workflow-plan","purpose":"plan-launch","kid":"golden","generation":3,"jti":"00112233445566778899aabbccddeeff","iat":1700000000000u64,"exp":1700000300000u64,"workspaceId":"workspace-golden","sessionId":"session-golden"});
+        for (label, mut value) in [
+            ("wrong-audience", base.clone()),
+            ("wrong-purpose", base.clone()),
+            ("wrong-generation", base.clone()),
+            ("expired", base.clone()),
+        ] {
+            match label {
+                "wrong-audience" => value["aud"] = json!("other"),
+                "wrong-purpose" => value["purpose"] = json!("other"),
+                "wrong-generation" => value["generation"] = json!(4),
+                "expired" => value["exp"] = json!(1699999999999u64),
+                _ => unreachable!(),
+            }
+            println!(
+                "NEGATIVE {label} {}",
+                sign_workflow_capability_payload("0123456789abcdef0123456789abcdef", value)
+                    .unwrap()
+            );
+        }
     }
 }
