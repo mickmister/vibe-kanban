@@ -1976,12 +1976,26 @@ mod workflow_capability_tests {
     #[test]
     fn emits_cross_language_negative_vectors() {
         let base = serde_json::json!({"v":1,"aud":"vd-workflow-plan","purpose":"plan-launch","kid":"golden","generation":3,"jti":"00112233445566778899aabbccddeeff","iat":1700000000000u64,"exp":1700000300000u64,"workspaceId":"workspace-golden","sessionId":"session-golden"});
-        for (label, mut value) in [
-            ("wrong-audience", base.clone()),
-            ("wrong-purpose", base.clone()),
-            ("wrong-generation", base.clone()),
-            ("expired", base.clone()),
-        ] {
+        let cases = [
+            (
+                "wrong-audience",
+                "eyJ2IjoxLCJhdWQiOiJvdGhlciIsInB1cnBvc2UiOiJwbGFuLWxhdW5jaCIsImtpZCI6ImdvbGRlbiIsImdlbmVyYXRpb24iOjMsImp0aSI6IjAwMTEyMjMzNDQ1NTY2Nzc4ODk5YWFiYmNjZGRlZWZmIiwiaWF0IjoxNzAwMDAwMDAwMDAwLCJleHAiOjE3MDAwMDAzMDAwMDAsIndvcmtzcGFjZUlkIjoid29ya3NwYWNlLWdvbGRlbiIsInNlc3Npb25JZCI6InNlc3Npb24tZ29sZGVuIn0.JIzZbJtDk9VkQPXB9RaLBdclpoOhlsXTYHouR65Mj58",
+            ),
+            (
+                "wrong-purpose",
+                "eyJ2IjoxLCJhdWQiOiJ2ZC13b3JrZmxvdy1wbGFuIiwicHVycG9zZSI6Im90aGVyIiwia2lkIjoiZ29sZGVuIiwiZ2VuZXJhdGlvbiI6MywianRpIjoiMDAxMTIyMzM0NDU1NjY3Nzg4OTlhYWJiY2NkZGVlZmYiLCJpYXQiOjE3MDAwMDAwMDAwMDAsImV4cCI6MTcwMDAwMDMwMDAwMCwid29ya3NwYWNlSWQiOiJ3b3Jrc3BhY2UtZ29sZGVuIiwic2Vzc2lvbklkIjoic2Vzc2lvbi1nb2xkZW4ifQ.GqxofinGYe2qTkwUJMtFvffBfzfI1vFz8pezyJEvSJk",
+            ),
+            (
+                "wrong-generation",
+                "eyJ2IjoxLCJhdWQiOiJ2ZC13b3JrZmxvdy1wbGFuIiwicHVycG9zZSI6InBsYW4tbGF1bmNoIiwia2lkIjoiZ29sZGVuIiwiZ2VuZXJhdGlvbiI6NCwianRpIjoiMDAxMTIyMzM0NDU1NjY3Nzg4OTlhYWJiY2NkZGVlZmYiLCJpYXQiOjE3MDAwMDAwMDAwMDAsImV4cCI6MTcwMDAwMDMwMDAwMCwid29ya3NwYWNlSWQiOiJ3b3Jrc3BhY2UtZ29sZGVuIiwic2Vzc2lvbklkIjoic2Vzc2lvbi1nb2xkZW4ifQ.CJTQVtfuaS0Mc7h1eu69fonRyMUlOnk_q00CVVwot-Y",
+            ),
+            (
+                "expired",
+                "eyJ2IjoxLCJhdWQiOiJ2ZC13b3JrZmxvdy1wbGFuIiwicHVycG9zZSI6InBsYW4tbGF1bmNoIiwia2lkIjoiZ29sZGVuIiwiZ2VuZXJhdGlvbiI6MywianRpIjoiMDAxMTIyMzM0NDU1NjY3Nzg4OTlhYWJiY2NkZGVlZmYiLCJpYXQiOjE3MDAwMDAwMDAwMDAsImV4cCI6MTY5OTk5OTk5OTk5OSwid29ya3NwYWNlSWQiOiJ3b3Jrc3BhY2UtZ29sZGVuIiwic2Vzc2lvbklkIjoic2Vzc2lvbi1nb2xkZW4ifQ.Ln1mE4Pk0i9PqN17eNEufsAf5GpggzYQTv1JxUylb1o",
+            ),
+        ];
+        for (label, expected) in cases {
+            let mut value = base.clone();
             match label {
                 "wrong-audience" => value["aud"] = json!("other"),
                 "wrong-purpose" => value["purpose"] = json!("other"),
@@ -1989,10 +2003,10 @@ mod workflow_capability_tests {
                 "expired" => value["exp"] = json!(1699999999999u64),
                 _ => unreachable!(),
             }
-            println!(
-                "NEGATIVE {label} {}",
+            assert_eq!(
                 sign_workflow_capability_payload("0123456789abcdef0123456789abcdef", value)
-                    .unwrap()
+                    .unwrap(),
+                expected
             );
         }
     }
