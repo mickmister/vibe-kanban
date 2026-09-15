@@ -208,7 +208,7 @@ async fn get_queue_status(
 async fn get_by_operation_key(
     Extension(session): Extension<Session>,
     State(deployment): State<DeploymentImpl>,
-    Path(operation_key): Path<String>,
+    Path((_session_id, operation_key)): Path<(Uuid, String)>,
 ) -> Result<ResponseJson<ApiResponse<Option<AgentMessageQueueItem>>>, ApiError> {
     if operation_key.len() > 160
         || operation_key.is_empty()
@@ -245,4 +245,104 @@ pub(super) fn router(deployment: &DeploymentImpl) -> Router<DeploymentImpl> {
             deployment.clone(),
             load_session_middleware,
         ))
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::{Router, body::Body};
+    use db::models::{
+        agent_message_queue::{CreateAgentMessageQueueItem, QueuedFollowUpData},
+        session::CreateSession,
+    };
+    use http::{Request, StatusCode};
+    use tokio_util::sync::CancellationToken;
+    use tower::ServiceExt;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn operation_lookup_route_returns_complete_identity_and_terminal_status() {
+        let deployment = DeploymentImpl::new(CancellationToken::new()).await.unwrap();
+        let workspace_id = Uuid::new_v4();
+        sqlx::query("INSERT INTO workspaces(id,branch) VALUES(?1,'queue-route-test')")
+            .bind(workspace_id)
+            .execute(&deployment.db().pool)
+            .await
+            .unwrap();
+        let session = Session::create(
+            &deployment.db().pool,
+            &CreateSession {
+                executor: Some("CODEX".into()),
+                name: Some("Dev".into()),
+            },
+            Uuid::new_v4(),
+            workspace_id,
+        )
+        .await
+        .unwrap();
+        let operation_key = format!("native-turn:{}", Uuid::new_v4());
+        let item = AgentMessageQueueItem::create(
+            &deployment.db().pool,
+            &CreateAgentMessageQueueItem {
+                session_id: session.id,
+                workspace_id,
+                source: AgentMessageSource::Workflow,
+                priority: Some(60),
+                data: QueuedFollowUpData {
+                    message: "Do the task.".into(),
+                    executor_config: Some(ExecutorConfig {
+                        executor: executors::executors::BaseCodingAgent::Codex,
+                        variant: None,
+                        model_id: Some("gpt-5.3-codex".into()),
+                        agent_id: None,
+                        reasoning_id: Some("high".into()),
+                        permission_policy: None,
+                    }),
+                    session_command: None,
+                    provenance: default_provenance_for_source(AgentMessageSource::Workflow),
+                    operation_key: Some(operation_key.clone()),
+                },
+            },
+            Uuid::new_v4(),
+        )
+        .await
+        .unwrap();
+        sqlx::query("UPDATE agent_message_queue SET status='failed' WHERE id=?1")
+            .bind(item.id)
+            .execute(&deployment.db().pool)
+            .await
+            .unwrap();
+        let app = Router::new()
+            .nest("/sessions/{session_id}/queue", router(&deployment))
+            .with_state(deployment);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!(
+                        "/sessions/{}/queue/operations/{operation_key}",
+                        session.id
+                    ))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let data = &value["data"];
+        assert_eq!(data["session_id"], session.id.to_string());
+        assert_eq!(data["workspace_id"], workspace_id.to_string());
+        assert_eq!(data["status"], "failed");
+        assert_eq!(data["source"], "workflow");
+        assert_eq!(data["priority"], 60);
+        assert_eq!(data["data"]["message"], "Do the task.");
+        assert_eq!(data["data"]["operation_key"], operation_key);
+        assert_eq!(data["data"]["executor_config"]["model_id"], "gpt-5.3-codex");
+        assert_eq!(data["data"]["executor_config"]["reasoning_id"], "high");
+        assert_eq!(data["data"]["provenance"]["kind"], "workflow");
+    }
 }
