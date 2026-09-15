@@ -61,6 +61,7 @@ pub struct WorkspaceRunConfigsResponse {
     pub run_configs: Vec<RunConfig>,
     pub preview_slots: Vec<PreviewSlot>,
     pub preview_url_parts: Vec<PreviewSlotUrlParts>,
+    pub preview_process_links: Vec<PreviewProcessLink>,
 }
 
 #[derive(Debug, Serialize, Deserialize, TS)]
@@ -176,6 +177,8 @@ pub async fn list_run_configs(
     let repos = WorkspaceRepo::find_repos_for_workspace(pool, workspace.id).await?;
     let mut run_configs = Vec::new();
     let mut preview_slots = Vec::new();
+    let preview_process_links =
+        PreviewProcessLink::find_latest_by_workspace(pool, workspace.id).await?;
     let workspace_token = WorkspacePreviewToken::ensure(pool, workspace.id)
         .await?
         .token;
@@ -201,6 +204,7 @@ pub async fn list_run_configs(
             run_configs,
             preview_slots,
             preview_url_parts,
+            preview_process_links,
         },
     )))
 }
