@@ -329,9 +329,12 @@ pub async fn preview_slot_url(
         .trim()
         .trim_start_matches('.')
         .to_ascii_lowercase();
-    let host = format!(
-        "{}-{}-{}-{}.{}",
-        workspace_token, repo_slug, slot.slot_slug, query.customer_slug, base_domain
+    let host = build_preview_hostname(
+        &slot.slot_slug,
+        &repo_slug,
+        &workspace_token,
+        &query.customer_slug,
+        &base_domain,
     );
     Ok(ResponseJson(ApiResponse::success(PreviewSlotUrlResponse {
         preview_slot_id: slot.id,
@@ -342,6 +345,16 @@ pub async fn preview_slot_url(
         url: format!("https://{host}/"),
         host,
     })))
+}
+
+fn build_preview_hostname(
+    slot_slug: &str,
+    repo_slug: &str,
+    workspace_token: &str,
+    customer_slug: &str,
+    base_domain: &str,
+) -> String {
+    format!("{slot_slug}-{repo_slug}-{workspace_token}-{customer_slug}.{base_domain}")
 }
 
 #[axum::debug_handler]
@@ -841,6 +854,22 @@ mod tests {
     use http::Request;
     use tower::ServiceExt;
     use uuid::Uuid;
+
+    use super::build_preview_hostname;
+
+    #[test]
+    fn preview_hostname_uses_slot_repo_workspace_customer_order() {
+        assert_eq!(
+            build_preview_hostname(
+                "web",
+                "vibekanban",
+                "0123456789abcdef",
+                "mickmister",
+                "vibedashboard.dev",
+            ),
+            "web-vibekanban-0123456789abcdef-mickmister.vibedashboard.dev"
+        );
+    }
 
     #[tokio::test]
     async fn nested_run_config_route_path_extracts_workspace_and_run_config_ids() {
