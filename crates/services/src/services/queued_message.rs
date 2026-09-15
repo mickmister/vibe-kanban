@@ -126,6 +126,17 @@ impl QueuedMessageService {
         self.notify();
         Ok(v)
     }
+
+    pub async fn find_by_operation_key(
+        &self,
+        session_id: Uuid,
+        operation_key: &str,
+    ) -> Result<Option<AgentMessageQueueItem>, QueueError> {
+        Ok(
+            AgentMessageQueueItem::find_by_operation_key(&self.db.pool, session_id, operation_key)
+                .await?,
+        )
+    }
     pub async fn cancel_queued_item(
         &self,
         session_id: Uuid,

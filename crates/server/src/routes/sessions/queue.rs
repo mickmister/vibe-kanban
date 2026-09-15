@@ -205,6 +205,29 @@ async fn get_queue_status(
     Ok(ResponseJson(ApiResponse::success(status)))
 }
 
+async fn get_by_operation_key(
+    Extension(session): Extension<Session>,
+    State(deployment): State<DeploymentImpl>,
+    Path(operation_key): Path<String>,
+) -> Result<ResponseJson<ApiResponse<Option<AgentMessageQueueItem>>>, ApiError> {
+    if operation_key.len() > 160
+        || operation_key.is_empty()
+        || !operation_key
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "._:-".contains(c))
+    {
+        return Err(ApiError::BadRequest(
+            "invalid queue operation identity".to_string(),
+        ));
+    }
+    let item = deployment
+        .queued_message_service()
+        .find_by_operation_key(session.id, &operation_key)
+        .await
+        .map_err(|e| ApiError::BadRequest(e.to_string()))?;
+    Ok(ResponseJson(ApiResponse::success(item)))
+}
+
 pub(super) fn router(deployment: &DeploymentImpl) -> Router<DeploymentImpl> {
     Router::new()
         .route(
@@ -217,6 +240,7 @@ pub(super) fn router(deployment: &DeploymentImpl) -> Router<DeploymentImpl> {
             "/{queue_item_id}",
             axum::routing::delete(cancel_queued_message_by_id),
         )
+        .route("/operations/{operation_key}", get(get_by_operation_key))
         .layer(from_fn_with_state(
             deployment.clone(),
             load_session_middleware,

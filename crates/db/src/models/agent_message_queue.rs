@@ -163,7 +163,10 @@ impl AgentMessageQueueItem {
                 .await?;
             if existing.session_id != input.session_id
                 || existing.workspace_id != input.workspace_id
-                || existing.data.message != input.data.message
+                || existing.source != input.source
+                || existing.priority != priority
+                || serde_json::to_value(&existing.data).map_err(sqlx::Error::decode)?
+                    != serde_json::to_value(&input.data).map_err(sqlx::Error::decode)?
             {
                 return Err(sqlx::Error::Protocol(
                     "queue operation identity conflict".into(),
@@ -180,6 +183,24 @@ impl AgentMessageQueueItem {
         let sql = Self::select_sql("WHERE id = ?1");
         sqlx::query_as::<_, Self>(&sql)
             .bind(id)
+            .fetch_optional(pool)
+            .await
+    }
+
+    /// Durable reconciliation lookup for callers that may have lost the
+    /// enqueue response. The session scope prevents operation-key possession
+    /// from becoming cross-session authority.
+    pub async fn find_by_operation_key(
+        pool: &SqlitePool,
+        session_id: Uuid,
+        operation_key: &str,
+    ) -> Result<Option<Self>, sqlx::Error> {
+        let sql = Self::select_sql(
+            "WHERE session_id = ?1 AND json_extract(data, '$.operation_key') = ?2",
+        );
+        sqlx::query_as::<_, Self>(&sql)
+            .bind(session_id)
+            .bind(operation_key)
             .fetch_optional(pool)
             .await
     }
@@ -561,7 +582,13 @@ impl AgentMessageQueueItem {
 #[cfg(test)]
 mod tests {
     use chrono::{Duration, Utc};
-    use executors::actions::{ExecutorActionProvenance, ExecutorActionProvenanceKind};
+    use executors::{
+        actions::{
+            ExecutorActionProvenance, ExecutorActionProvenanceKind, session_command::SessionCommand,
+        },
+        executors::BaseCodingAgent,
+        profile::ExecutorConfig,
+    };
     use sqlx::{Executor, SqlitePool, sqlite::SqlitePoolOptions};
     use uuid::Uuid;
 
@@ -703,6 +730,14 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(first.id, replay.id);
+        assert_eq!(
+            AgentMessageQueueItem::find_by_operation_key(&pool, session_id, "native-turn:one")
+                .await
+                .unwrap()
+                .unwrap()
+                .id,
+            first.id
+        );
         let mut conflict = input.clone();
         conflict.data.message = "different".into();
         assert!(
@@ -710,6 +745,39 @@ mod tests {
                 .await
                 .is_err()
         );
+        let mut variants = Vec::new();
+        let mut source = input.clone();
+        source.source = AgentMessageSource::System;
+        variants.push(source);
+        let mut priority = input.clone();
+        priority.priority = Some(999);
+        variants.push(priority);
+        let mut command = input.clone();
+        command.data.session_command = Some(SessionCommand::Clear);
+        variants.push(command);
+        let mut config = input.clone();
+        let mut executor = ExecutorConfig::new(BaseCodingAgent::Codex);
+        executor.model_id = Some("gpt-5-codex".into());
+        executor.reasoning_id = Some("high".into());
+        config.data.executor_config = Some(executor);
+        variants.push(config);
+        let mut provenance = input.clone();
+        provenance.data.provenance = Some(ExecutorActionProvenance {
+            kind: ExecutorActionProvenanceKind::Workflow,
+            label: "Different".into(),
+            workflow_run_id: Some("run-2".into()),
+            workflow_name: None,
+            workflow_design_id: None,
+            workflow_version: None,
+        });
+        variants.push(provenance);
+        for variant in variants {
+            assert!(
+                AgentMessageQueueItem::create(&pool, &variant, Uuid::new_v4())
+                    .await
+                    .is_err()
+            );
+        }
     }
 
     #[tokio::test]
