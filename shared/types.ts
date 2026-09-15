@@ -654,7 +654,7 @@ export enum AgentMessageQueueStatus { queued = "queued", leased = "leased", star
 
 export enum AgentMessageSource { from_user = "from_user", workflow = "workflow", agent = "agent", system = "system" }
 
-export type QueuedFollowUpData = { message: string, executor_config: ExecutorConfig | null, session_command: SessionCommand | null, provenance: ExecutorActionProvenance | null, };
+export type QueuedFollowUpData = { message: string, executor_config: ExecutorConfig | null, session_command: SessionCommand | null, provenance: ExecutorActionProvenance | null, operation_key: string | null, };
 
 export type ConflictOp = "rebase" | "merge" | "cherry_pick" | "revert";
 

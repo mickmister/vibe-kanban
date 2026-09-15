@@ -2339,6 +2339,7 @@ mod tests {
             executor_config: config,
             session_command: None,
             provenance: None,
+            operation_key: None,
         }
     }
 
@@ -2778,6 +2779,7 @@ mod tests {
                 None,
                 None,
                 None,
+                None,
             )
             .await?;
         service.try_start_queued_messages(&queue).await?;
@@ -2817,6 +2819,7 @@ mod tests {
                 "test".into(),
                 None,
                 db::models::agent_message_queue::AgentMessageSource::FromUser,
+                None,
                 None,
                 None,
                 None,

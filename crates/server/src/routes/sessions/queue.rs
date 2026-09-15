@@ -33,6 +33,8 @@ pub struct QueueMessageRequest {
     pub priority: Option<i64>,
     #[serde(default)]
     pub provenance: Option<ExecutorActionProvenance>,
+    #[serde(default)]
+    pub operation_key: Option<String>,
 }
 
 #[derive(Debug, Serialize, TS)]
@@ -54,6 +56,17 @@ async fn queue_message(
     }
     let session_command = super::parse_session_command(&payload.message);
     let source = payload.source.unwrap_or(AgentMessageSource::FromUser);
+    if payload.operation_key.as_deref().is_some_and(|key| {
+        key.len() > 160
+            || key.is_empty()
+            || !key
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || "._:-".contains(c))
+    }) {
+        return Err(ApiError::BadRequest(
+            "invalid queue operation identity".to_string(),
+        ));
+    }
     let queued_item = deployment
         .queued_message_service()
         .queue_message(
@@ -66,6 +79,7 @@ async fn queue_message(
                 .provenance
                 .or_else(|| default_provenance_for_source(source)),
             payload.executor_config,
+            payload.operation_key,
         )
         .await
         .map_err(|e| ApiError::BadRequest(e.to_string()))?;

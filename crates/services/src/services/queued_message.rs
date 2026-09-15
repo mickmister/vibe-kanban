@@ -91,6 +91,7 @@ impl QueuedMessageService {
         priority: Option<i64>,
         provenance: Option<ExecutorActionProvenance>,
         executor_config: Option<executors::profile::ExecutorConfig>,
+        operation_key: Option<String>,
     ) -> Result<AgentMessageQueueItem, QueueError> {
         if session.executor.as_deref().is_none_or(str::is_empty) {
             return Err(QueueError::SessionExecutorMissing);
@@ -107,6 +108,7 @@ impl QueuedMessageService {
                     executor_config,
                     session_command,
                     provenance,
+                    operation_key,
                 },
             },
             Uuid::new_v4(),

@@ -53,6 +53,8 @@ pub struct QueuedFollowUpData {
     pub session_command: Option<SessionCommand>,
     #[serde(default)]
     pub provenance: Option<ExecutorActionProvenance>,
+    #[serde(default)]
+    pub operation_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -133,8 +135,8 @@ impl AgentMessageQueueItem {
             .priority
             .unwrap_or_else(|| input.source.default_priority());
         let data = serde_json::to_string(&input.data).map_err(sqlx::Error::decode)?;
-        sqlx::query(
-            r#"INSERT INTO agent_message_queue (
+        let inserted = sqlx::query(
+            r#"INSERT OR IGNORE INTO agent_message_queue (
                 id, session_id, workspace_id, status, source, priority, data,
                 attempt_count, queued_at, created_at, updated_at
             ) VALUES (?1, ?2, ?3, 'queued', ?4, ?5, ?6, 0, ?7, ?7, ?7)"#,
@@ -148,6 +150,27 @@ impl AgentMessageQueueItem {
         .bind(now)
         .execute(pool)
         .await?;
+        if inserted.rows_affected() == 0 {
+            let operation_key = input
+                .data
+                .operation_key
+                .as_deref()
+                .ok_or(sqlx::Error::RowNotFound)?;
+            let sql = Self::select_sql("WHERE json_extract(data, '$.operation_key') = ?1");
+            let existing = sqlx::query_as::<_, Self>(&sql)
+                .bind(operation_key)
+                .fetch_one(pool)
+                .await?;
+            if existing.session_id != input.session_id
+                || existing.workspace_id != input.workspace_id
+                || existing.data.message != input.data.message
+            {
+                return Err(sqlx::Error::Protocol(
+                    "queue operation identity conflict".into(),
+                ));
+            }
+            return Ok(existing);
+        }
         Self::find_by_id(pool, id)
             .await?
             .ok_or(sqlx::Error::RowNotFound)
@@ -644,12 +667,49 @@ mod tests {
                     executor_config: None,
                     session_command: None,
                     provenance: None,
+                    operation_key: None,
                 },
             },
             Uuid::new_v4(),
         )
         .await
         .unwrap()
+    }
+
+    #[tokio::test]
+    async fn operation_key_reuses_exact_queue_effect_and_rejects_conflict() {
+        let pool = test_pool().await;
+        sqlx::query("CREATE UNIQUE INDEX test_queue_operation_key ON agent_message_queue(json_extract(data, '$.operation_key')) WHERE json_extract(data, '$.operation_key') IS NOT NULL").execute(&pool).await.unwrap();
+        let session_id = Uuid::new_v4();
+        let workspace_id = Uuid::new_v4();
+        insert_session(&pool, session_id, workspace_id).await;
+        let input = CreateAgentMessageQueueItem {
+            session_id,
+            workspace_id,
+            source: AgentMessageSource::Workflow,
+            priority: None,
+            data: QueuedFollowUpData {
+                message: "work".into(),
+                executor_config: None,
+                session_command: None,
+                provenance: None,
+                operation_key: Some("native-turn:one".into()),
+            },
+        };
+        let first = AgentMessageQueueItem::create(&pool, &input, Uuid::new_v4())
+            .await
+            .unwrap();
+        let replay = AgentMessageQueueItem::create(&pool, &input, Uuid::new_v4())
+            .await
+            .unwrap();
+        assert_eq!(first.id, replay.id);
+        let mut conflict = input.clone();
+        conflict.data.message = "different".into();
+        assert!(
+            AgentMessageQueueItem::create(&pool, &conflict, Uuid::new_v4())
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]
@@ -979,6 +1039,7 @@ mod tests {
                         workflow_design_id: Some("design-drt".to_string()),
                         workflow_version: Some(2),
                     }),
+                    operation_key: None,
                 },
             },
             Uuid::new_v4(),
