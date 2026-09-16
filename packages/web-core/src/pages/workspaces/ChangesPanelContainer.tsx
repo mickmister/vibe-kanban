@@ -580,6 +580,7 @@ export const ChangesPanelContainer = memo(function ChangesPanelContainer({
   className,
   workspaceId,
 }: ChangesPanelContainerProps) {
+  const { t } = useTranslation('common');
   const diffs = useDiffs();
   const { registerScrollToFile } = useChangesView();
   const [mountedCount, setMountedCount] = useState(0);
@@ -819,11 +820,29 @@ export const ChangesPanelContainer = memo(function ChangesPanelContainer({
   );
 
   useEffect(() => {
+    // Do not consume a queued navigation request until at least one diff has
+    // mounted. The provider will replay it when this callback registers.
+    if (!hasItems) {
+      registerScrollToFile(null);
+      return;
+    }
+
     registerScrollToFile(handleScrollToFile);
     return () => {
       registerScrollToFile(null);
     };
-  }, [registerScrollToFile, handleScrollToFile]);
+  }, [registerScrollToFile, handleScrollToFile, hasItems]);
+
+  if (diffItems.length === 0) {
+    return (
+      <div
+        className={`flex h-full w-full items-center justify-center bg-secondary px-base text-sm text-low ${className}`}
+        role="status"
+      >
+        {t('empty.noChanges')}
+      </div>
+    );
+  }
 
   return (
     <WorkerPoolContextProvider

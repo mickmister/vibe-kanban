@@ -125,8 +125,6 @@ export function WorkspacesLayout() {
   const hasWorkspaceRoute = !!workspaceId;
   const hasZenContext = isCreateMode || hasWorkspaceRoute;
   const effectiveChatViewMode = hasZenContext ? chatViewMode : 'full';
-  const isDesktopZenMode =
-    !isMobile && effectiveChatViewMode !== 'full' && hasZenContext;
 
   const handleScrollToBottom = useCallback(
     (behavior: 'auto' | 'smooth' = 'smooth') => {
@@ -151,6 +149,13 @@ export function WorkspacesLayout() {
     setLeftSidebarVisible,
     setLeftMainPanelVisible,
   } = useWorkspacePanelState(panelWorkspaceId);
+  // A requested right panel temporarily takes precedence over the saved chat
+  // focus mode. Closing it restores the user's preferred chat layout.
+  const isDesktopZenMode =
+    !isMobile &&
+    effectiveChatViewMode !== 'full' &&
+    hasZenContext &&
+    rightMainPanelMode === null;
 
   const {
     config,
