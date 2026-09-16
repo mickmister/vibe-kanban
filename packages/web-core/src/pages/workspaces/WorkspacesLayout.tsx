@@ -49,6 +49,7 @@ import {
   RIGHT_MAIN_PANEL_MODES,
 } from '@/shared/stores/useUiPreferencesStore';
 import { useAppNavigation } from '@/shared/hooks/useAppNavigation';
+import { getWorkspacePanelId } from './workspacePanelId';
 
 const WORKSPACES_GUIDE_ID = 'workspaces-guide';
 
@@ -120,6 +121,7 @@ export function WorkspacesLayout() {
   const chatViewMode = useUiPreferencesStore((s) => s.chatViewMode);
   const setChatViewMode = useUiPreferencesStore((s) => s.setChatViewMode);
   const mainContainerRef = useRef<WorkspacesMainContainerHandle>(null);
+  const panelWorkspaceId = getWorkspacePanelId(workspaceId, isCreateMode);
   const hasWorkspaceRoute = !!workspaceId;
   const hasZenContext = isCreateMode || hasWorkspaceRoute;
   const effectiveChatViewMode = hasZenContext ? chatViewMode : 'full';
@@ -148,7 +150,7 @@ export function WorkspacesLayout() {
     rightMainPanelMode,
     setLeftSidebarVisible,
     setLeftMainPanelVisible,
-  } = useWorkspacePanelState(isCreateMode ? undefined : workspaceId);
+  } = useWorkspacePanelState(panelWorkspaceId);
 
   const {
     config,
@@ -235,8 +237,8 @@ export function WorkspacesLayout() {
   // expensive worker/highlighter work even when CSS-hidden.
   if (isMobile) {
     const mobileContent = (
-      <ReviewProvider workspaceId={selectedWorkspace?.id}>
-        <ChangesViewProvider workspaceId={selectedWorkspace?.id}>
+      <ReviewProvider workspaceId={panelWorkspaceId}>
+        <ChangesViewProvider workspaceId={panelWorkspaceId}>
           <div className="flex flex-col h-full min-h-0">
             {/* Workspaces tab */}
             <div
@@ -285,10 +287,10 @@ export function WorkspacesLayout() {
                 mobileTab !== 'changes' && 'hidden'
               )}
             >
-              {mobileTab === 'changes' && selectedWorkspace?.id && (
+              {mobileTab === 'changes' && panelWorkspaceId && (
                 <ChangesPanelContainer
                   className=""
-                  workspaceId={selectedWorkspace.id}
+                  workspaceId={panelWorkspaceId}
                 />
               )}
             </div>
@@ -403,8 +405,8 @@ export function WorkspacesLayout() {
   ) : undefined;
 
   const mainContent = (
-    <ReviewProvider workspaceId={selectedWorkspace?.id}>
-      <ChangesViewProvider workspaceId={selectedWorkspace?.id}>
+    <ReviewProvider workspaceId={panelWorkspaceId}>
+      <ChangesViewProvider workspaceId={panelWorkspaceId}>
         <div className="flex h-full">
           <Group
             orientation="horizontal"
@@ -458,10 +460,10 @@ export function WorkspacesLayout() {
                 className="min-w-0 h-full overflow-hidden"
               >
                 {rightMainPanelMode === RIGHT_MAIN_PANEL_MODES.CHANGES &&
-                  selectedWorkspace?.id && (
+                  panelWorkspaceId && (
                     <ChangesPanelContainer
                       className=""
-                      workspaceId={selectedWorkspace.id}
+                      workspaceId={panelWorkspaceId}
                     />
                   )}
                 {rightMainPanelMode === RIGHT_MAIN_PANEL_MODES.LOGS && (
