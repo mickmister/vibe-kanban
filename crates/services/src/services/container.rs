@@ -383,7 +383,7 @@ pub trait ContainerService {
                         | ExecutionProcessStatus::Killed
                 ) {
                     queue
-                        .mark_terminal_for_execution_process(process.id, process.status)
+                        .mark_terminal_for_execution_process(process.id, process.status.clone())
                         .await?;
                 }
                 Ok(Some(process))
