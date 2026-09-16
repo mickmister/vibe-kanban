@@ -376,14 +376,17 @@ pub trait ContainerService {
         {
             Ok(process) => {
                 queue.mark_running(item.id, process.id).await?;
+                let current = ExecutionProcess::find_by_id(&self.db().pool, process.id)
+                    .await?
+                    .unwrap_or_else(|| process.clone());
                 if matches!(
-                    process.status,
+                    current.status,
                     ExecutionProcessStatus::Completed
                         | ExecutionProcessStatus::Failed
                         | ExecutionProcessStatus::Killed
                 ) {
                     queue
-                        .mark_terminal_for_execution_process(process.id, process.status.clone())
+                        .mark_terminal_for_execution_process(process.id, current.status)
                         .await?;
                 }
                 Ok(Some(process))
