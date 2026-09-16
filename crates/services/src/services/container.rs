@@ -376,6 +376,16 @@ pub trait ContainerService {
         {
             Ok(process) => {
                 queue.mark_running(item.id, process.id).await?;
+                if matches!(
+                    process.status,
+                    ExecutionProcessStatus::Completed
+                        | ExecutionProcessStatus::Failed
+                        | ExecutionProcessStatus::Killed
+                ) {
+                    queue
+                        .mark_terminal_for_execution_process(process.id, process.status)
+                        .await?;
+                }
                 Ok(Some(process))
             }
             Err(error) => {
@@ -1746,6 +1756,30 @@ pub trait ContainerService {
         run_reason: &ExecutionProcessRunReason,
         process_id: Uuid,
     ) -> Result<ExecutionProcess, ContainerError> {
+        // A queued turn uses its queue item as the durable process identity. A
+        // concurrent/restarted pump can reach this boundary after the first
+        // owner inserted the process but before it updated the queue row. Reuse
+        // only the exact live process; attempting a second INSERT would turn a
+        // successful external start into a failed queue item.
+        if *run_reason == ExecutionProcessRunReason::CodingAgent
+            && let Some(existing) =
+                ExecutionProcess::find_by_id(&self.db().pool, process_id).await?
+        {
+            if existing.session_id != session.id || existing.run_reason != *run_reason {
+                return Err(ContainerError::Other(anyhow!(
+                    "The queued turn process identity conflicts with an existing process"
+                )));
+            }
+            if matches!(
+                existing.status,
+                ExecutionProcessStatus::Failed | ExecutionProcessStatus::Killed
+            ) {
+                return Err(ContainerError::Other(anyhow!(
+                    "The queued turn process already ended unsuccessfully"
+                )));
+            }
+            return Ok(existing);
+        }
         // Create new execution process record
         // Capture current HEAD per repository as the "before" commit for this execution
         let repositories =
@@ -1827,6 +1861,17 @@ pub trait ContainerService {
         {
             Ok(process) => process,
             Err(error) => {
+                // Concurrent delayed queue pumps can reach this shared boundary
+                // with the same deterministic process identity. The existing
+                // row is the durable proof that another owner already crossed
+                // the insertion fence; wait for reconciliation instead of
+                // converting a uniqueness race into a failed queue turn.
+                if ExecutionProcess::find_by_id(&self.db().pool, process_id)
+                    .await?
+                    .is_some()
+                {
+                    return Err(ContainerError::AdmissionWaiting);
+                }
                 if let Some((token, _)) = &admission {
                     let _ = db::models::agent_turn_admission::AgentTurnAdmission::release(
                         &self.db().pool,
