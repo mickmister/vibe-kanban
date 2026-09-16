@@ -660,7 +660,7 @@ export type ConflictOp = "rebase" | "merge" | "cherry_pick" | "revert";
 
 export type ExecutorAction = { typ: ExecutorActionType, next_action: ExecutorAction | null, provenance: ExecutorActionProvenance | null, log_normalizer?: ExecutorActionLogNormalizer, };
 
-export type ExecutorActionProvenance = { kind: ExecutorActionProvenanceKind, label: string, workflow_run_id: string | null, workflow_name: string | null, workflow_design_id: string | null, workflow_version: bigint | null, };
+export type ExecutorActionProvenance = { kind: ExecutorActionProvenanceKind, label: string, workflow_run_id: string | null, workflow_role_id: string | null, workflow_name: string | null, workflow_design_id: string | null, workflow_version: bigint | null, };
 
 export enum ExecutorActionProvenanceKind { user = "user", workflow = "workflow", agent = "agent", system = "system" }
 

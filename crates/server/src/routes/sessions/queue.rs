@@ -134,6 +134,7 @@ fn default_provenance_for_source(source: AgentMessageSource) -> Option<ExecutorA
             kind: ExecutorActionProvenanceKind::Workflow,
             label: "Workflow automation".to_string(),
             workflow_run_id: None,
+            workflow_role_id: None,
             workflow_name: None,
             workflow_design_id: None,
             workflow_version: None,
@@ -142,6 +143,7 @@ fn default_provenance_for_source(source: AgentMessageSource) -> Option<ExecutorA
             kind: ExecutorActionProvenanceKind::Agent,
             label: "Agent".to_string(),
             workflow_run_id: None,
+            workflow_role_id: None,
             workflow_name: None,
             workflow_design_id: None,
             workflow_version: None,
@@ -150,6 +152,7 @@ fn default_provenance_for_source(source: AgentMessageSource) -> Option<ExecutorA
             kind: ExecutorActionProvenanceKind::System,
             label: "System".to_string(),
             workflow_run_id: None,
+            workflow_role_id: None,
             workflow_name: None,
             workflow_design_id: None,
             workflow_version: None,
@@ -299,7 +302,15 @@ mod tests {
                         permission_policy: None,
                     }),
                     session_command: None,
-                    provenance: default_provenance_for_source(AgentMessageSource::Workflow),
+                    provenance: Some(ExecutorActionProvenance {
+                        kind: ExecutorActionProvenanceKind::Workflow,
+                        label: "Native workflow role turn".to_string(),
+                        workflow_run_id: Some("native-run-1".to_string()),
+                        workflow_role_id: Some("dev".to_string()),
+                        workflow_name: None,
+                        workflow_design_id: None,
+                        workflow_version: None,
+                    }),
                     operation_key: Some(operation_key.clone()),
                 },
             },
@@ -344,5 +355,6 @@ mod tests {
         assert_eq!(data["data"]["executor_config"]["model_id"], "gpt-5.3-codex");
         assert_eq!(data["data"]["executor_config"]["reasoning_id"], "high");
         assert_eq!(data["data"]["provenance"]["kind"], "workflow");
+        assert_eq!(data["data"]["provenance"]["workflow_role_id"], "dev");
     }
 }

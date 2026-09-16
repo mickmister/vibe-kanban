@@ -51,6 +51,8 @@ pub struct ExecutorActionProvenance {
     #[serde(default)]
     pub workflow_run_id: Option<String>,
     #[serde(default)]
+    pub workflow_role_id: Option<String>,
+    #[serde(default)]
     pub workflow_name: Option<String>,
     #[serde(default)]
     pub workflow_design_id: Option<String>,
