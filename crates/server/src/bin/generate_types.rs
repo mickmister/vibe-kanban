@@ -27,7 +27,7 @@ fn generate_types_content() -> String {
         server::routes::workspaces::execution::WorkspaceRunConfigsResponse::decl(),
         server::routes::workspaces::execution::PreviewSlotUrlParts::decl(),
         server::routes::workspaces::execution::PreviewSlotUrlResponse::decl(),
-        server::routes::workspaces::panel_targets::PanelTargetDeliveryDefinition::decl(),
+        server::routes::workspaces::panel_targets::PanelTargetFactoryReference::decl(),
         server::routes::workspaces::panel_targets::SessionPanelTargetDefinition::decl(),
         server::routes::workspaces::panel_targets::TerminalPanelTargetDefinition::decl(),
         server::routes::workspaces::panel_targets::PreviewPanelTargetDefinition::decl(),

@@ -2,10 +2,7 @@ use std::collections::HashMap;
 
 use axum::{Extension, extract::State, response::Json as ResponseJson};
 use db::models::{
-    preview_identity::{RepoPreviewSlug, WorkspacePreviewToken},
-    preview_slot::PreviewSlot,
-    session::Session,
-    workspace::Workspace,
+    preview_slot::PreviewSlot, session::Session, workspace::Workspace,
     workspace_repo::WorkspaceRepo,
 };
 use deployment::Deployment;
@@ -13,13 +10,11 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use utils::response::ApiResponse;
 
-use super::execution::PreviewSlotUrlParts;
 use crate::{DeploymentImpl, error::ApiError};
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-pub struct PanelTargetDeliveryDefinition {
-    pub location: String,
+pub struct PanelTargetFactoryReference {
     pub factory_key: String,
     pub available: bool,
 }
@@ -29,7 +24,7 @@ pub struct PanelTargetDeliveryDefinition {
 pub struct SessionPanelTargetDefinition {
     pub session_id: uuid::Uuid,
     pub workspace_id: uuid::Uuid,
-    pub delivery: PanelTargetDeliveryDefinition,
+    pub factory: PanelTargetFactoryReference,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -37,7 +32,7 @@ pub struct SessionPanelTargetDefinition {
 pub struct TerminalPanelTargetDefinition {
     pub terminal_id: String,
     pub workspace_id: uuid::Uuid,
-    pub delivery: PanelTargetDeliveryDefinition,
+    pub factory: PanelTargetFactoryReference,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -45,8 +40,6 @@ pub struct TerminalPanelTargetDefinition {
 pub struct PreviewPanelTargetDefinition {
     pub preview_slot_id: uuid::Uuid,
     pub workspace_id: uuid::Uuid,
-    pub url_parts: PreviewSlotUrlParts,
-    pub customer_slug: String,
     pub factory_key: String,
     pub available: bool,
 }
@@ -56,7 +49,7 @@ pub struct PreviewPanelTargetDefinition {
 pub struct WorkspacePanelTargetAuthoritySnapshot {
     pub ready: bool,
     pub workspace_id: uuid::Uuid,
-    pub workspace_targets: HashMap<String, PanelTargetDeliveryDefinition>,
+    pub workspace_targets: HashMap<String, PanelTargetFactoryReference>,
     pub sessions: Vec<SessionPanelTargetDefinition>,
     pub terminals_ready: bool,
     pub terminals: Vec<TerminalPanelTargetDefinition>,
@@ -72,25 +65,12 @@ pub async fn get_panel_target_authority(
 ) -> Result<ResponseJson<ApiResponse<WorkspacePanelTargetAuthoritySnapshot>>, ApiError> {
     let pool = &deployment.db().pool;
     let workspace_id = workspace.id;
-    let base = format!("/workspaces/{workspace_id}");
     let workspace_targets = HashMap::from([
-        ("overview".into(), delivery(base.clone(), "craft-overview")),
-        (
-            "code".into(),
-            delivery(format!("{base}/vscode"), "workspace-code"),
-        ),
-        (
-            "changes".into(),
-            delivery(format!("{base}?view=changes"), "workspace-changes"),
-        ),
-        (
-            "beads".into(),
-            delivery(format!("{base}?view=beads"), "workspace-beads"),
-        ),
-        (
-            "forms".into(),
-            delivery(format!("{base}?view=forms"), "workspace-forms"),
-        ),
+        ("overview".into(), factory("craft-overview", true)),
+        ("code".into(), factory("workspace-code", true)),
+        ("changes".into(), factory("workspace-changes", true)),
+        ("beads".into(), factory("workspace-beads", true)),
+        ("forms".into(), factory("workspace-forms", true)),
     ]);
     let sessions = Session::find_by_workspace_id(pool, workspace_id)
         .await?
@@ -98,29 +78,16 @@ pub async fn get_panel_target_authority(
         .map(|session| SessionPanelTargetDefinition {
             session_id: session.id,
             workspace_id,
-            delivery: delivery(format!("{base}?session={}", session.id), "agent-session"),
+            factory: factory("agent-session", true),
         })
         .collect();
 
-    let token = WorkspacePreviewToken::ensure(pool, workspace_id)
-        .await?
-        .token;
     let mut previews = Vec::new();
     for repo in WorkspaceRepo::find_repos_for_workspace(pool, workspace_id).await? {
-        let repo_slug = RepoPreviewSlug::ensure(pool, repo.id, &repo.display_name)
-            .await?
-            .slug;
         for slot in PreviewSlot::find_by_repo_id(pool, repo.id).await? {
             previews.push(PreviewPanelTargetDefinition {
                 preview_slot_id: slot.id,
                 workspace_id,
-                url_parts: PreviewSlotUrlParts {
-                    preview_slot_id: slot.id,
-                    workspace_token: token.clone(),
-                    repo_slug: repo_slug.clone(),
-                    slot_slug: slot.slot_slug,
-                },
-                customer_slug: "preview".into(),
                 factory_key: "preview-slot".into(),
                 available: slot.enabled,
             });
@@ -141,10 +108,57 @@ pub async fn get_panel_target_authority(
     )))
 }
 
-fn delivery(location: String, factory_key: &str) -> PanelTargetDeliveryDefinition {
-    PanelTargetDeliveryDefinition {
-        location,
+fn factory(factory_key: &str, available: bool) -> PanelTargetFactoryReference {
+    PanelTargetFactoryReference {
         factory_key: factory_key.into(),
-        available: true,
+        available,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn serialized_authority_contract_omits_secrets_and_locations() {
+        let workspace_id = uuid::Uuid::new_v4();
+        let preview_slot_id = uuid::Uuid::new_v4();
+        let value = serde_json::to_value(WorkspacePanelTargetAuthoritySnapshot {
+            ready: true,
+            workspace_id,
+            workspace_targets: HashMap::from([("code".into(), factory("workspace-code", true))]),
+            sessions: vec![SessionPanelTargetDefinition {
+                session_id: uuid::Uuid::new_v4(),
+                workspace_id,
+                factory: factory("agent-session", true),
+            }],
+            terminals_ready: true,
+            terminals: Vec::new(),
+            previews: vec![PreviewPanelTargetDefinition {
+                preview_slot_id,
+                workspace_id,
+                factory_key: "preview-slot".into(),
+                available: true,
+            }],
+        })
+        .unwrap();
+        let serialized = serde_json::to_string(&value).unwrap();
+        assert!(!serialized.contains("workspaceToken"));
+        assert!(!serialized.contains("urlParts"));
+        assert!(!serialized.contains("location"));
+        assert_eq!(
+            value["previews"][0]["previewSlotId"],
+            preview_slot_id.to_string()
+        );
+        assert_eq!(value["terminalsReady"], true);
+        assert_eq!(value["terminals"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn factory_references_are_stable_and_availability_is_explicit() {
+        assert_eq!(
+            serde_json::to_value(factory("agent-session", false)).unwrap(),
+            serde_json::json!({"factoryKey":"agent-session","available":false})
+        );
     }
 }
