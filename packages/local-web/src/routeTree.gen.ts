@@ -16,6 +16,7 @@ import { Route as OnboardingSignInRouteImport } from './routes/onboarding_.sign-
 import { Route as AppWorkspacesRouteImport } from './routes/_app.workspaces'
 import { Route as AppNotificationsRouteImport } from './routes/_app.notifications'
 import { Route as AppExportRouteImport } from './routes/_app.export'
+import { Route as AppSessionsSessionIdRouteImport } from './routes/_app.sessions.$sessionId'
 import { Route as WorkspacesWorkspaceIdVscodeRouteImport } from './routes/workspaces.$workspaceId.vscode'
 import { Route as AppWorkspacesElectricTestRouteImport } from './routes/_app.workspaces_.electric-test'
 import { Route as AppWorkspacesCreateRouteImport } from './routes/_app.workspaces_.create'
@@ -65,6 +66,11 @@ const AppNotificationsRoute = AppNotificationsRouteImport.update({
 const AppExportRoute = AppExportRouteImport.update({
   id: '/export',
   path: '/export',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppSessionsSessionIdRoute = AppSessionsSessionIdRouteImport.update({
+  id: '/sessions/$sessionId',
+  path: '/sessions/$sessionId',
   getParentRoute: () => AppRoute,
 } as any)
 const WorkspacesWorkspaceIdVscodeRoute =
@@ -171,6 +177,7 @@ export interface FileRoutesByFullPath {
   '/onboarding': typeof OnboardingRoute
   '/export': typeof AppExportRoute
   '/notifications': typeof AppNotificationsRoute
+  '/sessions/$sessionId': typeof AppSessionsSessionIdRoute
   '/workspaces': typeof AppWorkspacesRoute
   '/onboarding/sign-in': typeof OnboardingSignInRoute
   '/projects/$projectId': typeof AppProjectsProjectIdRoute
@@ -195,6 +202,7 @@ export interface FileRoutesByTo {
   '/onboarding': typeof OnboardingRoute
   '/export': typeof AppExportRoute
   '/notifications': typeof AppNotificationsRoute
+  '/sessions/$sessionId': typeof AppSessionsSessionIdRoute
   '/workspaces': typeof AppWorkspacesRoute
   '/onboarding/sign-in': typeof OnboardingSignInRoute
   '/projects/$projectId': typeof AppProjectsProjectIdRoute
@@ -221,6 +229,7 @@ export interface FileRoutesById {
   '/onboarding': typeof OnboardingRoute
   '/_app/export': typeof AppExportRoute
   '/_app/notifications': typeof AppNotificationsRoute
+  '/_app/sessions/$sessionId': typeof AppSessionsSessionIdRoute
   '/_app/workspaces': typeof AppWorkspacesRoute
   '/onboarding_/sign-in': typeof OnboardingSignInRoute
   '/_app/projects/$projectId': typeof AppProjectsProjectIdRoute
@@ -247,6 +256,7 @@ export interface FileRouteTypes {
     | '/onboarding'
     | '/export'
     | '/notifications'
+    | '/sessions/$sessionId'
     | '/workspaces'
     | '/onboarding/sign-in'
     | '/projects/$projectId'
@@ -271,6 +281,7 @@ export interface FileRouteTypes {
     | '/onboarding'
     | '/export'
     | '/notifications'
+    | '/sessions/$sessionId'
     | '/workspaces'
     | '/onboarding/sign-in'
     | '/projects/$projectId'
@@ -296,6 +307,7 @@ export interface FileRouteTypes {
     | '/onboarding'
     | '/_app/export'
     | '/_app/notifications'
+    | '/_app/sessions/$sessionId'
     | '/_app/workspaces'
     | '/onboarding_/sign-in'
     | '/_app/projects/$projectId'
@@ -374,6 +386,13 @@ declare module '@tanstack/react-router' {
       path: '/export'
       fullPath: '/export'
       preLoaderRoute: typeof AppExportRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/sessions/$sessionId': {
+      id: '/_app/sessions/$sessionId'
+      path: '/sessions/$sessionId'
+      fullPath: '/sessions/$sessionId'
+      preLoaderRoute: typeof AppSessionsSessionIdRouteImport
       parentRoute: typeof AppRoute
     }
     '/workspaces/$workspaceId/vscode': {
@@ -493,6 +512,7 @@ declare module '@tanstack/react-router' {
 
 interface AppRouteChildren {
   AppExportRoute: typeof AppExportRoute
+  AppSessionsSessionIdRoute: typeof AppSessionsSessionIdRoute
   AppNotificationsRoute: typeof AppNotificationsRoute
   AppWorkspacesRoute: typeof AppWorkspacesRoute
   AppProjectsProjectIdRoute: typeof AppProjectsProjectIdRoute
@@ -513,6 +533,7 @@ interface AppRouteChildren {
 
 const AppRouteChildren: AppRouteChildren = {
   AppExportRoute: AppExportRoute,
+  AppSessionsSessionIdRoute: AppSessionsSessionIdRoute,
   AppNotificationsRoute: AppNotificationsRoute,
   AppWorkspacesRoute: AppWorkspacesRoute,
   AppProjectsProjectIdRoute: AppProjectsProjectIdRoute,

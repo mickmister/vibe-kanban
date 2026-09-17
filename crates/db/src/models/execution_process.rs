@@ -36,6 +36,305 @@ pub enum ExecutionProcessError {
     ValidationError(String),
 }
 
+#[cfg(test)]
+mod admission_start_tests {
+    use chrono::Duration;
+    use executors::actions::script::{ScriptContext, ScriptRequest, ScriptRequestLanguage};
+    use sqlx::{Executor, sqlite::SqlitePoolOptions};
+
+    use super::*;
+
+    async fn pool() -> SqlitePool {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        pool.execute("CREATE TABLE sessions(id BLOB PRIMARY KEY,workspace_id BLOB NOT NULL)")
+            .await
+            .unwrap();
+        pool.execute("CREATE TABLE agent_turn_admissions(token_id BLOB PRIMARY KEY,operation_key TEXT UNIQUE,queue_item_id BLOB,intended_process_id BLOB,workspace_id BLOB NOT NULL,fence INTEGER,status TEXT,expires_at TEXT,created_at TEXT,updated_at TEXT)").await.unwrap();
+        pool.execute("CREATE TABLE agent_message_queue(id BLOB PRIMARY KEY,started_execution_process_id BLOB)").await.unwrap();
+        pool.execute("CREATE TABLE execution_processes(id BLOB PRIMARY KEY,session_id BLOB NOT NULL,run_reason TEXT NOT NULL,executor_action TEXT NOT NULL,status TEXT NOT NULL,exit_code INTEGER,started_at TEXT NOT NULL,completed_at TEXT,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,dropped BOOLEAN NOT NULL DEFAULT FALSE)").await.unwrap();
+        pool
+    }
+    async fn fixture(
+        pool: &SqlitePool,
+        workspace: Uuid,
+        process: Uuid,
+        fence: i64,
+        expires: DateTime<Utc>,
+    ) -> (Uuid, Uuid) {
+        let session = Uuid::new_v4();
+        let token = Uuid::new_v4();
+        sqlx::query("INSERT INTO sessions VALUES(?1,?2)")
+            .bind(session)
+            .bind(workspace)
+            .execute(pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO agent_turn_admissions VALUES(?1,'op',NULL,?2,?3,?4,'reserved',?5,?6,?6)",
+        )
+        .bind(token)
+        .bind(process)
+        .bind(workspace)
+        .bind(fence)
+        .bind(expires)
+        .bind(Utc::now())
+        .execute(pool)
+        .await
+        .unwrap();
+        (session, token)
+    }
+    async fn start(
+        pool: &SqlitePool,
+        process: Uuid,
+        session: Uuid,
+        admission: Option<(Uuid, i64, usize)>,
+        reason: ExecutionProcessRunReason,
+    ) -> bool {
+        let action = ExecutorAction::new(
+            ExecutorActionType::ScriptRequest(ScriptRequest {
+                script: "true".into(),
+                language: ScriptRequestLanguage::Bash,
+                context: ScriptContext::SetupScript,
+                working_dir: None,
+                env: Default::default(),
+            }),
+            None,
+        );
+        ExecutionProcess::create(
+            pool,
+            &CreateExecutionProcess {
+                session_id: session,
+                executor_action: action,
+                run_reason: reason,
+            },
+            process,
+            &[],
+            admission,
+        )
+        .await
+        .is_ok()
+    }
+
+    #[tokio::test]
+    async fn final_boundary_rejects_stale_expired_wrong_workspace_and_capacity() {
+        for case in ["stale", "expired", "workspace", "capacity"] {
+            let pool = pool().await;
+            let workspace = Uuid::new_v4();
+            let process = Uuid::new_v4();
+            let expiry = if case == "expired" {
+                Utc::now() - Duration::seconds(1)
+            } else {
+                Utc::now() + Duration::seconds(60)
+            };
+            let (session, token) = fixture(&pool, workspace, process, 2, expiry).await;
+            if case == "workspace" {
+                sqlx::query("UPDATE sessions SET workspace_id=?2 WHERE id=?1")
+                    .bind(session)
+                    .bind(Uuid::new_v4())
+                    .execute(&pool)
+                    .await
+                    .unwrap();
+            }
+            let fence = if case == "stale" { 1 } else { 2 };
+            let capacity = if case == "capacity" { 0 } else { 1 };
+            assert!(
+                !start(
+                    &pool,
+                    process,
+                    session,
+                    Some((token, fence, capacity)),
+                    ExecutionProcessRunReason::CodingAgent
+                )
+                .await,
+                "{case}"
+            );
+            let process_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM execution_processes")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+            assert_eq!(process_count, 0, "{case} left an orphan process");
+            crate::models::agent_turn_admission::AgentTurnAdmission::release(&pool, token, 2)
+                .await
+                .unwrap();
+            let reserved: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM agent_turn_admissions WHERE status='reserved'",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert_eq!(reserved, 0, "{case} left a reservation");
+        }
+    }
+
+    #[tokio::test]
+    async fn final_boundary_admits_queued_or_direct_identity_and_keeps_non_agents_separate() {
+        for operation in ["queued", "direct"] {
+            let pool = pool().await;
+            let workspace = Uuid::new_v4();
+            let process = Uuid::new_v4();
+            let session = Uuid::new_v4();
+            sqlx::query("INSERT INTO sessions VALUES(?1,?2)")
+                .bind(session)
+                .bind(workspace)
+                .execute(&pool)
+                .await
+                .unwrap();
+            let token = if operation == "queued" {
+                let queue = Uuid::new_v4();
+                sqlx::query("INSERT INTO agent_message_queue(id) VALUES(?1)")
+                    .bind(queue)
+                    .execute(&pool)
+                    .await
+                    .unwrap();
+                let token = match crate::models::agent_turn_admission::AgentTurnAdmission::acquire(
+                    &pool,
+                    "queue",
+                    queue,
+                    workspace,
+                    1,
+                    Duration::seconds(60),
+                )
+                .await
+                .unwrap()
+                {
+                    crate::models::agent_turn_admission::AcquireAgentTurnAdmission::Acquired(v) => {
+                        v
+                    }
+                    _ => panic!(),
+                };
+                crate::models::agent_turn_admission::AgentTurnAdmission::prepare_process(
+                    &pool,
+                    token.token_id,
+                    token.fence,
+                    process,
+                )
+                .await
+                .unwrap();
+                token
+            } else {
+                match crate::models::agent_turn_admission::AgentTurnAdmission::acquire_direct(
+                    &pool,
+                    process,
+                    workspace,
+                    1,
+                    Duration::seconds(60),
+                )
+                .await
+                .unwrap()
+                {
+                    crate::models::agent_turn_admission::AcquireAgentTurnAdmission::Acquired(v) => {
+                        v
+                    }
+                    _ => panic!(),
+                }
+            };
+            assert!(
+                start(
+                    &pool,
+                    process,
+                    session,
+                    Some((token.token_id, token.fence, 1)),
+                    ExecutionProcessRunReason::CodingAgent
+                )
+                .await,
+                "{operation}"
+            );
+            assert!(
+                crate::models::agent_turn_admission::AgentTurnAdmission::mark_started(
+                    &pool,
+                    token.token_id,
+                    token.fence
+                )
+                .await
+                .unwrap()
+            );
+            let status: String =
+                sqlx::query_scalar("SELECT status FROM agent_turn_admissions WHERE token_id=?1")
+                    .bind(token.token_id)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(status, "started");
+            let starts: i64 =
+                sqlx::query_scalar("SELECT COUNT(*) FROM execution_processes WHERE id=?1")
+                    .bind(process)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(
+                starts, 1,
+                "external-start boundary must be reached exactly once"
+            );
+        }
+        for reason in [
+            ExecutionProcessRunReason::SetupScript,
+            ExecutionProcessRunReason::DevServer,
+        ] {
+            let pool = pool().await;
+            let workspace = Uuid::new_v4();
+            let session = Uuid::new_v4();
+            sqlx::query("INSERT INTO sessions VALUES(?1,?2)")
+                .bind(session)
+                .bind(workspace)
+                .execute(&pool)
+                .await
+                .unwrap();
+            assert!(start(&pool, Uuid::new_v4(), session, None, reason).await);
+        }
+    }
+
+    #[tokio::test]
+    async fn failed_finalization_rolls_back_process_and_releases_reservation() {
+        let pool = pool().await;
+        let workspace = Uuid::new_v4();
+        let process = Uuid::new_v4();
+        let (session, token) = fixture(
+            &pool,
+            workspace,
+            process,
+            3,
+            Utc::now() + Duration::seconds(60),
+        )
+        .await;
+        assert!(
+            start(
+                &pool,
+                process,
+                session,
+                Some((token, 3, 1)),
+                ExecutionProcessRunReason::CodingAgent
+            )
+            .await
+        );
+        assert!(
+            !crate::models::agent_turn_admission::AgentTurnAdmission::mark_started(&pool, token, 2)
+                .await
+                .unwrap()
+        );
+        ExecutionProcess::rollback_unfinalized_start(&pool, process)
+            .await
+            .unwrap();
+        crate::models::agent_turn_admission::AgentTurnAdmission::release(&pool, token, 3)
+            .await
+            .unwrap();
+        let processes: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM execution_processes")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        let reserved: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM agent_turn_admissions WHERE status='reserved'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!((processes, reserved), (0, 0));
+    }
+}
+
 #[derive(Debug, Clone, Type, Serialize, Deserialize, PartialEq, TS)]
 #[sqlx(type_name = "execution_process_status", rename_all = "lowercase")]
 #[serde(rename_all = "lowercase")]
@@ -105,7 +404,7 @@ pub struct LatestProcessInfo {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum ExecutorActionField {
-    ExecutorAction(ExecutorAction),
+    ExecutorAction(Box<ExecutorAction>),
     Other(Value),
 }
 
@@ -121,6 +420,49 @@ pub struct MissingBeforeContext {
 }
 
 impl ExecutionProcess {
+    async fn insert_start_row(
+        pool: &SqlitePool,
+        process_id: Uuid,
+        session_id: Uuid,
+        run_reason: &ExecutionProcessRunReason,
+        executor_action_json: String,
+        admission: Option<(Uuid, i64, usize)>,
+        now: DateTime<Utc>,
+    ) -> Result<(), sqlx::Error> {
+        let result = if let Some((token_id, fence, capacity)) = admission {
+            sqlx::query(r#"INSERT INTO execution_processes (id,session_id,run_reason,executor_action,status,exit_code,started_at,completed_at,created_at,updated_at)
+                SELECT ?1,?2,?3,?4,'running',NULL,?5,NULL,?5,?5 FROM sessions s
+                JOIN agent_turn_admissions a ON a.workspace_id=s.workspace_id
+                WHERE s.id=?2 AND a.token_id=?6 AND a.fence=?7 AND a.intended_process_id=?1
+                  AND a.status='reserved' AND a.expires_at>?5
+                  AND (SELECT COUNT(*) FROM execution_processes WHERE status='running' AND run_reason='codingagent')
+                      + (SELECT COUNT(*) FROM agent_turn_admissions WHERE status='reserved') <= ?8"#)
+                .bind(process_id).bind(session_id).bind(run_reason).bind(executor_action_json)
+                .bind(now).bind(token_id).bind(fence).bind(capacity as i64).execute(pool).await?
+        } else {
+            sqlx::query("INSERT INTO execution_processes (id,session_id,run_reason,executor_action,status,exit_code,started_at,completed_at,created_at,updated_at) VALUES(?1,?2,?3,?4,'running',NULL,?5,NULL,?5,?5)")
+                .bind(process_id).bind(session_id).bind(run_reason).bind(executor_action_json)
+                .bind(now).execute(pool).await?
+        };
+        if result.rows_affected() == 1 {
+            Ok(())
+        } else {
+            Err(sqlx::Error::RowNotFound)
+        }
+    }
+
+    /// Removes a process row before any external executor has been started.
+    pub async fn rollback_unfinalized_start(
+        pool: &SqlitePool,
+        process_id: Uuid,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query("DELETE FROM execution_processes WHERE id=?1 AND status='running'")
+            .bind(process_id)
+            .execute(pool)
+            .await?;
+        Ok(())
+    }
+
     /// Find execution process by ID
     pub async fn find_by_id(pool: &SqlitePool, id: Uuid) -> Result<Option<Self>, sqlx::Error> {
         sqlx::query_as!(
@@ -385,27 +727,20 @@ impl ExecutionProcess {
         data: &CreateExecutionProcess,
         process_id: Uuid,
         repo_states: &[CreateExecutionProcessRepoState],
+        admission: Option<(Uuid, i64, usize)>,
     ) -> Result<Self, sqlx::Error> {
         let now = Utc::now();
-        let executor_action_json = sqlx::types::Json(&data.executor_action);
-
-        sqlx::query!(
-            r#"INSERT INTO execution_processes (
-                    id, session_id, run_reason, executor_action,
-                    status, exit_code, started_at, completed_at, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
+        let executor_action_json =
+            serde_json::to_string(&data.executor_action).map_err(sqlx::Error::decode)?;
+        Self::insert_start_row(
+            pool,
             process_id,
             data.session_id,
-            data.run_reason,
+            &data.run_reason,
             executor_action_json,
-            ExecutionProcessStatus::Running,
-            None::<i64>,
+            admission,
             now,
-            None::<DateTime<Utc>>,
-            now,
-            now
         )
-        .execute(pool)
         .await?;
 
         ExecutionProcessRepoState::create_many(pool, process_id, repo_states).await?;

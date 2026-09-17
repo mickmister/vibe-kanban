@@ -1,7 +1,12 @@
 import { useCallback } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { queueApi } from '@/shared/lib/api';
-import type { ExecutorConfig, QueueStatus } from 'shared/types';
+import { AgentMessageSource, QueueStatusKind } from 'shared/types';
+import type {
+  AgentMessageQueueItem,
+  ExecutorConfig,
+  QueueStatusSummary,
+} from 'shared/types';
 
 interface UseSessionQueueInteractionOptions {
   /** Session ID for queue operations */
@@ -9,26 +14,89 @@ interface UseSessionQueueInteractionOptions {
 }
 
 interface UseSessionQueueInteractionResult {
-  /** Whether a message is currently queued */
+  /** Whether one or more user-authored follow-up drafts are queued */
   isQueued: boolean;
-  /** The queued message content, if any */
+  /** Number of pending user-authored follow-up drafts */
+  queuedCount: number;
+  /** Pending user-authored follow-up draft queue messages */
+  queuedMessages: AgentMessageQueueItem[];
+  /** Number of queued messages produced by workflow/system/agent automation */
+  automationQueuedCount: number;
+  /** Whether workflow/system/agent automation has queued work for this session */
+  hasAutomationQueuedWork: boolean;
+  /** First user-authored queued message content, if any */
   queuedMessage: string | null;
-  /** The executor config from the queued message, if any */
+  /** The executor config from the first queued message, if any */
   queuedConfig: ExecutorConfig | null;
   /** Whether a queue operation is in progress */
   isQueueLoading: boolean;
   /** Queue a message for later execution */
-  queueMessage: (
-    message: string,
-    executorConfig: ExecutorConfig
-  ) => Promise<void>;
-  /** Cancel the queued message */
+  queueMessage: (message: string) => Promise<void>;
+  /** Cancel queued messages */
   cancelQueue: () => Promise<void>;
   /** Refresh queue status from server */
   refreshQueueStatus: () => Promise<void>;
 }
 
 const QUEUE_STATUS_KEY = 'queue-status';
+
+interface QueueInteractionState {
+  isQueued: boolean;
+  queuedCount: number;
+  queuedMessages: AgentMessageQueueItem[];
+  automationQueuedCount: number;
+  hasAutomationQueuedWork: boolean;
+  queuedMessage: string | null;
+  queuedConfig: ExecutorConfig | null;
+}
+
+function isUserQueuedDraft(item: AgentMessageQueueItem): boolean {
+  return item.source === AgentMessageSource.from_user;
+}
+
+/**
+ * Separates user-authored queued drafts from automation-owned queued work.
+ *
+ * The chat composer may restore user drafts after Cancel Queue, but workflow
+ * and system queue items are not drafts owned by the user. Treating them as
+ * composer drafts leaks workflow prompts into the input and shows a misleading
+ * Cancel Queue affordance for work the user did not queue.
+ */
+export function deriveSessionQueueInteractionState(
+  queueStatus: QueueStatusSummary
+): QueueInteractionState {
+  const allQueuedMessages = queueStatus.messages ?? [];
+  const legacySingleMessage = queueStatus.message;
+  const userQueuedMessages = allQueuedMessages.filter(isUserQueuedDraft);
+  const automationQueuedMessages = allQueuedMessages.filter(
+    (message) => !isUserQueuedDraft(message)
+  );
+
+  if (legacySingleMessage && isUserQueuedDraft(legacySingleMessage)) {
+    const alreadyIncluded = userQueuedMessages.some(
+      (message) => message.id === legacySingleMessage.id
+    );
+    if (!alreadyIncluded) {
+      userQueuedMessages.unshift(legacySingleMessage);
+    }
+  }
+
+  const queuedMessageData = userQueuedMessages[0] ?? null;
+  const queuedMessage = queuedMessageData?.data.message ?? null;
+  const queuedConfig: ExecutorConfig | null = null;
+  const queuedCount = userQueuedMessages.length;
+  const automationQueuedCount = automationQueuedMessages.length;
+
+  return {
+    isQueued: queueStatus.status === QueueStatusKind.queued && queuedCount > 0,
+    queuedCount,
+    queuedMessages: userQueuedMessages,
+    automationQueuedCount,
+    hasAutomationQueuedWork: automationQueuedCount > 0,
+    queuedMessage,
+    queuedConfig,
+  };
+}
 
 /**
  * Hook to manage queue interaction for session messages.
@@ -39,42 +107,38 @@ export function useSessionQueueInteraction({
 }: UseSessionQueueInteractionOptions): UseSessionQueueInteractionResult {
   const queryClient = useQueryClient();
 
-  // Query for queue status
-  const { data: queueStatus = { status: 'empty' as const }, refetch } =
-    useQuery<QueueStatus>({
-      queryKey: [QUEUE_STATUS_KEY, sessionId],
-      queryFn: () => queueApi.getStatus(sessionId!),
-      enabled: !!sessionId,
-    });
+  const {
+    data: queueStatus = {
+      status: QueueStatusKind.empty,
+      count: 0,
+      messages: [],
+      message: null,
+    },
+    refetch,
+  } = useQuery<QueueStatusSummary>({
+    queryKey: [QUEUE_STATUS_KEY, sessionId],
+    queryFn: () => queueApi.getStatus(sessionId!),
+    enabled: !!sessionId,
+  });
 
-  const isQueued = queueStatus.status === 'queued';
-  const queuedMessageData = isQueued
-    ? (queueStatus as Extract<QueueStatus, { status: 'queued' }>).message
-    : null;
-  const queuedMessage = queuedMessageData?.data.message ?? null;
-  const queuedConfig: ExecutorConfig | null =
-    queuedMessageData?.data.executor_config ?? null;
+  const {
+    isQueued,
+    queuedCount,
+    queuedMessages,
+    automationQueuedCount,
+    hasAutomationQueuedWork,
+    queuedMessage,
+    queuedConfig,
+  } = deriveSessionQueueInteractionState(queueStatus);
 
-  // Mutation for queueing a message
   const queueMutation = useMutation({
-    mutationFn: ({
-      message,
-      executorConfig,
-    }: {
-      message: string;
-      executorConfig: ExecutorConfig;
-    }) =>
-      queueApi.queue(sessionId!, {
-        message,
-        executor_config: executorConfig,
-        session_command: null,
-      }),
+    mutationFn: ({ message }: { message: string }) =>
+      queueApi.queue(sessionId!, { message }),
     onSuccess: (status) => {
       queryClient.setQueryData([QUEUE_STATUS_KEY, sessionId], status);
     },
   });
 
-  // Mutation for cancelling the queue
   const cancelMutation = useMutation({
     mutationFn: () => queueApi.cancel(sessionId!),
     onSuccess: (status) => {
@@ -83,12 +147,9 @@ export function useSessionQueueInteraction({
   });
 
   const queueMessage = useCallback(
-    async (message: string, executorConfig: ExecutorConfig) => {
+    async (message: string) => {
       if (!sessionId) return;
-      await queueMutation.mutateAsync({
-        message,
-        executorConfig,
-      });
+      await queueMutation.mutateAsync({ message });
     },
     [sessionId, queueMutation]
   );
@@ -105,6 +166,10 @@ export function useSessionQueueInteraction({
 
   return {
     isQueued,
+    queuedCount,
+    queuedMessages,
+    automationQueuedCount,
+    hasAutomationQueuedWork,
     queuedMessage,
     queuedConfig,
     isQueueLoading: queueMutation.isPending || cancelMutation.isPending,

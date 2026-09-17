@@ -143,6 +143,8 @@ function destinationToRemoteTarget(
         } as const;
       }
       return { to: "/" } as const;
+    case "session":
+      return { to: "/" } as const;
     case "workspace":
       if (effectiveHostId) {
         return {
@@ -227,6 +229,14 @@ export function createRemoteHostAppNavigation(hostId: string): AppNavigation {
     });
   };
 
+  const resolveSessionNavigationArgs = (
+    sessionIdOrTransition?: string | NavigationTransition,
+    transition?: NavigationTransition,
+  ) =>
+    typeof sessionIdOrTransition === "string"
+      ? { sessionId: sessionIdOrTransition, transition }
+      : { sessionId: undefined, transition: sessionIdOrTransition };
+
   const navigation: AppNavigation = {
     resolveFromPath: (path) => resolveRemoteDestinationFromPath(path),
     goToRoot: (transition) => navigateTo({ kind: "root" }, transition),
@@ -238,10 +248,38 @@ export function createRemoteHostAppNavigation(hostId: string): AppNavigation {
       navigateTo({ kind: "workspaces", hostId }, transition),
     goToWorkspacesCreate: (transition) =>
       navigateTo({ kind: "workspaces-create", hostId }, transition),
-    goToWorkspace: (workspaceId, transition) =>
-      navigateTo({ kind: "workspace", hostId, workspaceId }, transition),
-    goToWorkspaceVsCode: (workspaceId, transition) =>
-      navigateTo({ kind: "workspace-vscode", hostId, workspaceId }, transition),
+    goToSession: (sessionId, transition) =>
+      navigateTo({ kind: "session", sessionId }, transition),
+    goToWorkspace: (workspaceId, sessionIdOrTransition, transition) => {
+      const args = resolveSessionNavigationArgs(
+        sessionIdOrTransition,
+        transition,
+      );
+      navigateTo(
+        {
+          kind: "workspace",
+          hostId,
+          workspaceId,
+          sessionId: args.sessionId,
+        },
+        args.transition,
+      );
+    },
+    goToWorkspaceVsCode: (workspaceId, sessionIdOrTransition, transition) => {
+      const args = resolveSessionNavigationArgs(
+        sessionIdOrTransition,
+        transition,
+      );
+      navigateTo(
+        {
+          kind: "workspace-vscode",
+          hostId,
+          workspaceId,
+          sessionId: args.sessionId,
+        },
+        args.transition,
+      );
+    },
     goToExport: (transition) => navigateTo({ kind: "export" }, transition),
     goToProject: (projectId, transition) =>
       navigateTo({ kind: "project", projectId }, transition),
@@ -299,6 +337,14 @@ function createRemoteFallbackAppNavigation(): AppNavigation {
     });
   };
 
+  const resolveSessionNavigationArgs = (
+    sessionIdOrTransition?: string | NavigationTransition,
+    transition?: NavigationTransition,
+  ) =>
+    typeof sessionIdOrTransition === "string"
+      ? { sessionId: sessionIdOrTransition, transition }
+      : { sessionId: undefined, transition: sessionIdOrTransition };
+
   const navigation: AppNavigation = {
     resolveFromPath: (path) => resolveRemoteDestinationFromPath(path),
     goToRoot: (transition) => navigateTo({ kind: "root" }, transition),
@@ -310,10 +356,28 @@ function createRemoteFallbackAppNavigation(): AppNavigation {
       navigateTo({ kind: "workspaces" }, transition),
     goToWorkspacesCreate: (transition) =>
       navigateTo({ kind: "workspaces-create" }, transition),
-    goToWorkspace: (workspaceId, transition) =>
-      navigateTo({ kind: "workspace", workspaceId }, transition),
-    goToWorkspaceVsCode: (workspaceId, transition) =>
-      navigateTo({ kind: "workspace-vscode", workspaceId }, transition),
+    goToSession: (sessionId, transition) =>
+      navigateTo({ kind: "session", sessionId }, transition),
+    goToWorkspace: (workspaceId, sessionIdOrTransition, transition) => {
+      const args = resolveSessionNavigationArgs(
+        sessionIdOrTransition,
+        transition,
+      );
+      navigateTo(
+        { kind: "workspace", workspaceId, sessionId: args.sessionId },
+        args.transition,
+      );
+    },
+    goToWorkspaceVsCode: (workspaceId, sessionIdOrTransition, transition) => {
+      const args = resolveSessionNavigationArgs(
+        sessionIdOrTransition,
+        transition,
+      );
+      navigateTo(
+        { kind: "workspace-vscode", workspaceId, sessionId: args.sessionId },
+        args.transition,
+      );
+    },
     goToExport: (transition) => navigateTo({ kind: "export" }, transition),
     goToProject: (projectId, transition) =>
       navigateTo({ kind: "project", projectId }, transition),

@@ -12,6 +12,7 @@ import {
   type ConversationTurn,
 } from './deriveConversationTurns';
 import { getSessionCommandType } from './sessionCommandDisplay';
+import { getExecutorActionProvenance } from './messageProvenance';
 
 export interface DerivedConversationEntriesResult {
   readonly entries: PatchTypeWithKey[];
@@ -47,7 +48,11 @@ function appendAgentTurnEntries(
       entry_type: { type: 'user_message' },
       content: turn.prompt,
       timestamp: null,
-    };
+      provenance:
+        getExecutorActionProvenance(
+          turn.process.executionProcess.executor_action
+        ) ?? undefined,
+    } as NormalizedEntry;
 
     turnEntries.push(
       patchWithKey(

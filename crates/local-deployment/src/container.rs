@@ -8,30 +8,26 @@ use std::{
 
 use anyhow::anyhow;
 use async_trait::async_trait;
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use command_group::AsyncGroupChild;
 use db::{
     DBService,
     models::{
-        coding_agent_turn::CodingAgentTurn,
+        agent_message_queue::AgentMessageQueueItem,
+        coding_agent_turn::{CODING_AGENT_RESPONSE_SUMMARY_MAX_CHARS, CodingAgentTurn},
         execution_process::{
             ExecutionContext, ExecutionProcess, ExecutionProcessRunReason, ExecutionProcessStatus,
         },
         execution_process_repo_state::ExecutionProcessRepoState,
         repo::Repo,
-        scratch::{DraftFollowUpData, Scratch, ScratchType},
-        session::{Session, SessionError},
+        session::Session,
         workspace::Workspace,
         workspace_repo::WorkspaceRepo,
     },
 };
 use deployment::DeploymentError;
 use executors::{
-    actions::{
-        Executable, ExecutorAction, ExecutorActionType,
-        coding_agent_follow_up::CodingAgentFollowUpRequest,
-        coding_agent_initial::CodingAgentInitialRequest,
-        session_command::CodingAgentSessionCommandRequest,
-    },
+    actions::{Executable, ExecutorAction},
     approvals::{ExecutorApprovalService, NoopExecutorApprovalService},
     env::{ExecutionEnv, RepoContext},
     executors::{BaseCodingAgent, CancellationToken, ExecutorExitResult, ExecutorExitSignal},
@@ -39,12 +35,14 @@ use executors::{
 };
 use futures::{FutureExt, TryStreamExt, stream::select};
 use git::GitService;
+use hmac::{Hmac, Mac};
 use serde_json::json;
 use services::services::{
     analytics::AnalyticsContext,
     approvals::{Approvals, executor_approvals::ExecutorApprovalBridge},
     config::{Config, DEFAULT_COMMIT_REMINDER_PROMPT},
-    container::{ContainerError, ContainerRef, ContainerService},
+    container::{ContainerError, ContainerRef, ContainerService, ExternalProcessReconciliation},
+    conversation_preview,
     diff_stream::{self, DiffStreamHandle},
     file::FileService,
     notification::NotificationService,
@@ -52,8 +50,10 @@ use services::services::{
     remote_client::RemoteClient,
     remote_sync,
 };
+use sha2::Sha256;
 use tokio::{sync::RwLock, task::JoinHandle};
 use tokio_util::io::ReaderStream;
+use tracing::Instrument;
 use utils::{
     log_msg::LogMsg,
     msg_store::MsgStore,
@@ -65,6 +65,72 @@ use workspace_manager::{RepoWorkspaceInput, WorkspaceError, WorkspaceManager};
 use crate::{command, copy};
 
 const WORKSPACE_TOUCH_DEBOUNCE: Duration = Duration::from_mins(2);
+
+async fn process_start_marker(pid: u32) -> Option<String> {
+    let system = sysinfo::System::new_all();
+    let process = system.process(sysinfo::Pid::from_u32(pid))?;
+    (!matches!(process.status(), sysinfo::ProcessStatus::Zombie))
+        .then(|| process.start_time().to_string())
+}
+
+async fn find_process_by_start_key(_start_key: &str) -> Option<(u32, String)> {
+    #[cfg(target_os = "linux")]
+    {
+        let marker = format!("VK_EXECUTION_START_KEY={_start_key}");
+        let mut entries = tokio::fs::read_dir("/proc").await.ok()?;
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            let Ok(pid) = entry.file_name().to_string_lossy().parse::<u32>() else {
+                continue;
+            };
+            let Ok(environ) = tokio::fs::read(format!("/proc/{pid}/environ")).await else {
+                continue;
+            };
+            if environ
+                .split(|byte| *byte == 0)
+                .any(|value| value == marker.as_bytes())
+                && let Some(started_at) = process_start_marker(pid).await
+            {
+                return Some((pid, started_at));
+            }
+        }
+    }
+    None
+}
+
+async fn terminate_exact_process(
+    pid: u32,
+    expected_started_at: &str,
+) -> Result<ExternalProcessReconciliation, ContainerError> {
+    let Some(actual) = process_start_marker(pid).await else {
+        return Ok(ExternalProcessReconciliation::Absent);
+    };
+    if actual != expected_started_at {
+        return Err(ContainerError::ExternalProcessUnresolved);
+    }
+    command::terminate_process_group_by_id(pid).await?;
+    Ok(ExternalProcessReconciliation::Terminated)
+}
+
+async fn require_spawn_confirmation(
+    child: &mut AsyncGroupChild,
+    confirmation: Result<bool, sqlx::Error>,
+) -> Result<(), ContainerError> {
+    match confirmation {
+        Ok(true) => Ok(()),
+        Ok(false) => {
+            command::kill_process_group_and_wait(child)
+                .await
+                .map_err(|_| ContainerError::ExternalProcessUnresolved)?;
+            Err(ContainerError::AdmissionWaiting)
+        }
+        Err(error) => {
+            command::kill_process_group_and_wait(child)
+                .await
+                .map_err(|_| ContainerError::ExternalProcessUnresolved)?;
+            Err(error.into())
+        }
+    }
+}
 
 #[derive(Clone)]
 pub struct LocalContainerService {
@@ -83,8 +149,8 @@ pub struct LocalContainerService {
     file_service: FileService,
     analytics: Option<AnalyticsContext>,
     approvals: Approvals,
-    queued_message_service: QueuedMessageService,
     notification_service: NotificationService,
+    queued_message_service: QueuedMessageService,
     remote_client: Option<RemoteClient>,
 }
 
@@ -123,8 +189,8 @@ impl LocalContainerService {
             file_service,
             analytics,
             approvals,
-            queued_message_service,
             notification_service,
+            queued_message_service,
             remote_client,
         };
 
@@ -148,6 +214,12 @@ impl LocalContainerService {
             }
             WorkspaceError::RepoAlreadyAttached => {
                 ContainerError::Other(anyhow!("Repository already attached to workspace"))
+            }
+            WorkspaceError::RepoNameAlreadyAttached { repo_name } => {
+                ContainerError::Other(anyhow!(
+                    "Repository name '{}' is already attached to workspace",
+                    repo_name
+                ))
             }
             WorkspaceError::BranchNotFound { repo_name, branch } => ContainerError::Other(anyhow!(
                 "Branch '{}' does not exist in repository '{}'",
@@ -520,6 +592,7 @@ impl LocalContainerService {
         let config = self.config.clone();
         let container = self.clone();
         let analytics = self.analytics.clone();
+        let queued_message_service = self.queued_message_service.clone();
 
         let mut process_exit_rx = self.spawn_os_exit_watcher(exec_id);
 
@@ -578,10 +651,39 @@ impl LocalContainerService {
             }
 
             if let Ok(ctx) = ExecutionProcess::load_context(&db.pool, exec_id).await {
-                // Update executor session summary if available
+                let queue_item_id =
+                    match AgentMessageQueueItem::find_by_execution_process_id(&db.pool, exec_id)
+                        .await
+                    {
+                        Ok(item) => item.map(|item| item.id),
+                        Err(e) => {
+                            tracing::warn!(
+                                "Failed to find queued message for terminal webhook: {}",
+                                e
+                            );
+                            None
+                        }
+                    };
+
+                if let Err(e) = AgentMessageQueueItem::mark_terminal_for_execution_process(
+                    &db.pool,
+                    exec_id,
+                    ctx.execution_process.status.clone(),
+                )
+                .await
+                {
+                    tracing::warn!("Failed to update queued message terminal state: {}", e);
+                }
+
+                // Update executor session summary before emitting terminal webhooks so
+                // webhook consumers can immediately read the final response summary.
                 if let Err(e) = container.update_executor_session_summary(&exec_id).await {
                     tracing::warn!("Failed to update executor session summary: {}", e);
                 }
+
+                container
+                    .emit_terminal_execution_webhook(&ctx, queue_item_id)
+                    .await;
 
                 let success = matches!(
                     ctx.execution_process.status,
@@ -646,67 +748,13 @@ impl LocalContainerService {
                         .ok()
                         .and_then(|action| action.next_action())
                         .is_some();
-                    let mut started_queued_follow_up = false;
 
-                    // Only execute queued messages if the execution succeeded
-                    // If it failed or was killed, just clear the queue and finalize
-                    let should_execute_queued = !matches!(
-                        ctx.execution_process.status,
-                        ExecutionProcessStatus::Failed | ExecutionProcessStatus::Killed
-                    );
-
-                    if let Some(queued_msg) =
-                        container.queued_message_service.take_queued(ctx.session.id)
-                    {
-                        if should_execute_queued {
-                            tracing::info!(
-                                "Found queued message for session {}, starting follow-up execution",
-                                ctx.session.id
-                            );
-
-                            // Delete the scratch since we're consuming the queued message
-                            if let Err(e) = Scratch::delete(
-                                &db.pool,
-                                ctx.session.id,
-                                &ScratchType::DraftFollowUp,
-                            )
-                            .await
-                            {
-                                tracing::warn!(
-                                    "Failed to delete scratch after consuming queued message: {}",
-                                    e
-                                );
-                            }
-
-                            // Execute the queued follow-up
-                            if let Err(e) = container
-                                .start_queued_follow_up(&ctx, &queued_msg.data)
-                                .await
-                            {
-                                tracing::error!("Failed to start queued follow-up: {}", e);
-                                // Fall back to finalization if follow-up fails
-                                container.finalize_task(&ctx).await;
-                            } else {
-                                started_queued_follow_up = true;
-                            }
-                        } else {
-                            // Execution failed or was killed - discard the queued message and finalize
-                            tracing::info!(
-                                "Discarding queued message for session {} due to execution status {:?}",
-                                ctx.session.id,
-                                ctx.execution_process.status
-                            );
-                            container.finalize_task(&ctx).await;
-                        }
-                    } else {
-                        container.finalize_task(&ctx).await;
-                    }
+                    container.finalize_task(&ctx).await;
 
                     let should_mark_turn_unseen = matches!(
                         ctx.execution_process.run_reason,
                         ExecutionProcessRunReason::CodingAgent
-                    ) && !has_chained_follow_up
-                        && !started_queued_follow_up;
+                    ) && !has_chained_follow_up;
 
                     if should_mark_turn_unseen
                         && let Err(e) = CodingAgentTurn::mark_unseen_by_execution_process_id(
@@ -720,51 +768,6 @@ impl LocalContainerService {
                             ctx.execution_process.id,
                             e
                         );
-                    }
-                }
-
-                // When a parallel setup script finishes and no coding agent is running,
-                // consume any queued message that was stuck waiting
-                if matches!(
-                    ctx.execution_process.run_reason,
-                    ExecutionProcessRunReason::SetupScript
-                ) && !container.should_finalize(&ctx)
-                {
-                    let has_running_agent = ExecutionProcess::has_running_coding_agent_for_session(
-                        &db.pool,
-                        ctx.session.id,
-                    )
-                    .await
-                    .unwrap_or(true);
-
-                    if !has_running_agent
-                        && let Some(queued_msg) =
-                            container.queued_message_service.take_queued(ctx.session.id)
-                    {
-                        tracing::info!(
-                            "Parallel setup script finished with queued message for session {}, starting follow-up",
-                            ctx.session.id
-                        );
-
-                        if let Err(e) =
-                            Scratch::delete(&db.pool, ctx.session.id, &ScratchType::DraftFollowUp)
-                                .await
-                        {
-                            tracing::warn!(
-                                "Failed to delete scratch after consuming queued message: {}",
-                                e
-                            );
-                        }
-
-                        if let Err(e) = container
-                            .start_queued_follow_up(&ctx, &queued_msg.data)
-                            .await
-                        {
-                            tracing::error!(
-                                "Failed to start queued follow-up from setup script completion: {}",
-                                e
-                            );
-                        }
                     }
                 }
 
@@ -839,6 +842,16 @@ impl LocalContainerService {
                 let _ = child.start_kill();
             }
             child_store.write().await.remove(&exec_id);
+
+            if let Err(e) = container
+                .try_start_queued_messages(&queued_message_service)
+                .await
+            {
+                tracing::warn!(
+                    "Failed to start queued messages after execution completion: {}",
+                    e
+                );
+            }
         })
     }
 
@@ -894,21 +907,28 @@ impl LocalContainerService {
             .await
             .ok_or_else(|| ContainerError::Other(anyhow!("MsgStore not found for execution")))?;
         let out = child.inner().stdout.take().expect("no stdout");
-        let err = child.inner().stderr.take().expect("no stderr");
+        let err = child.inner().stderr.take();
 
         // Map stdout bytes -> LogMsg::Stdout
         let out = ReaderStream::new(out)
             .map_ok(|chunk| LogMsg::Stdout(String::from_utf8_lossy(&chunk).into_owned()));
 
-        // Map stderr bytes -> LogMsg::Stderr
-        let err = ReaderStream::new(err)
-            .map_ok(|chunk| LogMsg::Stderr(String::from_utf8_lossy(&chunk).into_owned()));
+        if let Some(err) = err {
+            // Map stderr bytes -> LogMsg::Stderr
+            let err = ReaderStream::new(err)
+                .map_ok(|chunk| LogMsg::Stderr(String::from_utf8_lossy(&chunk).into_owned()));
 
-        // If you have a JSON Patch source, map it to LogMsg::JsonPatch too, then select all three.
+            // If you have a JSON Patch source, map it to LogMsg::JsonPatch too, then select all three.
 
-        // Merge and forward into the store
-        let merged = select(out, err); // Stream<Item = Result<LogMsg, io::Error>>
-        store.clone().spawn_forwarder(merged);
+            // Merge and forward into the store
+            let merged = select(out, err); // Stream<Item = Result<LogMsg, io::Error>>
+            store.clone().spawn_forwarder(merged);
+        } else {
+            // Some executors intentionally discard child stderr to avoid pipe
+            // backpressure or exposing internal diagnostics. Continue forwarding
+            // stdout in those cases.
+            store.clone().spawn_forwarder(out);
+        }
         Ok(())
     }
 
@@ -940,9 +960,11 @@ impl LocalContainerService {
                 {
                     let content = entry.content.trim();
                     if !content.is_empty() {
-                        const MAX_SUMMARY_LENGTH: usize = 4096;
-                        if content.len() > MAX_SUMMARY_LENGTH {
-                            let truncated = truncate_to_char_boundary(content, MAX_SUMMARY_LENGTH);
+                        if content.len() > CODING_AGENT_RESPONSE_SUMMARY_MAX_CHARS {
+                            let truncated = truncate_to_char_boundary(
+                                content,
+                                CODING_AGENT_RESPONSE_SUMMARY_MAX_CHARS,
+                            );
                             return Some(format!("{truncated}..."));
                         }
                         return Some(content.to_string());
@@ -967,6 +989,17 @@ impl LocalContainerService {
                 } else {
                     tracing::debug!("No assistant message found for execution {}", exec_id);
                 }
+            }
+
+            if let Err(error) =
+                conversation_preview::refresh_execution_process_preview(&self.db.pool, *exec_id)
+                    .await
+            {
+                tracing::warn!(
+                    "Failed to refresh conversation preview for execution {}: {}",
+                    exec_id,
+                    error
+                );
             }
         }
 
@@ -1073,103 +1106,6 @@ impl LocalContainerService {
 
         Ok(())
     }
-
-    /// Start a follow-up execution from a queued message
-    async fn start_queued_follow_up(
-        &self,
-        ctx: &ExecutionContext,
-        queued_data: &DraftFollowUpData,
-    ) -> Result<ExecutionProcess, ContainerError> {
-        let executor_profile_id = queued_data.executor_config.profile_id();
-
-        // Validate executor matches session if session has prior executions
-        let expected_executor: Option<String> =
-            ExecutionProcess::latest_executor_profile_for_session(&self.db.pool, ctx.session.id)
-                .await?
-                .map(|profile| profile.executor.to_string())
-                .or_else(|| ctx.session.executor.clone());
-
-        if let Some(expected) = expected_executor {
-            let actual = executor_profile_id.executor.to_string();
-            if expected != actual {
-                return Err(SessionError::ExecutorMismatch { expected, actual }.into());
-            }
-        }
-
-        if ctx.session.executor.is_none() {
-            Session::update_executor(
-                &self.db.pool,
-                ctx.session.id,
-                &executor_profile_id.executor.to_string(),
-            )
-            .await?;
-        }
-
-        // Get latest agent turn for session continuity (from coding agent turns).
-        let latest_session_info =
-            CodingAgentTurn::find_latest_session_info(&self.db.pool, ctx.session.id).await?;
-
-        let repos =
-            WorkspaceRepo::find_repos_for_workspace(&self.db.pool, ctx.workspace.id).await?;
-        let cleanup_action = self.cleanup_actions_for_repos(&repos);
-
-        let working_dir = ctx
-            .session
-            .agent_working_dir
-            .as_ref()
-            .filter(|dir| !dir.is_empty())
-            .cloned();
-
-        let action_type = if let Some(command) = queued_data.session_command.clone() {
-            let latest_session_info =
-                if command.requires_provider_context(queued_data.executor_config.executor) {
-                    latest_session_info
-                } else {
-                    None
-                };
-            ExecutorActionType::CodingAgentSessionCommandRequest(CodingAgentSessionCommandRequest {
-                command,
-                prompt: queued_data.message.clone(),
-                session_id: latest_session_info
-                    .as_ref()
-                    .map(|info| info.session_id.clone()),
-                executor_config: queued_data.executor_config.clone(),
-                working_dir: working_dir.clone(),
-            })
-        } else if let Some(info) = latest_session_info {
-            ExecutorActionType::CodingAgentFollowUpRequest(CodingAgentFollowUpRequest {
-                prompt: queued_data.message.clone(),
-                session_id: info.session_id,
-                reset_to_message_id: None,
-                executor_config: queued_data.executor_config.clone(),
-                working_dir: working_dir.clone(),
-            })
-        } else {
-            ExecutorActionType::CodingAgentInitialRequest(CodingAgentInitialRequest {
-                prompt: queued_data.message.clone(),
-                executor_config: queued_data.executor_config.clone(),
-                working_dir,
-            })
-        };
-
-        let cleanup_action = if matches!(
-            &action_type,
-            ExecutorActionType::CodingAgentSessionCommandRequest(_)
-        ) {
-            None
-        } else {
-            cleanup_action
-        };
-        let action = ExecutorAction::new(action_type, cleanup_action.map(Box::new));
-
-        self.start_execution(
-            &ctx.workspace,
-            &ctx.session,
-            &action,
-            &ExecutionProcessRunReason::CodingAgent,
-        )
-        .await
-    }
 }
 
 fn failure_exit_status() -> std::process::ExitStatus {
@@ -1197,6 +1133,10 @@ impl ContainerService for LocalContainerService {
 
     fn git(&self) -> &GitService {
         &self.git
+    }
+
+    fn config(&self) -> &Arc<RwLock<Config>> {
+        &self.config
     }
 
     fn notification_service(&self) -> &NotificationService {
@@ -1367,11 +1307,24 @@ impl ContainerService for LocalContainerService {
         Ok(true)
     }
 
+    #[tracing::instrument(
+        name = "agent.turn.start_execution_inner",
+        target = "perf.agent_startup",
+        level = "debug",
+        skip(self, workspace, execution_process, executor_action),
+        fields(
+            workspace_id = %workspace.id,
+            session_id = %execution_process.session_id,
+            execution_process_id = %execution_process.id,
+            executor = ?executor_action.base_executor(),
+        )
+    )]
     async fn start_execution_inner(
         &self,
         workspace: &Workspace,
         execution_process: &ExecutionProcess,
         executor_action: &ExecutorAction,
+        external_start_fence: Option<i64>,
     ) -> Result<(), ContainerError> {
         // Get the worktree path
         let container_ref = workspace
@@ -1420,11 +1373,39 @@ impl ContainerService for LocalContainerService {
         env.insert("VK_WORKSPACE_ID", workspace.id.to_string());
         env.insert("VK_WORKSPACE_BRANCH", &workspace.branch);
         env.insert("VK_SESSION_ID", execution_process.session_id.to_string());
+        if let Ok(secret) = std::env::var("VK_WORKFLOW_SESSION_CAPABILITY_SECRET") {
+            if let Some(capability) = workflow_session_capability(
+                &secret,
+                std::env::var("VK_WORKFLOW_SESSION_CAPABILITY_KEY_ID")
+                    .unwrap_or_else(|_| "local-v1".into()),
+                std::env::var("VK_WORKFLOW_SESSION_CAPABILITY_GENERATION")
+                    .ok()
+                    .and_then(|value| value.parse().ok())
+                    .unwrap_or(1),
+                workspace.id.to_string(),
+                execution_process.session_id.to_string(),
+            ) {
+                env.insert("VK_WORKFLOW_SESSION_CAPABILITY", capability);
+            }
+        }
+        if external_start_fence.is_some() {
+            env.insert(
+                "VK_EXECUTION_START_KEY",
+                format!("execution:{}", execution_process.id),
+            );
+        }
 
         // Create the child and stream, add to execution tracker with timeout
         let mut spawned = tokio::time::timeout(
             Duration::from_secs(30),
-            executor_action.spawn(&current_dir, approvals_service, &env),
+            executor_action
+                .spawn(&current_dir, approvals_service, &env)
+                .instrument(tracing::debug_span!(
+                    target: "perf.agent_startup",
+                    "agent.turn.executor_spawn",
+                    execution_process_id = %execution_process.id,
+                    executor = ?executor_action.base_executor(),
+                )),
         )
         .await
         .map_err(|_| {
@@ -1432,6 +1413,32 @@ impl ContainerService for LocalContainerService {
                 "Timeout: process took more than 30 seconds to start"
             ))
         })??;
+
+        if let Some(fence) = external_start_fence {
+            let external_id = spawned.child.id().map(|id| id.to_string());
+            let external_started_at = match spawned.child.id() {
+                Some(pid) => process_start_marker(pid).await,
+                None => None,
+            };
+            let identity_recorded = match (&external_id, &external_started_at) {
+                (Some(id), Some(started_at)) =>
+                    db::models::execution_external_start::ExecutionExternalStart::record_spawn_identity(
+                        &self.db.pool, execution_process.id, fence, id, started_at,
+                    ).await,
+                _ => Ok(false),
+            };
+            require_spawn_confirmation(&mut spawned.child, identity_recorded).await?;
+            let confirmed =
+                db::models::execution_external_start::ExecutionExternalStart::confirm_spawned(
+                    &self.db.pool,
+                    execution_process.id,
+                    fence,
+                    external_id.as_deref(),
+                    external_started_at.as_deref(),
+                )
+                .await;
+            require_spawn_confirmation(&mut spawned.child, confirmed).await?;
+        }
 
         if let Err(e) = self
             .track_child_msgs_in_store(execution_process.id, &mut spawned.child)
@@ -1455,6 +1462,31 @@ impl ContainerService for LocalContainerService {
         self.add_exit_monitor_handle(execution_process.id, hn).await;
 
         Ok(())
+    }
+
+    async fn reconcile_external_process(
+        &self,
+        record: &db::models::execution_external_start::ExecutionExternalStartRecord,
+    ) -> Result<ExternalProcessReconciliation, ContainerError> {
+        let identity = match (
+            &record.external_process_id,
+            &record.external_process_started_at,
+        ) {
+            (Some(pid), Some(started_at)) => {
+                pid.parse::<u32>().ok().map(|pid| (pid, started_at.clone()))
+            }
+            _ => find_process_by_start_key(&record.start_key).await,
+        };
+        match identity {
+            Some((pid, started_at)) => terminate_exact_process(pid, &started_at).await,
+            None if record.spawn_requested_at.is_none() => {
+                Ok(ExternalProcessReconciliation::Absent)
+            }
+            #[cfg(target_os = "linux")]
+            None => Ok(ExternalProcessReconciliation::Absent),
+            #[cfg(not(target_os = "linux"))]
+            None => Err(ContainerError::ExternalProcessUnresolved),
+        }
     }
 
     async fn stop_execution(
@@ -1737,5 +1769,245 @@ fn success_exit_status() -> std::process::ExitStatus {
     {
         use std::os::windows::process::ExitStatusExt;
         ExitStatusExt::from_raw(0)
+    }
+}
+
+#[cfg(all(test, unix))]
+mod external_start_tests {
+    use utils::command_ext::GroupSpawnNoWindowExt;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn confirmation_database_error_terminates_real_subprocess_group() {
+        let mut command = tokio::process::Command::new("sh");
+        command.args(["-c", "sleep 60"]);
+        let mut child = command.group_spawn_no_window().unwrap();
+        let pid = child.id().expect("subprocess pid");
+        assert!(process_start_marker(pid).await.is_some());
+
+        let error = require_spawn_confirmation(
+            &mut child,
+            Err(sqlx::Error::Protocol(
+                "injected confirmation failure".into(),
+            )),
+        )
+        .await
+        .expect_err("confirmation error must fail startup");
+
+        assert!(error.to_string().contains("injected confirmation failure"));
+        assert!(process_start_marker(pid).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn stale_confirmation_kills_term_resistant_descendant_and_entire_group() {
+        let mut command = tokio::process::Command::new("sh");
+        command.args([
+            "-c",
+            "trap '' INT TERM; sh -c 'trap \"\" INT TERM; while :; do sleep 1; done' & wait",
+        ]);
+        let mut child = command.group_spawn_no_window().unwrap();
+        let pgid = child.id().expect("process group leader");
+        assert!(process_start_marker(pgid).await.is_some());
+
+        let error = require_spawn_confirmation(&mut child, Ok(false))
+            .await
+            .expect_err("stale confirmation must reject startup");
+
+        assert!(matches!(error, ContainerError::AdmissionWaiting));
+        assert!(!command::process_group_exists_for_test(pgid).unwrap());
+    }
+
+    #[tokio::test]
+    async fn exact_identity_reconciliation_terminates_real_subprocess_once() {
+        let start_key = format!("test-{}", Uuid::new_v4());
+        let mut command = tokio::process::Command::new("sh");
+        command.args(["-c", "sleep 60"]);
+        command.env("VK_EXECUTION_START_KEY", &start_key);
+        let mut child = command.group_spawn_no_window().unwrap();
+        let pid = child.id().expect("subprocess pid");
+        let started_at = process_start_marker(pid).await.expect("start marker");
+        #[cfg(target_os = "linux")]
+        let discovered = find_process_by_start_key(&start_key)
+            .await
+            .expect("spawn-before-confirmation process must be discoverable");
+        #[cfg(not(target_os = "linux"))]
+        let discovered = (pid, started_at.clone());
+        assert_eq!(discovered, (pid, started_at.clone()));
+
+        assert_eq!(
+            terminate_exact_process(discovered.0, &discovered.1)
+                .await
+                .unwrap(),
+            ExternalProcessReconciliation::Terminated
+        );
+        assert!(process_start_marker(pid).await.is_none());
+        // Keep AsyncGroupChild from attempting to own a live child in drop;
+        // reconciliation has already waited until the exact PID disappeared.
+        let _ = child.wait().await;
+    }
+
+    #[tokio::test]
+    async fn reused_pid_identity_is_never_terminated_or_released_as_the_prior_child() {
+        let mut command = tokio::process::Command::new("sh");
+        command.args(["-c", "sleep 60"]);
+        let mut child = command.group_spawn_no_window().unwrap();
+        let pid = child.id().expect("subprocess pid");
+        let error = terminate_exact_process(pid, "different-start-time")
+            .await
+            .expect_err("identity mismatch must retain capacity for reconciliation");
+        assert!(matches!(error, ContainerError::ExternalProcessUnresolved));
+        assert!(process_start_marker(pid).await.is_some());
+        command::kill_process_group_and_wait(&mut child)
+            .await
+            .unwrap();
+    }
+}
+
+fn workflow_session_capability(
+    secret: &str,
+    key_id: String,
+    generation: u64,
+    workspace_id: String,
+    session_id: String,
+) -> Option<String> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_millis() as u64;
+    workflow_session_capability_at(
+        secret,
+        key_id,
+        generation,
+        workspace_id,
+        session_id,
+        Uuid::new_v4().simple().to_string(),
+        now,
+    )
+}
+
+fn workflow_session_capability_at(
+    secret: &str,
+    key_id: String,
+    generation: u64,
+    workspace_id: String,
+    session_id: String,
+    token_id: String,
+    issued_at: u64,
+) -> Option<String> {
+    if secret.len() < 32 || key_id.is_empty() || token_id.len() < 16 {
+        return None;
+    }
+    let payload = serde_json::json!({
+        "v": 1,
+        "aud": "vd-workflow-plan",
+        "purpose": "plan-launch",
+        "kid": key_id,
+        "generation": generation,
+        "jti": token_id,
+        "iat": issued_at,
+        "exp": issued_at + 300_000,
+        "workspaceId": workspace_id,
+        "sessionId": session_id,
+    });
+    sign_workflow_capability_payload(secret, payload)
+}
+
+fn sign_workflow_capability_payload(secret: &str, payload: serde_json::Value) -> Option<String> {
+    let encoded = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&payload).ok()?);
+    let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes()).ok()?;
+    mac.update(encoded.as_bytes());
+    Some(format!(
+        "{}.{}",
+        encoded,
+        URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes())
+    ))
+}
+
+#[cfg(test)]
+mod workflow_capability_tests {
+    use super::*;
+    #[test]
+    fn capability_is_scoped_and_signed_and_short_secrets_fail_closed() {
+        assert!(
+            workflow_session_capability("short", "key".into(), 1, "ws".into(), "session".into())
+                .is_none()
+        );
+        let token = workflow_session_capability(
+            &"s".repeat(32),
+            "key".into(),
+            1,
+            "ws".into(),
+            "session".into(),
+        )
+        .unwrap();
+        let (body, signature) = token.split_once('.').unwrap();
+        let decoded: serde_json::Value =
+            serde_json::from_slice(&URL_SAFE_NO_PAD.decode(body).unwrap()).unwrap();
+        assert_eq!(decoded["workspaceId"], "ws");
+        assert_eq!(decoded["sessionId"], "session");
+        assert_eq!(decoded["aud"], "vd-workflow-plan");
+        assert_eq!(decoded["purpose"], "plan-launch");
+        assert_eq!(decoded["kid"], "key");
+        assert_eq!(decoded["generation"], 1);
+        assert!(decoded["exp"].as_u64().unwrap() - decoded["iat"].as_u64().unwrap() <= 300_000);
+        assert!(!signature.is_empty());
+    }
+
+    #[test]
+    fn capability_matches_cross_language_golden() {
+        let token = workflow_session_capability_at(
+            "0123456789abcdef0123456789abcdef",
+            "golden".into(),
+            3,
+            "workspace-golden".into(),
+            "session-golden".into(),
+            "00112233445566778899aabbccddeeff".into(),
+            1_700_000_000_000,
+        )
+        .unwrap();
+        println!("{token}");
+        assert_eq!(
+            token,
+            "eyJ2IjoxLCJhdWQiOiJ2ZC13b3JrZmxvdy1wbGFuIiwicHVycG9zZSI6InBsYW4tbGF1bmNoIiwia2lkIjoiZ29sZGVuIiwiZ2VuZXJhdGlvbiI6MywianRpIjoiMDAxMTIyMzM0NDU1NjY3Nzg4OTlhYWJiY2NkZGVlZmYiLCJpYXQiOjE3MDAwMDAwMDAwMDAsImV4cCI6MTcwMDAwMDMwMDAwMCwid29ya3NwYWNlSWQiOiJ3b3Jrc3BhY2UtZ29sZGVuIiwic2Vzc2lvbklkIjoic2Vzc2lvbi1nb2xkZW4ifQ.-Gqr3kkiJ2cULsCVakLqK5DzEp1SIcdqbh4V-F8zGJc"
+        );
+    }
+
+    #[test]
+    fn emits_cross_language_negative_vectors() {
+        let base = serde_json::json!({"v":1,"aud":"vd-workflow-plan","purpose":"plan-launch","kid":"golden","generation":3,"jti":"00112233445566778899aabbccddeeff","iat":1700000000000u64,"exp":1700000300000u64,"workspaceId":"workspace-golden","sessionId":"session-golden"});
+        let cases = [
+            (
+                "wrong-audience",
+                "eyJ2IjoxLCJhdWQiOiJvdGhlciIsInB1cnBvc2UiOiJwbGFuLWxhdW5jaCIsImtpZCI6ImdvbGRlbiIsImdlbmVyYXRpb24iOjMsImp0aSI6IjAwMTEyMjMzNDQ1NTY2Nzc4ODk5YWFiYmNjZGRlZWZmIiwiaWF0IjoxNzAwMDAwMDAwMDAwLCJleHAiOjE3MDAwMDAzMDAwMDAsIndvcmtzcGFjZUlkIjoid29ya3NwYWNlLWdvbGRlbiIsInNlc3Npb25JZCI6InNlc3Npb24tZ29sZGVuIn0.JIzZbJtDk9VkQPXB9RaLBdclpoOhlsXTYHouR65Mj58",
+            ),
+            (
+                "wrong-purpose",
+                "eyJ2IjoxLCJhdWQiOiJ2ZC13b3JrZmxvdy1wbGFuIiwicHVycG9zZSI6Im90aGVyIiwia2lkIjoiZ29sZGVuIiwiZ2VuZXJhdGlvbiI6MywianRpIjoiMDAxMTIyMzM0NDU1NjY3Nzg4OTlhYWJiY2NkZGVlZmYiLCJpYXQiOjE3MDAwMDAwMDAwMDAsImV4cCI6MTcwMDAwMDMwMDAwMCwid29ya3NwYWNlSWQiOiJ3b3Jrc3BhY2UtZ29sZGVuIiwic2Vzc2lvbklkIjoic2Vzc2lvbi1nb2xkZW4ifQ.GqxofinGYe2qTkwUJMtFvffBfzfI1vFz8pezyJEvSJk",
+            ),
+            (
+                "wrong-generation",
+                "eyJ2IjoxLCJhdWQiOiJ2ZC13b3JrZmxvdy1wbGFuIiwicHVycG9zZSI6InBsYW4tbGF1bmNoIiwia2lkIjoiZ29sZGVuIiwiZ2VuZXJhdGlvbiI6NCwianRpIjoiMDAxMTIyMzM0NDU1NjY3Nzg4OTlhYWJiY2NkZGVlZmYiLCJpYXQiOjE3MDAwMDAwMDAwMDAsImV4cCI6MTcwMDAwMDMwMDAwMCwid29ya3NwYWNlSWQiOiJ3b3Jrc3BhY2UtZ29sZGVuIiwic2Vzc2lvbklkIjoic2Vzc2lvbi1nb2xkZW4ifQ.CJTQVtfuaS0Mc7h1eu69fonRyMUlOnk_q00CVVwot-Y",
+            ),
+            (
+                "expired",
+                "eyJ2IjoxLCJhdWQiOiJ2ZC13b3JrZmxvdy1wbGFuIiwicHVycG9zZSI6InBsYW4tbGF1bmNoIiwia2lkIjoiZ29sZGVuIiwiZ2VuZXJhdGlvbiI6MywianRpIjoiMDAxMTIyMzM0NDU1NjY3Nzg4OTlhYWJiY2NkZGVlZmYiLCJpYXQiOjE3MDAwMDAwMDAwMDAsImV4cCI6MTY5OTk5OTk5OTk5OSwid29ya3NwYWNlSWQiOiJ3b3Jrc3BhY2UtZ29sZGVuIiwic2Vzc2lvbklkIjoic2Vzc2lvbi1nb2xkZW4ifQ.Ln1mE4Pk0i9PqN17eNEufsAf5GpggzYQTv1JxUylb1o",
+            ),
+        ];
+        for (label, expected) in cases {
+            let mut value = base.clone();
+            match label {
+                "wrong-audience" => value["aud"] = json!("other"),
+                "wrong-purpose" => value["purpose"] = json!("other"),
+                "wrong-generation" => value["generation"] = json!(4),
+                "expired" => value["exp"] = json!(1699999999999u64),
+                _ => unreachable!(),
+            }
+            assert_eq!(
+                sign_workflow_capability_payload("0123456789abcdef0123456789abcdef", value)
+                    .unwrap(),
+                expected
+            );
+        }
     }
 }

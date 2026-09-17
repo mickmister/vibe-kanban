@@ -38,6 +38,10 @@ import {
 } from '@vibe/ui/components/ChatFileEntry';
 import { ChatApprovalCard } from '@vibe/ui/components/ChatApprovalCard';
 import { ChatUserMessage } from '@vibe/ui/components/ChatUserMessage';
+import {
+  messageAuthorLabel,
+  type ConversationMessageProvenance,
+} from '../model/messageProvenance';
 import { ChatAssistantMessage } from '@vibe/ui/components/ChatAssistantMessage';
 import { ChatSystemMessage } from '@vibe/ui/components/ChatSystemMessage';
 import { ChatThinkingMessage } from '@vibe/ui/components/ChatThinkingMessage';
@@ -359,6 +363,9 @@ function DisplayConversationEntry(props: Props) {
           executionProcessId={executionProcessId}
           executorCanFork={executorCanFork}
           resetAction={resetAction}
+          provenance={
+            (entry as { provenance?: ConversationMessageProvenance }).provenance
+          }
         />
       );
 
@@ -711,6 +718,7 @@ function UserMessageEntry({
   executionProcessId,
   executorCanFork,
   resetAction,
+  provenance,
 }: {
   content: string;
   expansionKey: string;
@@ -719,12 +727,14 @@ function UserMessageEntry({
   executionProcessId: string | undefined;
   executorCanFork: boolean;
   resetAction: UseResetProcessResult;
+  provenance?: ConversationMessageProvenance;
 }) {
   const [expanded, toggle] = usePersistedExpanded(`user:${expansionKey}`, true);
   const { startEdit, isEntryGreyed, isInEditMode } = useMessageEditContext();
   const { resetProcess, canResetProcess, isResetPending } = resetAction;
 
   const isGreyed = isEntryGreyed(expansionKey);
+  const isAutomationMessage = Boolean(provenance && provenance.kind !== 'user');
 
   const handleEdit = () => {
     if (executionProcessId) {
@@ -740,7 +750,10 @@ function UserMessageEntry({
 
   // Only show actions when we have a process ID and not already in edit mode
   const canShowActions =
-    !!executionProcessId && !isInEditMode && !isResetPending;
+    !!executionProcessId &&
+    !isInEditMode &&
+    !isResetPending &&
+    !isAutomationMessage;
   // Edit/retry/reset is not supported when the executor doesn't have the fork capability
   const canEdit = canShowActions && executorCanFork;
   // Only show reset if we have a process ID, not in edit mode, and not pending
@@ -755,6 +768,7 @@ function UserMessageEntry({
       onEdit={canEdit ? handleEdit : undefined}
       onReset={canReset ? handleReset : undefined}
       isGreyed={isGreyed}
+      title={messageAuthorLabel(provenance, 'You')}
       renderMarkdown={({ content, workspaceId }) => (
         <AppChatMarkdown
           content={content}

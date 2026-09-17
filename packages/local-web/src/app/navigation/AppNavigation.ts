@@ -25,9 +25,17 @@ function parseLocalHostIdFromPathname(pathname: string): string | null {
   return segments[hostsIndex + 1] ?? null;
 }
 
+function getSessionIdSearch(path: string): string | undefined {
+  const sessionId = new URL(path, 'http://localhost').searchParams.get(
+    'sessionId'
+  );
+  return sessionId && sessionId.trim() ? sessionId : undefined;
+}
+
 function resolveLocalDestinationFromPath(path: string): AppDestination | null {
   const { pathname } = new URL(path, 'http://localhost');
   const { foundRoute, routeParams } = router.getMatchedRoutes(pathname);
+  const sessionId = getSessionIdSearch(path);
 
   if (!foundRoute) {
     return null;
@@ -54,26 +62,32 @@ function resolveLocalDestinationFromPath(path: string): AppDestination | null {
       const hostId = getPathParam(routeParams, 'hostId');
       return hostId ? { kind: 'workspaces-create', hostId } : null;
     }
+    case '/_app/sessions/$sessionId': {
+      const sessionId = getPathParam(routeParams, 'sessionId');
+      return sessionId ? { kind: 'session', sessionId } : null;
+    }
     case '/_app/workspaces_/$workspaceId': {
       const workspaceId = getPathParam(routeParams, 'workspaceId');
-      return workspaceId ? { kind: 'workspace', workspaceId } : null;
+      return workspaceId ? { kind: 'workspace', workspaceId, sessionId } : null;
     }
     case '/_app/hosts/$hostId/workspaces_/$workspaceId': {
       const hostId = getPathParam(routeParams, 'hostId');
       const workspaceId = getPathParam(routeParams, 'workspaceId');
       return hostId && workspaceId
-        ? { kind: 'workspace', hostId, workspaceId }
+        ? { kind: 'workspace', hostId, workspaceId, sessionId }
         : null;
     }
     case '/workspaces/$workspaceId/vscode': {
       const workspaceId = getPathParam(routeParams, 'workspaceId');
-      return workspaceId ? { kind: 'workspace-vscode', workspaceId } : null;
+      return workspaceId
+        ? { kind: 'workspace-vscode', workspaceId, sessionId }
+        : null;
     }
     case '/hosts/$hostId/workspaces/$workspaceId/vscode': {
       const hostId = getPathParam(routeParams, 'hostId');
       const workspaceId = getPathParam(routeParams, 'workspaceId');
       return hostId && workspaceId
-        ? { kind: 'workspace-vscode', hostId, workspaceId }
+        ? { kind: 'workspace-vscode', hostId, workspaceId, sessionId }
         : null;
     }
     case '/_app/projects/$projectId': {
@@ -97,6 +111,7 @@ function resolveLocalDestinationFromPath(path: string): AppDestination | null {
             projectId,
             issueId,
             workspaceId,
+            sessionId,
           }
         : null;
     }
@@ -112,6 +127,7 @@ function resolveLocalDestinationFromPath(path: string): AppDestination | null {
             issueId,
             hostId,
             workspaceId,
+            sessionId,
           }
         : null;
     }
@@ -179,6 +195,10 @@ function destinationToLocalTarget(
   const destinationHostId =
     'hostId' in destination ? (destination.hostId ?? null) : null;
   const effectiveHostId = destinationHostId ?? options.currentHostId;
+  const sessionSearch =
+    'sessionId' in destination && destination.sessionId
+      ? { search: { sessionId: destination.sessionId } }
+      : {};
 
   switch (destination.kind) {
     case 'root':
@@ -203,6 +223,11 @@ function destinationToLocalTarget(
         } as const;
       }
       return { to: '/workspaces/create' } as const;
+    case 'session':
+      return {
+        to: '/sessions/$sessionId',
+        params: { sessionId: destination.sessionId },
+      } as const;
     case 'workspace':
       if (effectiveHostId) {
         return {
@@ -211,11 +236,13 @@ function destinationToLocalTarget(
             hostId: effectiveHostId,
             workspaceId: destination.workspaceId,
           },
+          ...sessionSearch,
         } as const;
       }
       return {
         to: '/workspaces/$workspaceId',
         params: { workspaceId: destination.workspaceId },
+        ...sessionSearch,
       } as const;
     case 'workspace-vscode':
       if (effectiveHostId) {
@@ -225,11 +252,13 @@ function destinationToLocalTarget(
             hostId: effectiveHostId,
             workspaceId: destination.workspaceId,
           },
+          ...sessionSearch,
         } as const;
       }
       return {
         to: '/workspaces/$workspaceId/vscode',
         params: { workspaceId: destination.workspaceId },
+        ...sessionSearch,
       } as const;
     case 'export':
       return { to: '/export' } as const;
@@ -256,6 +285,7 @@ function destinationToLocalTarget(
             hostId: effectiveHostId,
             workspaceId: destination.workspaceId,
           },
+          ...sessionSearch,
         } as const;
       }
       return {
@@ -265,6 +295,7 @@ function destinationToLocalTarget(
           issueId: destination.issueId,
           workspaceId: destination.workspaceId,
         },
+        ...sessionSearch,
       } as const;
     case 'project-issue-workspace-create':
       if (effectiveHostId) {
@@ -325,6 +356,14 @@ export function createLocalAppNavigation(): AppNavigation {
     });
   };
 
+  const resolveSessionNavigationArgs = (
+    sessionIdOrTransition?: string | NavigationTransition,
+    transition?: NavigationTransition
+  ) =>
+    typeof sessionIdOrTransition === 'string'
+      ? { sessionId: sessionIdOrTransition, transition }
+      : { sessionId: undefined, transition: sessionIdOrTransition };
+
   const navigation: AppNavigation = {
     resolveFromPath: (path) => resolveLocalDestinationFromPath(path),
     goToRoot: (transition) => navigateTo({ kind: 'root' }, transition),
@@ -336,10 +375,28 @@ export function createLocalAppNavigation(): AppNavigation {
       navigateTo({ kind: 'workspaces' }, transition),
     goToWorkspacesCreate: (transition) =>
       navigateTo({ kind: 'workspaces-create' }, transition),
-    goToWorkspace: (workspaceId, transition) =>
-      navigateTo({ kind: 'workspace', workspaceId }, transition),
-    goToWorkspaceVsCode: (workspaceId, transition) =>
-      navigateTo({ kind: 'workspace-vscode', workspaceId }, transition),
+    goToSession: (sessionId, transition) =>
+      navigateTo({ kind: 'session', sessionId }, transition),
+    goToWorkspace: (workspaceId, sessionIdOrTransition, transition) => {
+      const args = resolveSessionNavigationArgs(
+        sessionIdOrTransition,
+        transition
+      );
+      navigateTo(
+        { kind: 'workspace', workspaceId, sessionId: args.sessionId },
+        args.transition
+      );
+    },
+    goToWorkspaceVsCode: (workspaceId, sessionIdOrTransition, transition) => {
+      const args = resolveSessionNavigationArgs(
+        sessionIdOrTransition,
+        transition
+      );
+      navigateTo(
+        { kind: 'workspace-vscode', workspaceId, sessionId: args.sessionId },
+        args.transition
+      );
+    },
     goToExport: (transition) => navigateTo({ kind: 'export' }, transition),
     goToProject: (projectId, transition) =>
       navigateTo({ kind: 'project', projectId }, transition),

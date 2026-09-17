@@ -77,6 +77,45 @@ struct RunCodingAgentInSessionRequest {
     prompt: String,
 }
 
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct QueueCodingAgentInSessionRequest {
+    #[schemars(description = "Session ID to queue the coding agent prompt in")]
+    session_id: Uuid,
+    #[schemars(description = "Prompt for the coding agent. This uses VK's guarded queue path.")]
+    prompt: String,
+}
+
+#[derive(Debug, Serialize)]
+struct QueuePromptPayload {
+    message: String,
+    source: &'static str,
+}
+
+#[derive(Debug, Deserialize)]
+struct QueueMessagePayload {
+    queued_item: QueuedMessagePayload,
+    status: QueueStatusPayload,
+}
+
+#[derive(Debug, Deserialize)]
+struct QueueStatusPayload {
+    count: usize,
+}
+
+#[derive(Debug, Deserialize)]
+struct QueuedMessagePayload {
+    id: Uuid,
+    status: String,
+}
+
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+struct QueueCodingAgentInSessionResponse {
+    session_id: String,
+    queue_item_id: Option<String>,
+    queue_status: Option<String>,
+    queued_count: usize,
+}
+
 #[derive(Debug, Serialize)]
 struct FollowUpPayload {
     prompt: String,
@@ -138,10 +177,43 @@ struct GetExecutionResponse {
     execution: serde_json::Value,
     #[schemars(description = "Final assistant message/summary when execution has finished")]
     final_message: Option<String>,
+    #[schemars(description = "Whether final_message was truncated by VK response summary storage")]
+    final_message_truncated: bool,
+    #[schemars(description = "Maximum stored final_message characters when truncation applies")]
+    final_message_max_chars: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AgentResponsePayload {
+    content: Option<String>,
+    truncated: bool,
+    max_chars: usize,
 }
 
 #[tool_router(router = session_tools_router, vis = "pub")]
 impl McpServer {
+    fn final_message_fields(
+        final_response: Option<&AgentResponsePayload>,
+    ) -> (Option<String>, bool, Option<usize>) {
+        (
+            final_response.and_then(|response| response.content.clone()),
+            final_response.is_some_and(|response| response.truncated),
+            final_response.map(|response| response.max_chars),
+        )
+    }
+
+    fn queued_prompt_response(
+        session_id: Uuid,
+        queue_response: QueueMessagePayload,
+    ) -> QueueCodingAgentInSessionResponse {
+        QueueCodingAgentInSessionResponse {
+            session_id: session_id.to_string(),
+            queue_item_id: Some(queue_response.queued_item.id.to_string()),
+            queue_status: Some(queue_response.queued_item.status),
+            queued_count: queue_response.status.count,
+        }
+    }
+
     #[tool(description = "Create a new session in a workspace.")]
     async fn create_session(
         &self,
@@ -253,6 +325,52 @@ impl McpServer {
     }
 
     #[tool(
+        description = "Queue a coding agent turn in an existing session using VK's guarded scheduler queue. Prefer this for workflow/agent-to-agent traffic."
+    )]
+    async fn queue_session_prompt(
+        &self,
+        Parameters(QueueCodingAgentInSessionRequest { session_id, prompt }): Parameters<
+            QueueCodingAgentInSessionRequest,
+        >,
+    ) -> Result<CallToolResult, ErrorData> {
+        let prompt = prompt.trim();
+        if prompt.is_empty() {
+            return Self::err("prompt must not be empty", None);
+        }
+
+        let session_url = self.url(&format!("/api/sessions/{session_id}"));
+        let session: Session = match self.send_json(self.client.get(&session_url)).await {
+            Ok(value) => value,
+            Err(error_result) => return Ok(Self::tool_error(error_result)),
+        };
+        if let Err(error_result) = self.scope_allows_workspace(session.workspace_id) {
+            return Ok(Self::tool_error(error_result));
+        }
+        if self.orchestrator_session_id() == Some(session_id) {
+            return Self::err(
+                "Cannot queue coding agent in the orchestrator session".to_string(),
+                Some(
+                    "Create or re-use a different session and queue the coding agent there."
+                        .to_string(),
+                ),
+            );
+        }
+
+        let payload = QueuePromptPayload {
+            message: prompt.to_string(),
+            source: "workflow",
+        };
+        let url = self.url(&format!("/api/sessions/{session_id}/queue"));
+        let queue_response: QueueMessagePayload =
+            match self.send_json(self.client.post(&url).json(&payload)).await {
+                Ok(value) => value,
+                Err(error_result) => return Ok(Self::tool_error(error_result)),
+            };
+
+        Self::success(&Self::queued_prompt_response(session_id, queue_response))
+    }
+
+    #[tool(
         description = "Run a coding agent turn in an existing session and return immediately with the execution process."
     )]
     async fn run_session_prompt(
@@ -339,11 +457,28 @@ impl McpServer {
         }
 
         let is_finished = execution_process.status != ExecutionProcessStatus::Running;
+        let final_response = if is_finished {
+            let final_message_url = self.url(&format!(
+                "/api/execution-processes/{execution_id}/final-message"
+            ));
+            match self
+                .send_json::<AgentResponsePayload>(self.client.get(&final_message_url))
+                .await
+            {
+                Ok(value) => Some(value),
+                Err(error_result) => return Ok(Self::tool_error(error_result)),
+            }
+        } else {
+            None
+        };
 
         let execution_process_value = match Self::serialize_execution_process(&execution_process) {
             Ok(value) => value,
             Err(error_result) => return Ok(Self::tool_error(error_result)),
         };
+
+        let (final_message, final_message_truncated, final_message_max_chars) =
+            Self::final_message_fields(final_response.as_ref());
 
         Self::success(&GetExecutionResponse {
             execution_id: execution_process.id.to_string(),
@@ -351,7 +486,9 @@ impl McpServer {
             status: Self::execution_process_status_label(&execution_process.status).to_string(),
             is_finished,
             execution: execution_process_value,
-            final_message: None,
+            final_message,
+            final_message_truncated,
+            final_message_max_chars,
         })
     }
 }
@@ -392,5 +529,52 @@ impl McpServer {
                 Some(error.to_string()),
             )
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use uuid::Uuid;
+
+    use super::{
+        AgentResponsePayload, McpServer, QueueMessagePayload, QueueStatusPayload,
+        QueuedMessagePayload,
+    };
+
+    #[test]
+    fn queued_prompt_response_uses_created_item_not_first_pending_message() {
+        let session_id = Uuid::new_v4();
+        let created_item_id = Uuid::new_v4();
+
+        let response = McpServer::queued_prompt_response(
+            session_id,
+            QueueMessagePayload {
+                queued_item: QueuedMessagePayload {
+                    id: created_item_id,
+                    status: "queued".to_string(),
+                },
+                status: QueueStatusPayload { count: 2 },
+            },
+        );
+
+        assert_eq!(response.session_id, session_id.to_string());
+        assert_eq!(response.queue_item_id, Some(created_item_id.to_string()));
+        assert_eq!(response.queue_status, Some("queued".to_string()));
+        assert_eq!(response.queued_count, 2);
+    }
+
+    #[test]
+    fn final_message_fields_include_truncation_metadata() {
+        let payload = AgentResponsePayload {
+            content: Some("final".to_string()),
+            truncated: true,
+            max_chars: 4096,
+        };
+
+        let (message, truncated, max_chars) = McpServer::final_message_fields(Some(&payload));
+
+        assert_eq!(message.as_deref(), Some("final"));
+        assert!(truncated);
+        assert_eq!(max_chars, Some(4096));
     }
 }

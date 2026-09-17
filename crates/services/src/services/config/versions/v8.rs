@@ -1,7 +1,9 @@
 use anyhow::Error;
+use chrono::{DateTime, Utc};
 use executors::{executors::BaseCodingAgent, profile::ExecutorProfileId};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
+use uuid::Uuid;
 pub use v7::{
     EditorConfig, EditorType, GitHubConfig, NotificationConfig, ShowcaseState, SoundFile,
     ThemeMode, UiLanguage,
@@ -23,6 +25,14 @@ fn default_commit_reminder_enabled() -> bool {
 
 fn default_relay_enabled() -> bool {
     true
+}
+
+fn default_agent_queue_concurrency() -> usize {
+    8
+}
+
+fn default_agent_turn_capacity() -> usize {
+    8
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, TS, PartialEq, Eq)]
@@ -68,6 +78,31 @@ pub struct Config {
     pub relay_enabled: bool,
     #[serde(default)]
     pub host_nickname: Option<String>,
+    #[serde(default = "default_agent_queue_concurrency")]
+    pub agent_queue_concurrency: usize,
+    /// Hard, database-enforced ceiling for active and reserved coding-agent turns.
+    #[serde(default = "default_agent_turn_capacity")]
+    pub agent_turn_capacity: usize,
+    #[serde(default)]
+    pub webhook_subscriptions: Vec<WebhookSubscription>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq, Eq)]
+#[ts(export)]
+pub struct WebhookSubscription {
+    pub id: Uuid,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upsert_key: Option<String>,
+    pub url: String,
+    pub enabled: bool,
+    #[serde(default)]
+    pub event_filters: Vec<String>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    #[ts(skip)]
+    pub signing_secret: String,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
 }
 
 impl Config {
@@ -99,6 +134,9 @@ impl Config {
             send_message_shortcut: SendMessageShortcut::default(),
             relay_enabled: true,
             host_nickname: None,
+            agent_queue_concurrency: default_agent_queue_concurrency(),
+            agent_turn_capacity: default_agent_turn_capacity(),
+            webhook_subscriptions: Vec::new(),
         }
     }
 
@@ -155,6 +193,9 @@ impl Default for Config {
             send_message_shortcut: SendMessageShortcut::default(),
             relay_enabled: true,
             host_nickname: None,
+            agent_queue_concurrency: default_agent_queue_concurrency(),
+            agent_turn_capacity: default_agent_turn_capacity(),
+            webhook_subscriptions: Vec::new(),
         }
     }
 }

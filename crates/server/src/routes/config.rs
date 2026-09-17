@@ -88,6 +88,7 @@ impl Environment {
 #[derive(Debug, Serialize, Deserialize, TS)]
 pub struct UserSystemInfo {
     pub version: String,
+    pub commit_hash: Option<String>,
     pub config: Config,
     pub machine_id: String,
     pub login_status: LoginStatus,
@@ -106,7 +107,7 @@ pub struct UserSystemInfo {
 async fn get_user_system_info(
     State(deployment): State<DeploymentImpl>,
 ) -> ResponseJson<ApiResponse<UserSystemInfo>> {
-    let config = deployment.config().read().await.clone();
+    let config = redact_webhook_subscription_secrets(deployment.config().read().await.clone());
     let login_status = match tokio::time::timeout(
         std::time::Duration::from_secs(2),
         deployment.get_login_status(),
@@ -152,8 +153,13 @@ async fn get_user_system_info(
         }
     };
 
+    let commit_hash = option_env!("VK_BUILD_COMMIT_HASH")
+        .map(str::to_string)
+        .or_else(runtime_build_version);
+
     let user_system_info = UserSystemInfo {
         version: env!("CARGO_PKG_VERSION").to_string(),
+        commit_hash,
         config,
         machine_id: deployment.user_id().to_string(),
         login_status,
@@ -177,9 +183,16 @@ async fn get_user_system_info(
     ResponseJson(ApiResponse::success(user_system_info))
 }
 
+fn runtime_build_version() -> Option<String> {
+    std::fs::read_to_string("/usr/local/share/vibe-kanban-build-version")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
 async fn update_config(
     State(deployment): State<DeploymentImpl>,
-    Json(new_config): Json<Config>,
+    Json(mut new_config): Json<Config>,
 ) -> ResponseJson<ApiResponse<Config>> {
     let config_path = config_path();
 
@@ -192,6 +205,7 @@ async fn update_config(
 
     // Get old config state before updating
     let old_config = deployment.config().read().await.clone();
+    new_config = preserve_webhook_subscriptions_for_general_update(new_config, &old_config);
 
     match save_config_to_file(&new_config, &config_path).await {
         Ok(_) => {
@@ -202,10 +216,27 @@ async fn update_config(
             // Track config events when fields transition from false → true and run side effects
             handle_config_events(&deployment, &old_config, &new_config).await;
 
-            ResponseJson(ApiResponse::success(new_config))
+            ResponseJson(ApiResponse::success(redact_webhook_subscription_secrets(
+                new_config,
+            )))
         }
         Err(e) => ResponseJson(ApiResponse::error(&format!("Failed to save config: {}", e))),
     }
+}
+
+fn redact_webhook_subscription_secrets(mut config: Config) -> Config {
+    for subscription in &mut config.webhook_subscriptions {
+        subscription.signing_secret.clear();
+    }
+    config
+}
+
+fn preserve_webhook_subscriptions_for_general_update(
+    mut new_config: Config,
+    old_config: &Config,
+) -> Config {
+    new_config.webhook_subscriptions = old_config.webhook_subscriptions.clone();
+    new_config
 }
 
 /// Track config events when fields transition from false → true
@@ -236,6 +267,65 @@ async fn track_config_events(deployment: &DeploymentImpl, old: &Config, new: &Co
             deployment
                 .track_if_analytics_allowed(event_name, properties)
                 .await;
+        }
+    }
+}
+
+#[cfg(test)]
+mod webhook_config_sanitization_tests {
+    use chrono::Utc;
+    use services::services::config::WebhookSubscription;
+    use uuid::Uuid;
+
+    use super::*;
+
+    #[test]
+    fn redacted_config_response_omits_webhook_signing_secret() {
+        let mut config = Config::default();
+        config
+            .webhook_subscriptions
+            .push(test_subscription("secret-value"));
+
+        let redacted = redact_webhook_subscription_secrets(config);
+        let json = serde_json::to_string(&redacted).unwrap();
+
+        assert!(!json.contains("secret-value"));
+        assert!(!json.contains("signing_secret"));
+        assert_eq!(redacted.webhook_subscriptions[0].signing_secret, "");
+    }
+
+    #[test]
+    fn generic_config_update_preserves_webhook_subscriptions_and_secrets() {
+        let mut old_config = Config::default();
+        old_config
+            .webhook_subscriptions
+            .push(test_subscription("keep-secret"));
+        let mut update = Config::default();
+        update.webhook_subscriptions.clear();
+        update.host_nickname = Some("new host".to_string());
+
+        let preserved = preserve_webhook_subscriptions_for_general_update(update, &old_config);
+
+        assert_eq!(preserved.host_nickname.as_deref(), Some("new host"));
+        assert_eq!(preserved.webhook_subscriptions.len(), 1);
+        assert_eq!(
+            preserved.webhook_subscriptions[0].signing_secret,
+            "keep-secret"
+        );
+    }
+
+    fn test_subscription(secret: &str) -> WebhookSubscription {
+        let now = Utc::now();
+        WebhookSubscription {
+            id: Uuid::parse_str("11111111-1111-1111-1111-111111111111").unwrap(),
+            name: "vd".to_string(),
+            upsert_key: Some("vd".to_string()),
+            url: "http://localhost:3000/webhook".to_string(),
+            enabled: true,
+            event_filters: vec!["execution.completed".to_string()],
+            signing_secret: secret.to_string(),
+            created_at: now,
+            updated_at: now,
         }
     }
 }
