@@ -8,6 +8,7 @@ pub mod gh_cli_setup;
 pub mod git;
 pub mod integration;
 pub mod links;
+pub mod panel_targets;
 pub mod pr;
 pub mod repos;
 pub mod streams;
@@ -31,6 +32,10 @@ pub fn router(deployment: &DeploymentImpl) -> Router<DeploymentImpl> {
         )
         .route("/messages/first", get(core::get_first_user_message))
         .route("/seen", axum::routing::put(core::mark_seen))
+        .route(
+            "/panel-target-authority",
+            get(panel_targets::get_panel_target_authority),
+        )
         .nest("/git", git::router())
         .nest("/execution", execution::router())
         .nest("/integration", integration::router())

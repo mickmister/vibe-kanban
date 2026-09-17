@@ -63,7 +63,7 @@ pub struct WorkspaceRunConfigsResponse {
     pub preview_url_parts: Vec<PreviewSlotUrlParts>,
 }
 
-#[derive(Debug, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct PreviewSlotUrlParts {
     pub preview_slot_id: Uuid,

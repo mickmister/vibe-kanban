@@ -36,6 +36,16 @@ export type PreviewSlotUrlParts = { previewSlotId: string, workspaceToken: strin
 
 export type PreviewSlotUrlResponse = { previewSlotId: string, workspaceToken: string, repoSlug: string, slotSlug: string, customerSlug: string, host: string, url: string, };
 
+export type PanelTargetDeliveryDefinition = { location: string, factoryKey: string, available: boolean, };
+
+export type SessionPanelTargetDefinition = { sessionId: string, workspaceId: string, delivery: PanelTargetDeliveryDefinition, };
+
+export type TerminalPanelTargetDefinition = { terminalId: string, workspaceId: string, delivery: PanelTargetDeliveryDefinition, };
+
+export type PreviewPanelTargetDefinition = { previewSlotId: string, workspaceId: string, urlParts: PreviewSlotUrlParts, customerSlug: string, factoryKey: string, available: boolean, };
+
+export type WorkspacePanelTargetAuthoritySnapshot = { ready: boolean, workspaceId: string, workspaceTargets: { [key in string]?: PanelTargetDeliveryDefinition }, sessions: Array<SessionPanelTargetDefinition>, terminalsReady: boolean, terminals: Array<TerminalPanelTargetDefinition>, previews: Array<PreviewPanelTargetDefinition>, };
+
 export type NamedPreviewResolveRequest = { host: string, workspaceToken: string, repoSlug: string, slotSlug: string, customerSlug: string, ensure: boolean, method: string, path: string, };
 
 export type NamedPreviewResolveResponse = { status: string, upstream: string | null, message: string | null, executionProcessId: string | null, };
