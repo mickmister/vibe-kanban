@@ -19,6 +19,7 @@ use axum::{
     middleware::from_fn_with_state,
     routing::{get, post},
 };
+use deployment::Deployment;
 
 use crate::{DeploymentImpl, middleware::load_workspace_middleware};
 
@@ -32,10 +33,6 @@ pub fn router(deployment: &DeploymentImpl) -> Router<DeploymentImpl> {
         )
         .route("/messages/first", get(core::get_first_user_message))
         .route("/seen", axum::routing::put(core::mark_seen))
-        .route(
-            "/panel-target-authority",
-            get(panel_targets::get_panel_target_authority),
-        )
         .nest("/git", git::router())
         .nest("/execution", execution::router())
         .nest("/integration", integration::router())
@@ -62,5 +59,8 @@ pub fn router(deployment: &DeploymentImpl) -> Router<DeploymentImpl> {
         .nest("/{id}/attachments", attachments::router(deployment))
         .nest("/{id}/links", links::router(deployment));
 
-    Router::new().nest("/workspaces", workspaces_router)
+    Router::new().nest("/workspaces", workspaces_router).nest(
+        "/workspaces/{id}/panel-target-authority",
+        panel_targets::router(deployment.db().pool.clone()),
+    )
 }
