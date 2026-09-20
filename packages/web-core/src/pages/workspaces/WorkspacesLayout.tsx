@@ -243,7 +243,10 @@ export function WorkspacesLayout() {
   if (isMobile) {
     const mobileContent = (
       <ReviewProvider workspaceId={panelWorkspaceId}>
-        <ChangesViewProvider workspaceId={panelWorkspaceId}>
+        <ChangesViewProvider
+          key={panelWorkspaceId ?? 'no-workspace'}
+          workspaceId={panelWorkspaceId}
+        >
           <div className="flex flex-col h-full min-h-0">
             {/* Workspaces tab */}
             <div
@@ -411,7 +414,10 @@ export function WorkspacesLayout() {
 
   const mainContent = (
     <ReviewProvider workspaceId={panelWorkspaceId}>
-      <ChangesViewProvider workspaceId={panelWorkspaceId}>
+      <ChangesViewProvider
+        key={panelWorkspaceId ?? 'no-workspace'}
+        workspaceId={panelWorkspaceId}
+      >
         <div className="flex h-full">
           <Group
             orientation="horizontal"

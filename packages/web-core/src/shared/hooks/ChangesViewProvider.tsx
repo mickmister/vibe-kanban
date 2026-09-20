@@ -1,4 +1,10 @@
-import React, { useState, useCallback, useMemo, useRef } from 'react';
+import React, {
+  useState,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+} from 'react';
 import {
   useUiPreferencesStore,
   RIGHT_MAIN_PANEL_MODES,
@@ -45,11 +51,26 @@ export function ChangesViewProvider({
   const scrollToFileCallbackRef = useRef<ScrollToFileCallback | null>(null);
   const selectedScrollRequestRef = useRef<SelectedScrollRequest | null>(null);
   const replayedScrollRequestKeyRef = useRef<string | null>(null);
+  const isActiveRef = useRef(true);
   const diffPathsRef = useRef(diffPaths);
   diffPathsRef.current = diffPaths;
 
+  useEffect(() => {
+    isActiveRef.current = true;
+
+    return () => {
+      isActiveRef.current = false;
+      scrollToFileCallbackRef.current = null;
+      selectedScrollRequestRef.current = null;
+      replayedScrollRequestKeyRef.current = null;
+      useFileInViewStore.getState().setFileInView(null);
+    };
+  }, []);
+
   const rememberSelectedFile = useCallback(
     (path: string, lineNumber?: number) => {
+      if (!isActiveRef.current) return;
+
       selectedScrollRequestRef.current = {
         path,
         lineNumber,
@@ -65,6 +86,8 @@ export function ChangesViewProvider({
 
   const registerScrollToFile = useCallback(
     (callback: ScrollToFileCallback | null) => {
+      if (!isActiveRef.current) return;
+
       scrollToFileCallbackRef.current = callback;
 
       if (!callback) return;
@@ -89,6 +112,8 @@ export function ChangesViewProvider({
 
   const scrollToFile = useCallback(
     (path: string, lineNumber?: number) => {
+      if (!isActiveRef.current) return;
+
       rememberSelectedFile(path, lineNumber);
 
       if (scrollToFileCallbackRef.current) {
@@ -104,6 +129,8 @@ export function ChangesViewProvider({
 
   const viewFileInChanges = useCallback(
     (filePath: string) => {
+      if (!isActiveRef.current) return;
+
       rememberSelectedFile(filePath);
       if (workspaceId) {
         setRightMainPanelMode(RIGHT_MAIN_PANEL_MODES.CHANGES, workspaceId);

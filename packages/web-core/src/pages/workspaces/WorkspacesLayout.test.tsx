@@ -14,11 +14,12 @@ import {
 import { useWorkspaceDiffStore } from '@/shared/stores/useWorkspaceDiffStore';
 
 const ROUTE_WORKSPACE_ID = 'route-workspace';
+let routeWorkspaceId = ROUTE_WORKSPACE_ID;
 let isMobile = false;
 
 vi.mock('@/shared/hooks/useWorkspaceContext', () => ({
   useWorkspaceContext: () => ({
-    workspaceId: ROUTE_WORKSPACE_ID,
+    workspaceId: routeWorkspaceId,
     workspace: undefined,
     isLoading: true,
     isCreateMode: false,
@@ -149,6 +150,7 @@ vi.mock('./ChangesPanelContainer', () => ({
 ).IS_REACT_ACT_ENVIRONMENT = true;
 
 beforeEach(() => {
+  routeWorkspaceId = ROUTE_WORKSPACE_ID;
   isMobile = false;
   mockMatchMedia(false);
   useUiPreferencesStore.setState({
@@ -228,13 +230,48 @@ describe('WorkspacesLayout Changes integration', () => {
     expectChangesPanel(view.container, 'repo/qa_output.txt');
     await view.unmount();
   });
+
+  it('remounts Changes navigation state when the route workspace changes', async () => {
+    const view = await renderLayout();
+
+    await act(async () => {
+      useUiPreferencesStore
+        .getState()
+        .setRightMainPanelMode(
+          RIGHT_MAIN_PANEL_MODES.CHANGES,
+          ROUTE_WORKSPACE_ID
+        );
+      view.container
+        .querySelector<HTMLButtonElement>('button')
+        ?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    expectChangesPanel(view.container, 'repo/qa_output.txt');
+
+    routeWorkspaceId = 'workspace-b';
+    await view.rerender();
+    await act(async () => {
+      useUiPreferencesStore
+        .getState()
+        .setRightMainPanelMode(
+          RIGHT_MAIN_PANEL_MODES.CHANGES,
+          routeWorkspaceId
+        );
+    });
+
+    expectChangesPanel(view.container, '', 'workspace-b');
+    await view.unmount();
+  });
 });
 
-function expectChangesPanel(container: HTMLElement, target = '') {
+function expectChangesPanel(
+  container: HTMLElement,
+  target = '',
+  workspaceId = ROUTE_WORKSPACE_ID
+) {
   const panel = container.querySelector<HTMLElement>(
     '[data-testid="changes-panel"]'
   );
-  expect(panel?.dataset.workspaceId).toBe(ROUTE_WORKSPACE_ID);
+  expect(panel?.dataset.workspaceId).toBe(workspaceId);
   expect(panel?.textContent).toBe(target);
 }
 
@@ -265,6 +302,9 @@ async function renderLayout() {
 
   return {
     container,
+    rerender: async () => {
+      await act(async () => root.render(<WorkspacesLayout />));
+    },
     unmount: async () => {
       await act(async () => root.unmount());
       container.remove();

@@ -14,6 +14,7 @@ import {
   RIGHT_MAIN_PANEL_MODES,
   useUiPreferencesStore,
 } from '@/shared/stores/useUiPreferencesStore';
+import { useFileInViewStore } from '@/shared/stores/useFileInViewStore';
 
 (
   globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }
@@ -26,6 +27,7 @@ afterEach(() => {
     workspacePanelStates: {},
     isLeftSidebarVisible: true,
   });
+  useFileInViewStore.setState({ fileInView: null });
 });
 
 describe('ChangesViewProvider', () => {
@@ -120,6 +122,73 @@ describe('ChangesViewProvider', () => {
 
     await unmount();
   });
+
+  it('isolates a pending unmounted Changes request across workspace transitions', async () => {
+    const { getApi, rerenderWorkspace, unmount } = await renderProviderProbe({
+      workspaceId: 'workspace-a',
+    });
+
+    await act(async () => {
+      getApi().scrollToFile('src/workspace-a.ts', 17);
+    });
+
+    expect(getApi().selectedFilePath).toBe('src/workspace-a.ts');
+    expect(getApi().selectedLineNumber).toBe(17);
+    expect(useFileInViewStore.getState().fileInView).toBe('src/workspace-a.ts');
+
+    await rerenderWorkspace('workspace-b');
+
+    const workspaceBScroll = vi.fn<ScrollToFileCallback>();
+    expect(getApi().selectedFilePath).toBeNull();
+    expect(getApi().selectedLineNumber).toBeNull();
+    expect(useFileInViewStore.getState().fileInView).toBeNull();
+
+    await act(async () => {
+      getApi().registerScrollToFile(workspaceBScroll);
+    });
+
+    expect(workspaceBScroll).not.toHaveBeenCalled();
+    await unmount();
+  });
+
+  it('suppresses stale callbacks and replays a fresh workspace request exactly once', async () => {
+    const { getApi, rerenderWorkspace, unmount } = await renderProviderProbe({
+      workspaceId: 'workspace-a',
+    });
+    const workspaceAScroll = vi.fn<ScrollToFileCallback>();
+
+    await act(async () => {
+      getApi().scrollToFile('src/already-replayed.ts', 4);
+      getApi().registerScrollToFile(workspaceAScroll);
+    });
+
+    expect(workspaceAScroll).toHaveBeenCalledTimes(1);
+    const staleWorkspaceAApi = getApi();
+
+    await rerenderWorkspace('workspace-b');
+
+    await act(async () => {
+      staleWorkspaceAApi.scrollToFile('src/stale-a.ts', 8);
+    });
+
+    expect(workspaceAScroll).toHaveBeenCalledTimes(1);
+    expect(useFileInViewStore.getState().fileInView).toBeNull();
+
+    const workspaceBScroll = vi.fn<ScrollToFileCallback>();
+    await act(async () => {
+      getApi().scrollToFile('src/fresh-b.ts', 22);
+      getApi().registerScrollToFile(workspaceBScroll);
+      getApi().registerScrollToFile(workspaceBScroll);
+    });
+
+    expect(workspaceBScroll).toHaveBeenCalledTimes(1);
+    expect(workspaceBScroll).toHaveBeenCalledWith('src/fresh-b.ts', 22);
+    expect(getApi().selectedFilePath).toBe('src/fresh-b.ts');
+    expect(getApi().selectedLineNumber).toBe(22);
+    expect(useFileInViewStore.getState().fileInView).toBe('src/fresh-b.ts');
+
+    await unmount();
+  });
 });
 
 function mockMatchMedia(matches: boolean) {
@@ -151,18 +220,29 @@ async function renderProviderProbe({
     return null;
   }
 
+  const renderWorkspace = (nextWorkspaceId?: string) => (
+    <ChangesViewProvider
+      key={nextWorkspaceId ?? 'no-workspace'}
+      workspaceId={nextWorkspaceId}
+    >
+      <Probe />
+    </ChangesViewProvider>
+  );
+
   await act(async () => {
-    root.render(
-      <ChangesViewProvider workspaceId={workspaceId}>
-        <Probe />
-      </ChangesViewProvider>
-    );
+    root.render(renderWorkspace(workspaceId));
   });
 
   return {
     getApi: () => {
       if (!api) throw new Error('ChangesViewProvider probe did not render');
       return api;
+    },
+    rerenderWorkspace: async (nextWorkspaceId?: string) => {
+      api = null;
+      await act(async () => {
+        root.render(renderWorkspace(nextWorkspaceId));
+      });
     },
     unmount: async () => {
       await act(async () => {
