@@ -512,7 +512,9 @@ export const Actions = {
     label: 'Start Review',
     icon: HighlighterIcon,
     requiresTarget: ActionTargetType.WORKSPACE,
-    isVisible: (ctx) => ctx.hasWorkspace,
+    // VD owns the replacement review workflows. Keep the backend action for
+    // compatibility, but do not expose this legacy VK entry point.
+    isVisible: () => false,
     getTooltip: () => 'Review changes with agent',
     execute: async (_ctx, workspaceId) => {
       await StartReviewDialog.show({
