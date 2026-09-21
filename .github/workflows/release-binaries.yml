@@ -238,7 +238,7 @@ jobs:
           tools-cache: false
 
       - name: Setup sccache
-        uses: BloopAI/sccache-action@main
+        uses: Mozilla-Actions/sccache-action@fd02668681acd5f960e1372061bee5e3e987195c # v0.0.11
 
       - name: Cache Rust toolchain
         uses: actions/cache@v5
@@ -320,6 +320,20 @@ jobs:
           VK_SHARED_RELAY_API_BASE: ${{ secrets.VK_SHARED_RELAY_API_BASE }}
           SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
           VK_BUILD_COMMIT_HASH: ${{ needs.prepare.outputs.vk_sha }}
+
+      - name: Report sccache health
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          stats_file="${RUNNER_TEMP}/sccache-stats.json"
+          sccache --show-stats --stats-format json > "$stats_file"
+
+          node .github/scripts/report-sccache-health.cjs \
+            "$stats_file" \
+            "${{ matrix.target }}" \
+            "$GITHUB_STEP_SUMMARY"
 
       - name: Prepare package directory
         run: |
