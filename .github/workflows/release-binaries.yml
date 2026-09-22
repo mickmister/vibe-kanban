@@ -250,7 +250,9 @@ jobs:
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           workspaces: "."
-          shared-key: release-binaries-${{ runner.os }}-${{ matrix.target }}
+          # Cache keys are immutable. Bump the namespace after removing the
+          # rustc wrapper so Cargo can publish compatible fingerprints.
+          shared-key: release-binaries-v2-${{ runner.os }}-${{ matrix.target }}
           cache-provider: github
           cache-all-crates: "true"
           cache-on-failure: "true"
