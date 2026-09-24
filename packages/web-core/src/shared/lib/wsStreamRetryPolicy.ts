@@ -9,7 +9,7 @@ export interface WsRetryDecision {
 }
 
 export function markWsStreamHealthy(state: WsRetryState): WsRetryState {
-  if (state.hasReceivedPayload) {
+  if (state.retryAttempts === 0 && state.hasReceivedPayload) {
     return state;
   }
 

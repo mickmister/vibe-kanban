@@ -24,6 +24,7 @@ use futures_util::{
 use serde::Deserialize;
 use services::services::container::ContainerService;
 use tokio::sync::Mutex;
+use tracing::Instrument;
 use utils::{log_msg::LogMsg, msg_store::MsgStore, response::ApiResponse};
 use uuid::Uuid;
 
@@ -46,13 +47,18 @@ struct SessionExecutionProcessQuery {
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 enum NormalizedLogReplayMode {
-    Live,
     Historic,
 }
 
 type SharedNormalizedLogHistoryFuture = Shared<BoxFuture<'static, Option<Arc<Vec<String>>>>>;
 type NormalizedLogHistoryInflight =
     Arc<Mutex<HashMap<(Uuid, NormalizedLogReplayMode), SharedNormalizedLogHistoryFuture>>>;
+
+#[derive(Clone, Debug, Default)]
+struct LiveNormalizedLogMessages {
+    payloads: Vec<String>,
+    finished: bool,
+}
 
 fn normalized_log_history_inflight() -> &'static NormalizedLogHistoryInflight {
     static INFLIGHT: OnceLock<NormalizedLogHistoryInflight> = OnceLock::new();
@@ -166,7 +172,13 @@ async fn stream_normalized_logs_ws(
     Path(exec_id): Path<Uuid>,
 ) -> impl IntoResponse {
     ws.on_upgrade(move |socket| async move {
-        if let Some(store) = deployment.container().get_msg_store_by_id(&exec_id).await {
+        if let Some(store) = async { deployment.container().get_msg_store_by_id(&exec_id).await }
+            .instrument(tracing::debug_span!(
+                "normalized_logs.lookup_live_store",
+                execution_process_id = %exec_id,
+            ))
+            .await
+        {
             let stream = build_live_normalized_logs_stream(exec_id, store).await;
             if let Err(e) = handle_normalized_logs_ws(socket, stream).await {
                 tracing::warn!("normalized logs WS closed: {}", e);
@@ -197,18 +209,34 @@ async fn stream_normalized_logs_ws(
     })
 }
 
+#[tracing::instrument(level = "debug", skip(store), fields(execution_process_id = %exec_id))]
 async fn build_live_normalized_logs_stream(
     exec_id: Uuid,
     store: Arc<MsgStore>,
 ) -> BoxStream<'static, anyhow::Result<Message>> {
     let receiver = store.get_receiver();
-    let payloads = get_live_normalized_log_messages_single_flight(exec_id, store).await;
+    let messages = collect_live_normalized_log_messages(&store);
+    tracing::debug!(
+        execution_process_id = %exec_id,
+        history_message_count = messages.payloads.len(),
+        history_finished = messages.finished,
+        "normalized_logs.live_history_loaded"
+    );
     let history_stream = stream::iter(
-        (*payloads)
+        messages
+            .payloads
             .clone()
             .into_iter()
             .map(|payload| Ok::<_, anyhow::Error>(Message::Text(payload.into()))),
     );
+
+    if messages.finished {
+        return history_stream
+            .chain(stream::once(async {
+                Ok::<_, anyhow::Error>(LogMsg::Finished.to_ws_message_unchecked())
+            }))
+            .boxed();
+    }
 
     let live_stream = stream::unfold(receiver, move |mut receiver| async move {
         loop {
@@ -241,19 +269,7 @@ async fn build_live_normalized_logs_stream(
         .boxed()
 }
 
-async fn get_live_normalized_log_messages_single_flight(
-    exec_id: Uuid,
-    store: Arc<MsgStore>,
-) -> Arc<Vec<String>> {
-    get_normalized_log_messages_single_flight(
-        NormalizedLogReplayMode::Live,
-        exec_id,
-        async move { Some(collect_live_normalized_log_messages(&store)) }.boxed(),
-    )
-    .await
-    .unwrap_or_else(|| Arc::new(Vec::new()))
-}
-
+#[tracing::instrument(level = "debug", skip(deployment), fields(execution_process_id = %exec_id))]
 async fn get_historic_normalized_log_messages_single_flight(
     deployment: &DeploymentImpl,
     exec_id: Uuid,
@@ -265,6 +281,11 @@ async fn get_historic_normalized_log_messages_single_flight(
     .await
 }
 
+#[tracing::instrument(
+    level = "debug",
+    skip(future),
+    fields(execution_process_id = %exec_id, mode = ?mode)
+)]
 async fn get_normalized_log_messages_single_flight(
     mode: NormalizedLogReplayMode,
     exec_id: Uuid,
@@ -293,9 +314,11 @@ async fn get_normalized_log_messages_single_flight(
     result
 }
 
-fn collect_live_normalized_log_messages(store: &MsgStore) -> Arc<Vec<String>> {
-    let messages = store
-        .get_history()
+#[tracing::instrument(level = "debug", skip(store))]
+fn collect_live_normalized_log_messages(store: &MsgStore) -> LiveNormalizedLogMessages {
+    let history = store.get_history();
+    let finished = history.iter().any(|msg| matches!(msg, LogMsg::Finished));
+    let payloads: Vec<String> = history
         .into_iter()
         .take_while(|msg| !matches!(msg, LogMsg::Finished))
         .filter_map(|msg| match msg {
@@ -307,9 +330,16 @@ fn collect_live_normalized_log_messages(store: &MsgStore) -> Arc<Vec<String>> {
         })
         .collect();
 
-    Arc::new(messages)
+    tracing::debug!(
+        history_message_count = payloads.len(),
+        history_finished = finished,
+        "normalized_logs.live_history_collected"
+    );
+
+    LiveNormalizedLogMessages { payloads, finished }
 }
 
+#[tracing::instrument(level = "debug", skip(deployment), fields(execution_process_id = %exec_id))]
 async fn collect_historic_normalized_log_messages(
     deployment: &DeploymentImpl,
     exec_id: Uuid,
@@ -338,9 +368,16 @@ async fn collect_historic_normalized_log_messages(
         }
     }
 
-    Some(Arc::new(messages))
+    let messages = Arc::new(messages);
+    tracing::debug!(
+        execution_process_id = %exec_id,
+        history_message_count = messages.len(),
+        "normalized_logs.historic_history_collected"
+    );
+    Some(messages)
 }
 
+#[tracing::instrument(level = "debug", skip(socket, stream))]
 async fn handle_normalized_logs_ws(
     mut socket: MaybeSignedWebSocket,
     stream: impl futures_util::Stream<Item = anyhow::Result<Message>> + Unpin + Send + 'static,
@@ -407,6 +444,11 @@ async fn stream_execution_processes_by_session_ws(
     })
 }
 
+#[tracing::instrument(
+    level = "debug",
+    skip(socket, deployment),
+    fields(session_id = %session_id, show_soft_deleted = show_soft_deleted)
+)]
 async fn handle_execution_processes_by_session_ws(
     mut socket: MaybeSignedWebSocket,
     deployment: DeploymentImpl,
@@ -483,16 +525,69 @@ pub(super) fn router(deployment: &DeploymentImpl) -> Router<DeploymentImpl> {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
+    use std::{
+        sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        },
+        time::Duration,
     };
 
-    use futures_util::FutureExt;
-    use tokio::sync::{Mutex, oneshot};
+    use futures_util::{FutureExt, StreamExt};
+    use serde_json::json;
+    use tokio::{
+        sync::{Mutex, oneshot},
+        time::timeout,
+    };
+    use utils::{log_msg::LogMsg, msg_store::MsgStore};
     use uuid::Uuid;
 
-    use super::{NormalizedLogReplayMode, get_normalized_log_messages_single_flight};
+    use super::{
+        NormalizedLogReplayMode, build_live_normalized_logs_stream,
+        get_normalized_log_messages_single_flight,
+    };
+
+    #[tokio::test]
+    async fn live_normalized_stream_finishes_when_history_already_finished() {
+        let store = Arc::new(MsgStore::new());
+        let patch = serde_json::from_value(json!([
+            {
+                "op": "add",
+                "path": "/entries/0",
+                "value": "already normalized"
+            }
+        ]))
+        .expect("valid json patch");
+        store.push(LogMsg::JsonPatch(patch));
+        store.push(LogMsg::Finished);
+
+        let mut stream = build_live_normalized_logs_stream(Uuid::new_v4(), store).await;
+
+        let first = timeout(Duration::from_secs(1), stream.next())
+            .await
+            .expect("history patch should not hang")
+            .expect("history patch should be present")
+            .expect("history patch should be ok");
+        assert!(
+            first.into_text().expect("text message").contains("entries"),
+            "expected replayed normalized patch"
+        );
+
+        let second = timeout(Duration::from_secs(1), stream.next())
+            .await
+            .expect("finished message should not hang")
+            .expect("finished message should be present")
+            .expect("finished message should be ok");
+        assert_eq!(
+            second.into_text().expect("text message"),
+            "{\"finished\":true}"
+        );
+
+        let end = timeout(Duration::from_secs(1), stream.next())
+            .await
+            .expect("stream end should not hang");
+        assert!(end.is_none());
+    }
 
     #[tokio::test]
     async fn single_flight_shares_same_mode_requests() {
@@ -553,52 +648,5 @@ mod tests {
         assert_eq!(call_count.load(Ordering::SeqCst), 1);
         assert_eq!(&*result1, &vec!["historic".to_string()]);
         assert_eq!(&*result2, &vec!["historic".to_string()]);
-    }
-
-    #[tokio::test]
-    async fn single_flight_does_not_share_across_modes() {
-        let exec_id = Uuid::new_v4();
-        let live_count = Arc::new(AtomicUsize::new(0));
-        let historic_count = Arc::new(AtomicUsize::new(0));
-
-        let live = {
-            let live_count = live_count.clone();
-            tokio::spawn(async move {
-                get_normalized_log_messages_single_flight(
-                    NormalizedLogReplayMode::Live,
-                    exec_id,
-                    async move {
-                        live_count.fetch_add(1, Ordering::SeqCst);
-                        Some(Arc::new(vec!["live".to_string()]))
-                    }
-                    .boxed(),
-                )
-                .await
-            })
-        };
-
-        let historic = {
-            let historic_count = historic_count.clone();
-            tokio::spawn(async move {
-                get_normalized_log_messages_single_flight(
-                    NormalizedLogReplayMode::Historic,
-                    exec_id,
-                    async move {
-                        historic_count.fetch_add(1, Ordering::SeqCst);
-                        Some(Arc::new(vec!["historic".to_string()]))
-                    }
-                    .boxed(),
-                )
-                .await
-            })
-        };
-
-        let live_result = live.await.unwrap().unwrap();
-        let historic_result = historic.await.unwrap().unwrap();
-
-        assert_eq!(live_count.load(Ordering::SeqCst), 1);
-        assert_eq!(historic_count.load(Ordering::SeqCst), 1);
-        assert_eq!(&*live_result, &vec!["live".to_string()]);
-        assert_eq!(&*historic_result, &vec!["historic".to_string()]);
     }
 }

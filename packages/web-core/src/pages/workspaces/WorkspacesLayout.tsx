@@ -49,6 +49,7 @@ import {
   RIGHT_MAIN_PANEL_MODES,
 } from '@/shared/stores/useUiPreferencesStore';
 import { useAppNavigation } from '@/shared/hooks/useAppNavigation';
+import { getWorkspacePanelId } from './workspacePanelId';
 
 const WORKSPACES_GUIDE_ID = 'workspaces-guide';
 
@@ -120,22 +121,10 @@ export function WorkspacesLayout() {
   const chatViewMode = useUiPreferencesStore((s) => s.chatViewMode);
   const setChatViewMode = useUiPreferencesStore((s) => s.setChatViewMode);
   const mainContainerRef = useRef<WorkspacesMainContainerHandle>(null);
-  const hasForcedInitialExistingSessionZen = useRef(false);
+  const panelWorkspaceId = getWorkspacePanelId(workspaceId, isCreateMode);
   const hasWorkspaceRoute = !!workspaceId;
   const hasZenContext = isCreateMode || hasWorkspaceRoute;
-  const shouldForceInitialExistingSessionZen =
-    !isMobile &&
-    hasWorkspaceRoute &&
-    !isNewSessionMode &&
-    !isCreateMode &&
-    !hasForcedInitialExistingSessionZen.current;
-  const effectiveChatViewMode = hasZenContext
-    ? shouldForceInitialExistingSessionZen
-      ? 'zen'
-      : chatViewMode
-    : 'full';
-  const isDesktopZenMode =
-    !isMobile && effectiveChatViewMode !== 'full' && hasZenContext;
+  const effectiveChatViewMode = hasZenContext ? chatViewMode : 'full';
 
   const handleScrollToBottom = useCallback(
     (behavior: 'auto' | 'smooth' = 'smooth') => {
@@ -159,7 +148,14 @@ export function WorkspacesLayout() {
     rightMainPanelMode,
     setLeftSidebarVisible,
     setLeftMainPanelVisible,
-  } = useWorkspacePanelState(isCreateMode ? undefined : workspaceId);
+  } = useWorkspacePanelState(panelWorkspaceId);
+  // A requested right panel temporarily takes precedence over the saved chat
+  // focus mode. Closing it restores the user's preferred chat layout.
+  const isDesktopZenMode =
+    !isMobile &&
+    effectiveChatViewMode !== 'full' &&
+    hasZenContext &&
+    rightMainPanelMode === null;
 
   const {
     config,
@@ -185,30 +181,6 @@ export function WorkspacesLayout() {
   }, [configLoading, config, updateAndSaveConfig]);
 
   // Ensure left panels visible when right main panel hidden
-  useEffect(() => {
-    if (!hasZenContext && chatViewMode !== 'full') {
-      setChatViewMode('full');
-    }
-  }, [chatViewMode, hasZenContext, setChatViewMode]);
-
-  useEffect(() => {
-    if (hasForcedInitialExistingSessionZen.current) return;
-    if (isMobile || isCreateMode || isNewSessionMode || !hasWorkspaceRoute)
-      return;
-
-    hasForcedInitialExistingSessionZen.current = true;
-    if (chatViewMode !== 'zen') {
-      setChatViewMode('zen');
-    }
-  }, [
-    chatViewMode,
-    hasWorkspaceRoute,
-    isCreateMode,
-    isMobile,
-    isNewSessionMode,
-    setChatViewMode,
-  ]);
-
   useEffect(() => {
     if (rightMainPanelMode === null) {
       setLeftSidebarVisible(true);
@@ -264,12 +236,17 @@ export function WorkspacesLayout() {
   );
 
   // ── Mobile layout ──────────────────────────────────────────────────
-  // Uses `hidden` CSS class (NOT conditional rendering) to preserve
-  // WebSocket connections and scroll positions across tab switches.
+  // Most mobile tabs stay mounted while hidden to preserve WebSocket
+  // connections and scroll positions across tab switches. The Changes tab is
+  // intentionally mounted only while active because rendering diffs starts
+  // expensive worker/highlighter work even when CSS-hidden.
   if (isMobile) {
     const mobileContent = (
-      <ReviewProvider workspaceId={selectedWorkspace?.id}>
-        <ChangesViewProvider>
+      <ReviewProvider workspaceId={panelWorkspaceId}>
+        <ChangesViewProvider
+          key={panelWorkspaceId ?? 'no-workspace'}
+          workspaceId={panelWorkspaceId}
+        >
           <div className="flex flex-col h-full min-h-0">
             {/* Workspaces tab */}
             <div
@@ -318,10 +295,10 @@ export function WorkspacesLayout() {
                 mobileTab !== 'changes' && 'hidden'
               )}
             >
-              {selectedWorkspace?.id && (
+              {mobileTab === 'changes' && panelWorkspaceId && (
                 <ChangesPanelContainer
                   className=""
-                  workspaceId={selectedWorkspace.id}
+                  workspaceId={panelWorkspaceId}
                 />
               )}
             </div>
@@ -436,8 +413,11 @@ export function WorkspacesLayout() {
   ) : undefined;
 
   const mainContent = (
-    <ReviewProvider workspaceId={selectedWorkspace?.id}>
-      <ChangesViewProvider>
+    <ReviewProvider workspaceId={panelWorkspaceId}>
+      <ChangesViewProvider
+        key={panelWorkspaceId ?? 'no-workspace'}
+        workspaceId={panelWorkspaceId}
+      >
         <div className="flex h-full">
           <Group
             orientation="horizontal"
@@ -491,10 +471,10 @@ export function WorkspacesLayout() {
                 className="min-w-0 h-full overflow-hidden"
               >
                 {rightMainPanelMode === RIGHT_MAIN_PANEL_MODES.CHANGES &&
-                  selectedWorkspace?.id && (
+                  panelWorkspaceId && (
                     <ChangesPanelContainer
                       className=""
-                      workspaceId={selectedWorkspace.id}
+                      workspaceId={panelWorkspaceId}
                     />
                   )}
                 {rightMainPanelMode === RIGHT_MAIN_PANEL_MODES.LOGS && (
