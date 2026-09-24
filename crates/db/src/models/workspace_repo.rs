@@ -271,12 +271,19 @@ impl WorkspaceRepo {
             separated.push_unseparated(") ORDER BY wr.workspace_id ASC, r.display_name ASC");
 
             let rows = query.build().fetch_all(pool).await?;
+            let repo_ids = rows
+                .iter()
+                .map(|row| row.try_get("id"))
+                .collect::<Result<Vec<Uuid>, sqlx::Error>>()?;
+            let scripts_by_repo = RepoDevServerScript::find_by_repo_ids(pool, &repo_ids).await?;
+
             for row in rows {
                 let workspace_id: Uuid = row.try_get("workspace_id")?;
+                let repo_id: Uuid = row.try_get("id")?;
                 if let Some(repos) = repos_by_workspace.get_mut(&workspace_id) {
                     repos.push(RepoWithTargetBranch {
                         repo: Repo {
-                            id: row.try_get("id")?,
+                            id: repo_id,
                             path: PathBuf::from(row.try_get::<String, _>("path")?),
                             name: row.try_get("name")?,
                             display_name: row.try_get("display_name")?,
@@ -286,6 +293,10 @@ impl WorkspaceRepo {
                             copy_files: row.try_get("copy_files")?,
                             parallel_setup_script: row.try_get("parallel_setup_script")?,
                             dev_server_script: row.try_get("dev_server_script")?,
+                            dev_server_scripts: scripts_by_repo
+                                .get(&repo_id)
+                                .cloned()
+                                .unwrap_or_default(),
                             default_target_branch: row.try_get("default_target_branch")?,
                             default_working_dir: row.try_get("default_working_dir")?,
                             created_at: row.try_get("created_at")?,
